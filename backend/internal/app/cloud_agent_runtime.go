@@ -676,10 +676,20 @@ func cloudAgentModelFailure(task *model.Task) (string, string) {
 	switch {
 	case strings.Contains(raw, "connection reset by peer"):
 		detail, reason = "模型连接被对端或中间网络设备重置", "model_connection_reset"
+	case strings.Contains(raw, "unexpected eof"):
+		detail, reason = "模型连接意外中断", "model_connection_interrupted"
 	case strings.Contains(raw, "timeout"), strings.Contains(raw, "deadline exceeded"):
 		detail, reason = "模型请求超时", "model_request_timeout"
 	case strings.Contains(raw, "connection refused"):
 		detail, reason = "无法连接模型服务（连接被拒绝）", "model_connection_refused"
+	case strings.Contains(task.Error, "过载") || strings.Contains(task.Error, "暂时不可用") || strings.Contains(raw, "overloaded"):
+		detail, reason = "上游模型服务暂时过载或不可用", "model_overloaded"
+	}
+	// Task.Error 在正常链路里已是归类后的固定文案，但这里不能直接回显：该字段
+	// 在历史数据或异常路径上可能带着上游正文。只有能再次命中固定类目的文本
+	// 才采用，让它覆盖笼统的"模型任务未成功"，同时保持不回显原始错误。
+	if categorized, ok := providerPayloadErrorCategory(task.Error); ok {
+		detail = categorized
 	}
 	return detail + "；本轮已停止。请在任务中心检查模型任务 " + task.ID, reason
 }
@@ -726,6 +736,17 @@ func cloudAgentSafeMediaTaskError(task *model.Task) string {
 		return "媒体任务未成功"
 	}
 	lower := strings.ToLower(detail)
+	if categorized, ok := providerPayloadErrorCategory(detail); ok {
+		return categorized
+	}
+	switch {
+	case strings.Contains(lower, "unexpected eof"):
+		return "模型连接意外中断，请稍后重试"
+	case strings.Contains(lower, "connection reset by peer"):
+		return "模型连接被中断，请稍后重试"
+	case strings.Contains(lower, "timeout"), strings.Contains(lower, "deadline exceeded"):
+		return "模型服务响应超时，请稍后重试"
+	}
 	for _, marker := range []string{
 		"http://", "https://", "ftp://", "authorization", "cookie", "secret", "token", "api_key", "apikey", "x-api-key",
 	} {

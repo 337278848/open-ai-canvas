@@ -280,3 +280,92 @@ func TestCloudAgentReliabilityCorruptedCancellationUsesControlTask(t *testing.T)
 		t.Fatal("corrupted state orphaned active child")
 	}
 }
+
+// 画布助手在失败轮之后重发时，客户端会把新轮次挂到失败轮的父轮，而不是失败轮
+// 本身。这里锁定该合同的关键收益：新轮次的历史里只有干净的成功上下文，
+// 不含"本轮已停止"这类失败事实，模型不会把失败当成已确认的前提。
+func TestCloudAgentReliabilityRetryAfterFailureSkipsFailedTurnHistory(t *testing.T) {
+	s, db, root := reliableAgentRoot(t)
+	// 第一轮成功，成为干净父轮。
+	if err := db.Model(&model.Task{}).Where("id = ?", root.ID).Updates(map[string]any{
+		"status": model.TaskStatusSucceeded, "result_json": `{"text":"可信回复"}`,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.CloudAgentExecution{}).Where("id = ?", root.ID).Updates(map[string]any{"status": "completed", "active_task_id": ""}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// 第二轮失败：它带着自己的提示词和失败摘要。
+	failed := agentTestRequest()
+	failed.Prompt = "适合视频模型的完整生成提示词"
+	failed.IdempotencyKey = "audit-retry-failed-key"
+	failedRun, err := s.CreateCloudAgentRun("user", failed, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.Task{}).Where("id = ?", failedRun.ID).Updates(map[string]any{
+		"status": model.TaskStatusFailed, "error": "上游模型服务暂时过载或不可用，请稍后重试",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.advanceCloudAgentByID("user", failedRun.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 失败轮自己作为父轮时，历史里确实带着失败事实——这正是重发必须避开它的原因。
+	viaFailed := agentTestRequest()
+	viaFailed.Prompt = "重发"
+	viaFailed.IdempotencyKey = "audit-retry-via-failed-key"
+	viaFailedRun, err := s.CreateCloudAgentRun("user", viaFailed, failedRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failedInput struct {
+		TextHistory []providerTextMessage `json:"textHistory"`
+	}
+	task, err := s.repo.TaskForUser("user", viaFailedRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal([]byte(task.InputJSON), &failedInput); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(failedHistoryText(failedInput.TextHistory), "run_failed") {
+		t.Fatalf("failed parent did not carry failure facts: %s", failedHistoryText(failedInput.TextHistory))
+	}
+
+	// 重发路径：挂回干净父轮，历史里不含失败事实。
+	retry := agentTestRequest()
+	retry.Prompt = "适合视频模型的完整生成提示词"
+	retry.IdempotencyKey = "audit-retry-clean-key"
+	retryRun, err := s.CreateCloudAgentRun("user", retry, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err = s.repo.TaskForUser("user", retryRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retryInput struct {
+		TextHistory []providerTextMessage `json:"textHistory"`
+	}
+	if err = json.Unmarshal([]byte(task.InputJSON), &retryInput); err != nil {
+		t.Fatal(err)
+	}
+	history := failedHistoryText(retryInput.TextHistory)
+	if strings.Contains(history, "本轮已停止") || strings.Contains(history, "run_failed") {
+		t.Fatalf("retry inherited failure context from the failed turn: %s", history)
+	}
+	if !strings.Contains(history, "可信回复") {
+		t.Fatalf("retry lost the clean prior turn: %s", history)
+	}
+}
+
+func failedHistoryText(history []providerTextMessage) string {
+	encoded, err := json.Marshal(history)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}

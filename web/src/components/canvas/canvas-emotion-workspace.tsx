@@ -1,7 +1,7 @@
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { LoaderCircle, ScanFace, SquareDashedMousePointer, X } from "lucide-react";
+import { LoaderCircle, RefreshCw, ScanFace, SquareDashedMousePointer, X } from "lucide-react";
 
 import { CanvasNodeEmotionPanel, type CanvasEmotionCharacter, type CanvasImageEmotionPayload } from "@/components/canvas/canvas-node-emotion-panel";
 import { CanvasNodePanelOverlay } from "@/components/canvas/canvas-workspace-overlays";
@@ -15,6 +15,12 @@ import { useThemeStore } from "@/stores/use-theme-store";
 import type { CanvasNodeData, Position, ViewportTransform } from "@/types/canvas";
 
 type WorkspaceStatus = "detecting" | "selecting" | "manual" | "editing" | "generating" | "error";
+
+/**
+ * 识别超过这个时间就说明明显慢于正常水平（正常约 0.3 秒，首次需下载约 11MB wasm），
+ * 此时必须把“手动框选”出口交给用户。
+ */
+const SLOW_DETECTING_HINT_MS = 8000;
 
 type CanvasEmotionWorkspaceProps = {
     node: CanvasNodeData;
@@ -36,6 +42,8 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, dragOffse
     const [imageSize, setImageSize] = useState({ width: node.metadata?.naturalWidth || 0, height: node.metadata?.naturalHeight || 0 });
     const [error, setError] = useState("");
     const [manualDraft, setManualDraft] = useState<CanvasFaceBox | null>(null);
+    // 重新识别：失败或超时后不需要关闭再打开面板，直接重跑一次即可。
+    const [detectAttempt, setDetectAttempt] = useState(0);
     const portalTarget = containerRef.current;
 
     useEffect(() => {
@@ -60,10 +68,12 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, dragOffse
             .catch((reason) => {
                 if (reason instanceof DOMException && reason.name === "AbortError") return;
                 setStatus("error");
-                setError(reason instanceof Error ? `${reason.message}，请手动框选` : "人脸识别失败，请手动框选");
+                setError(reason instanceof Error && reason.message ? reason.message : "人脸识别失败");
             });
         return () => controller.abort();
-    }, [dataUrl]);
+    }, [dataUrl, detectAttempt]);
+
+    const retryDetection = () => setDetectAttempt((attempt) => attempt + 1);
 
     const selectFace = (face: CanvasFaceBox) => {
         const existing = characters.find((character) => sameFace(character.faceBox, face));
@@ -134,7 +144,7 @@ export function CanvasEmotionWorkspace({ node, viewport, containerRef, dragOffse
                 }}
                 onFaceSelect={selectFace}
             />
-            <SelectionToolbar node={node} viewport={viewport} containerRef={containerRef} status={status} faceCount={faces.length} error={error} onManualSelect={beginManualSelection} onClose={onClose} />
+            <SelectionToolbar node={node} viewport={viewport} containerRef={containerRef} status={status} faceCount={faces.length} error={error} onManualSelect={beginManualSelection} onRetryDetect={retryDetection} onClose={onClose} />
             <AnimatePresence>
                 {activeCharacter && (status === "editing" || status === "generating") ? (
                     <CanvasNodePanelOverlay node={node} viewport={viewport} containerRef={containerRef} panelWidth={580} panelHeight={303} dragOffset={dragOffset} isDragging={isDragging}>
@@ -341,6 +351,7 @@ function SelectionToolbar({
     faceCount,
     error,
     onManualSelect,
+    onRetryDetect,
     onClose,
 }: {
     node: CanvasNodeData;
@@ -350,14 +361,31 @@ function SelectionToolbar({
     faceCount: number;
     error: string;
     onManualSelect: () => void;
+    onRetryDetect: () => void;
     onClose: () => void;
 }) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const reducedMotion = useReducedMotion();
     const toolbarRef = useRef<HTMLDivElement>(null);
+    // 识别明显偏慢时，用户必须立刻能拿到出口，而不是只能关掉重开。
+    const [slowDetecting, setSlowDetecting] = useState(false);
+    useEffect(() => {
+        if (status !== "detecting") {
+            setSlowDetecting(false);
+            return;
+        }
+        const timer = window.setTimeout(() => setSlowDetecting(true), SLOW_DETECTING_HINT_MS);
+        return () => window.clearTimeout(timer);
+    }, [status]);
     useScreenAnchor(toolbarRef, node, viewport, containerRef, (next, container) => toolbarScreenRect(node, next, container, toolbarRef.current));
     if (status === "editing" || status === "generating") return null;
-    const label = status === "detecting" ? "正在识别人脸" : status === "manual" ? "拖动鼠标框选需要调节的人脸" : status === "selecting" ? `识别到 ${faceCount} 张人脸，请选择人物` : error || "请选择人物";
+    const label = status === "detecting"
+        ? (slowDetecting ? "正在识别人脸（比平时更久，可手动框选或重试）" : "正在识别人脸")
+        : status === "manual" ? "拖动鼠标框选需要调节的人脸"
+        : status === "selecting" ? `识别到 ${faceCount} 张人脸，请选择人物`
+        : error || "请选择人物";
+    // 识别中的前几秒不需要抢注意力；一旦偏慢或已失败，出口必须始终在。
+    const showManualAction = status !== "detecting" || slowDetecting;
     return (
         <SpotlightSurface
             ref={toolbarRef}
@@ -379,7 +407,17 @@ function SelectionToolbar({
                     {status === "detecting" ? <LoaderCircle className="size-4 animate-spin" /> : <ScanFace className="size-4" />}
                 </span>
                 <span className="min-w-0 flex-1 truncate px-2 text-[var(--fs-label)] font-medium leading-none">{label}</span>
-                {status !== "detecting" ? (
+                {status === "error" ? (
+                    <button
+                        type="button"
+                        className="flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-2 text-[var(--fs-label)] font-medium leading-none transition hover:bg-black/5 dark:hover:bg-white/10"
+                        onClick={onRetryDetect}
+                    >
+                        <RefreshCw className="size-3.5" />
+                        重新识别
+                    </button>
+                ) : null}
+                {showManualAction ? (
                     <button
                         type="button"
                         className="flex h-8 shrink-0 items-center gap-1.5 rounded-[var(--dock-item-radius)] px-2 text-[var(--fs-label)] font-medium leading-none transition hover:bg-black/5 dark:hover:bg-white/10"

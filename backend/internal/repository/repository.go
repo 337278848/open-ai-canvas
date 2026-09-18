@@ -13,6 +13,7 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 var ErrDailyUploadLimitExceeded = errors.New("daily upload limit exceeded")
@@ -781,7 +782,10 @@ func (r *Repository) ApiCallLogs(userID string, admin bool, limit int) ([]model.
 
 func (r *Repository) SystemSetting(key string) (*model.SystemSetting, error) {
 	var setting model.SystemSetting
-	if err := r.db.First(&setting, "key = ?", key).Error; err != nil {
+	// Most system settings are optional and fall back to defaults when absent.
+	// Keep that normal branch from flooding the runtime log with GORM's
+	// record-not-found diagnostic; real errors are still returned to callers.
+	if err := r.db.Session(&gorm.Session{Logger: r.db.Logger.LogMode(logger.Silent)}).First(&setting, "key = ?", key).Error; err != nil {
 		return nil, err
 	}
 	return &setting, nil
@@ -971,6 +975,15 @@ func (r *Repository) CreateResource(resource *model.Resource) error {
 
 func (r *Repository) SaveResource(resource *model.Resource) error {
 	return r.db.Save(resource).Error
+}
+
+// SaveResourceRelayURL 只更新图床中继字段，避免在生成热路径上用整行 Save 覆盖
+// 并发的状态变更（例如播放副本转码结果）。
+func (r *Repository) SaveResourceRelayURL(id string, relayURL string, expiresAt time.Time) error {
+	return r.db.Model(&model.Resource{}).
+		Where("id = ?", id).
+		Updates(map[string]any{"relay_url": relayURL, "relay_expires_at": expiresAt}).
+		Error
 }
 
 func (r *Repository) ResourceByUploadKey(userID string, uploadKey string) (*model.Resource, error) {

@@ -98,6 +98,7 @@ func TestCloudAgentSkillMissingAndDistinctPaths(t *testing.T) {
 func TestCloudAgentModelFailureRedactsProviderDetails(t *testing.T) {
 	for _, test := range []struct{ raw, reason string }{
 		{"connection reset by peer", "model_connection_reset"},
+		{"unexpected EOF", "model_connection_interrupted"},
 		{"context deadline exceeded", "model_request_timeout"},
 		{"connection refused", "model_connection_refused"},
 		{"unknown provider error", "model_task_failed"},
@@ -106,6 +107,29 @@ func TestCloudAgentModelFailureRedactsProviderDetails(t *testing.T) {
 		if reason != test.reason || !strings.Contains(text, "task-id") || strings.Contains(text, "private") || strings.Contains(text, "secret") {
 			t.Fatalf("unsafe or incorrect error: %q, %q", text, reason)
 		}
+	}
+}
+
+func TestCloudAgentMediaFailureSurfacesSafeTransientReason(t *testing.T) {
+	got := cloudAgentSafeMediaTaskError(&model.Task{Error: `Post "https://private.example/v1/images/edits": unexpected EOF`})
+	if got != "模型连接意外中断，请稍后重试" {
+		t.Fatalf("media failure = %q, want actionable transient reason", got)
+	}
+}
+
+// 任务表里存的是归类后的用户可见文案。Agent 失败事件应该沿用这个具体原因，
+// 让用户看到"上游过载，稍后重试"而不是笼统的"模型任务未成功"，
+// 同时仍然不回显任何上游原始正文。
+func TestCloudAgentModelFailureSurfacesClassifiedReason(t *testing.T) {
+	text, reason := cloudAgentModelFailure(&model.Task{ID: "task-id", Error: "上游模型服务暂时过载或不可用，请稍后重试"})
+	if reason != "model_overloaded" {
+		t.Fatalf("reason = %q, want model_overloaded", reason)
+	}
+	if !strings.Contains(text, "上游模型服务暂时过载或不可用") {
+		t.Fatalf("text = %q, want classified overload reason", text)
+	}
+	if !strings.Contains(text, "task-id") {
+		t.Fatalf("text = %q, want task id for the task center", text)
 	}
 }
 

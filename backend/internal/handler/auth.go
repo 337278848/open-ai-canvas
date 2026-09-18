@@ -618,6 +618,37 @@ func RegisterAdminRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"setting": setting})
 	})
+	r.GET("/admin/settings/upstream-media-relay", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		setting, err := svc.AdminUpstreamMediaRelaySetting(user)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"setting": setting})
+	})
+	r.PATCH("/admin/settings/upstream-media-relay", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		var req service.UpstreamMediaRelaySettingRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		setting, err := svc.UpdateUpstreamMediaRelaySetting(user, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, gin.H{"setting": setting})
+	})
 	r.GET("/admin/settings/drawing-engine", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

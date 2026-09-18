@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -62,6 +63,11 @@ func TestCloudAgentToolsFollowCanvasCapabilityRegistry(t *testing.T) {
 	for _, tool := range cloudAgentTools(req) {
 		function := tool["function"].(map[string]any)
 		functions[function["name"].(string)] = function["parameters"].(map[string]any)
+	}
+	stateProperties := functions["canvas_get_state"]["properties"].(map[string]any)
+	maxItems := stateProperties["maxItems"].(map[string]any)
+	if maxItems["type"] != "integer" || maxItems["minimum"] != 1 || maxItems["maximum"] != 40 {
+		t.Fatalf("canvas_get_state maxItems contract drifted: %#v", maxItems)
 	}
 	apply := functions["canvas_apply_ops"]
 	if apply == nil {
@@ -182,6 +188,38 @@ func TestCloudAgentCanvasStateDoesNotForwardUnknownObjectFields(t *testing.T) {
 	item := view.(map[string]any)["nodes"].([]any)[0].(map[string]any)
 	if item["status"] != nil || item["position"].(map[string]any)["storageKey"] != nil || item["content"] != "画面内容" {
 		t.Fatalf("unsafe object fields leaked into model context: %v", item)
+	}
+}
+
+func TestCloudAgentCanvasStateHonorsRequestedSummarySize(t *testing.T) {
+	nodes := make([]map[string]any, 0, 10)
+	for index := 0; index < 10; index++ {
+		nodes = append(nodes, map[string]any{"id": fmt.Sprintf("node-%d", index), "type": "text", "title": "节点"})
+	}
+	doc := map[string]any{"nodes": nodes}
+	view, err := cloudAgentCanvasState(nil, "user", doc, 0, nil, 0, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := view.(map[string]any)
+	if got := len(result["nodes"].([]any)); got != 8 {
+		t.Fatalf("summary node count = %d, want 8", got)
+	}
+	if result["nextOffset"] != 8 || result["hasMore"] != true {
+		t.Fatalf("summary pagination = %#v, want nextOffset=8 and hasMore=true", result)
+	}
+}
+
+func TestCloudAgentProfileReadTreatsMissingLayerAsEmpty(t *testing.T) {
+	state := cloudAgentRuntime{Profile: cloudAgentProfileSnapshot{Layers: nil}}
+	call := cloudAgentCall{}
+	call.Function.Name, call.Function.Arguments = "agent_profile_read", `{"scope":"project"}`
+	result, err := cloudAgentReadTool(nil, "user", &state, call)
+	if err != nil {
+		t.Fatalf("missing profile layer should be a successful empty read: %v", err)
+	}
+	if result.(map[string]any)["configured"] != false {
+		t.Fatalf("missing profile layer was not marked empty: %#v", result)
 	}
 }
 

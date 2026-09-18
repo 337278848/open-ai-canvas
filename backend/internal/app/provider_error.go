@@ -42,9 +42,60 @@ func providerResponseBusinessFailure(responseBody []byte) (string, string, bool)
 	}
 	var payload map[string]any
 	if json.Unmarshal(responseBody, &payload) != nil {
-		return "", "", false
+		// 流式协议用 HTTP 200 承载业务失败：正文里是 SSE 帧，真正的错误在
+		// `event: error` 的 data 中。不解析它，这次调用就会被记成成功，
+		// 让任务失败原因在调用日志里消失，并把费用卡在"待核对"。
+		return providerStreamBusinessFailure(responseBody)
 	}
 	return providerPayloadBusinessFailure(payload)
+}
+
+// providerStreamBusinessFailure 从 SSE 正文里提取上游显式错误帧。
+// 只认 data 里带 error 对象或业务失败 code 的帧；正常增量帧不改判定。
+func providerStreamBusinessFailure(responseBody []byte) (string, string, bool) {
+	code := ""
+	message := ""
+	sawFrame := false
+	for _, frame := range sseFrameBoundaryPattern.Split(string(responseBody), -1) {
+		dataLines := make([]string, 0, 1)
+		for _, line := range strings.Split(strings.ReplaceAll(frame, "\r\n", "\n"), "\n") {
+			if strings.HasPrefix(line, "data:") {
+				dataLines = append(dataLines, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+			}
+		}
+		raw := strings.TrimSpace(strings.Join(dataLines, "\n"))
+		if raw == "" || raw == "[DONE]" {
+			continue
+		}
+		var payload map[string]any
+		if json.Unmarshal([]byte(raw), &payload) != nil {
+			continue
+		}
+		sawFrame = true
+		// 只有真正的 error 载荷才算失败：message_start 之类正常帧也走同一路径。
+		if _, ok := payload["error"].(map[string]any); ok {
+			frameCode, frameMessage := providerFailureDetails(payload)
+			if code == "" {
+				code = frameCode
+			}
+			if frameMessage != "" {
+				message = frameMessage
+			}
+			continue
+		}
+		if frameCode, frameMessage, failed := providerPayloadBusinessFailure(payload); failed {
+			if code == "" {
+				code = frameCode
+			}
+			if frameMessage != "" {
+				message = frameMessage
+			}
+		}
+	}
+	if !sawFrame || message == "" {
+		return "", "", false
+	}
+	return code, message, true
 }
 
 func providerPayloadBusinessFailure(payload map[string]any) (string, string, bool) {

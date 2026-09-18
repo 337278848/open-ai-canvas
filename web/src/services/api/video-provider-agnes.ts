@@ -186,7 +186,9 @@ function agnesAspectRatio(value: string) {
 async function resolveAgnesMediaUrl(value: string | undefined, storageKey?: string) {
     if (storageKey?.startsWith("resource:")) return getResourceOSSUrl(storageKey);
     if (/^https?:\/\//i.test(value || "")) return String(value);
-    throw new Error("Agnes 参考素材需要公网 URL；请先把素材保存到对象存储");
+    // 已保存到服务器的素材由后端统一切换公网地址（对象存储或上游素材中转），
+    // 这里失败说明素材还没进入服务器资源库。
+    throw new Error("Agnes 参考素材必须先上传到服务器资源库；上传后由服务端生成可供上游读取的地址");
 }
 
 function agnesFailureMessage(state: AgnesTaskResponse) {

@@ -65,7 +65,8 @@ function newAPIVideoResolutionRequest(profile: NonNullable<ReturnType<typeof mod
 async function resolveVideoGenerationsUrl(value: string | undefined, storageKey?: string) {
     if (storageKey?.startsWith("resource:")) return getResourceOSSUrl(storageKey);
     if (isPublicMediaUrl(value || "")) return String(value);
-    throw new Error("NewAPI Video Generations 的参考素材需要公网 URL；请先把素材保存到对象存储");
+    // 已保存到服务器的素材由后端统一切换公网地址（对象存储或上游素材中转）。
+    throw new Error("NewAPI Video Generations 的参考素材需要公网 URL，或先上传到服务器资源库");
 }
 
 function isPublicMediaUrl(value: string) {

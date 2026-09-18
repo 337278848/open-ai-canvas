@@ -122,7 +122,8 @@ async function resolveVolcengineArkReferenceUrl(value: string | undefined, stora
     if (String(value || "").startsWith("asset://")) return String(value);
     if (storageKey?.startsWith("resource:")) return getResourceOSSUrl(storageKey);
     if (isPublicMediaUrl(value || "")) return String(value);
-    throw new Error("火山方舟视频参考素材需要公网 URL 或 asset:// 素材 ID；请先将本地素材保存到对象存储");
+    // 已保存到服务器的素材由后端统一切换公网地址（对象存储或上游素材中转）。
+    throw new Error("火山方舟视频参考素材需要公网 URL、asset:// 素材 ID，或先上传到服务器资源库");
 }
 
 async function buildSeedanceVideosPayload(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], videoReferences: ReferenceVideo[], audioReferences: ReferenceAudio[], deps: VideoProviderDeps, options?: RequestOptions) {

@@ -57,6 +57,8 @@ export type AgentApproval = {
 export type AgentRun = {
     id: string;
     canvasId: string;
+    /** 上一轮运行 ID；重发失败轮次时用它把新轮次挂回干净的父轮，而不是挂在失败轮上。 */
+    parentId?: string;
     status: "queued" | "running" | "waiting_approval" | "completed" | "failed" | "cancelled";
     permissionMode: AgentPermissionMode;
     revision?: number;

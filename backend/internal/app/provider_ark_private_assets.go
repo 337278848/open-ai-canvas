@@ -224,7 +224,8 @@ func (s *Service) ensureArkPrivateAsset(ctx context.Context, userID string, reso
 		}
 	}
 	binding.AssetGroupID = groupID
-	resourceURL, err := s.directResourceURL(resource, time.Now().Add(time.Hour))
+	// 方舟可信素材由方舟服务端按 URL 回源抓取，本地存储没有自备公网地址时同样需要图床中继。
+	resourceURL, err := s.upstreamProviderMediaURL(userID, resource, time.Now().Add(time.Hour))
 	if err != nil {
 		return "", s.failArkPrivateAssetBinding(binding, fmt.Errorf("生成方舟素材临时地址失败：%w", err))
 	}

@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import { canvasConnectionError } from "../src/lib/canvas/canvas-connection-policy";
-import { assertCanvasImageReferenceLimit, buildGenerationConfig, canvasImageReferenceLimitError, resolveCanvasGenerationModel } from "../src/lib/canvas/canvas-project-generation";
+import { assertCanvasImageReferenceLimit, backendProviderConfig, buildGenerationConfig, canvasImageReferenceLimitError, resolveCanvasGenerationModel } from "../src/lib/canvas/canvas-project-generation";
+import { prepareBackendGenerationTask } from "../src/services/api/generation-task";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { groupModelsByDisplayName, inferVideoOperation, modelCompatibilityError, modelGroupReferenceLimits, modelPromptLengthError, resolveCompatibleModel, resolveModelGenerationDefaults, resolveModelVideoBooleanOptions } from "../src/lib/model-selection";
 import { defaultConfig, normalizeModelOptionValue, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
@@ -194,6 +195,137 @@ describe("逻辑模型选择", () => {
         })).toEqual({ videoGenerateAudio: "true", videoWatermark: "false" });
     });
 
+
+    test("画布视频节点不会把节点残留的同步音频提交给不支持该能力的模型", () => {
+        // 复刻回归：Agnes 等模型声明 generateAudio.supported = false，但节点在切换模型前
+        // 保存过 generateAudio = "true"（或全局默认为 "true"）。这些值以前会一路传到
+        // 后端 admission，被以「参数 同步音频超出支持范围」拒绝整单。
+        const model = "platform::agnes-video-2.5-flash";
+        const profile = defaultModelCapabilityConfig("agnes-video", "agnes-video-2.5-flash");
+        profile.video!.generateAudio = { supported: false, default: false };
+        profile.video!.watermark = { supported: false, default: false };
+        const config: AiConfig = {
+            ...defaultConfig,
+            videoGenerateAudio: "true",
+            videoWatermark: "true",
+            channels: [{ id: "platform", name: "平台模型", baseUrl: "/api", apiKey: "system", apiFormat: "openai", scope: "system", models: ["agnes-video-2.5-flash"], modelCosts: [{ model: "agnes-video-2.5-flash", capability: "video", protocol: "agnes-video", billingMode: "per_second", unitPriceMicrocredits: 1, logicalModelId: "agnes-video-2.5-flash", logicalCapabilitySpec: { version: 1, capability: "video", options: { videoGenerateAudio: { values: [false] }, videoWatermark: { values: [false] } } }, capabilityConfig: profile }] }],
+            models: [model],
+            videoModels: [model],
+            videoModel: model,
+            model,
+        };
+
+        // 全局默认 true 必须被模型能力收敛。
+        expect(resolveModelGenerationDefaults(config, model, "video", {}, { videoGenerateAudio: "true", videoWatermark: "true" })).toMatchObject({ videoGenerateAudio: "false", videoWatermark: "false" });
+        // 节点上残留的显式 true 同样不能外泄（切换模型未清理的历史值）。
+        expect(resolveModelGenerationDefaults(config, model, "video", { videoGenerateAudio: "true", videoWatermark: "true" }, {})).toMatchObject({ videoGenerateAudio: "false", videoWatermark: "false" });
+    });
+
+    test("创作页等提交路径下发的 provider 请求规格同样收敛同步音频", () => {
+        // 创作页不经过画布能力选择，config 直接来自全局设置；normalizeConfigSnapshot 会把
+        // 缺失的 videoGenerateAudio 补成 "true"。这条路径过去与画布路径是两份实现，
+        // 必须共用同一个收敛规则，否则同一个模型在创作页仍会被后端拒绝。
+        const model = "platform::silent-video";
+        const profile = defaultModelCapabilityConfig(undefined, "silent-video");
+        profile.video!.generateAudio = { supported: false, default: false };
+        profile.video!.watermark = { supported: false, default: false };
+        const config: AiConfig = {
+            ...defaultConfig,
+            videoGenerateAudio: "true",
+            videoWatermark: "true",
+            channels: [{
+                id: "platform",
+                name: "平台模型",
+                baseUrl: "/api",
+                apiKey: "system",
+                apiFormat: "openai",
+                scope: "system",
+                models: ["silent-video"],
+                modelCosts: [{
+                    model: "silent-video",
+                    capability: "video",
+                    billingMode: "per_second",
+                    unitPriceMicrocredits: 1,
+                    logicalModelId: "silent-video",
+                    logicalCapabilitySpec: {
+                        version: 1,
+                        capability: "video",
+                        options: {
+                            videoGenerateAudio: { values: [false] },
+                            videoWatermark: { values: [false] },
+                        },
+                    },
+                    capabilityConfig: profile,
+                }],
+            }],
+            models: [model],
+            videoModels: [model],
+            videoModel: model,
+            model,
+        };
+
+        expect(backendProviderConfig(config, "video")).toMatchObject({ videoGenerateAudio: "false", videoWatermark: "false" });
+
+        // 模型声明支持时不能被误关，否则会把可用的声音能力一起砍掉。
+        profile.video!.generateAudio = { supported: true, default: true };
+        expect(backendProviderConfig(config, "video")).toMatchObject({ videoGenerateAudio: "true" });
+    });
+
+    test("逻辑模型的 config 与 capabilityOptions 必须给出同一份收敛结果", async () => {
+        // 逻辑模型路径把 capabilityOptions 单独算一遍再送去路由匹配。如果它读未收敛的
+        // config，两份规格就会分叉（config 说 false、路由说 true），后端仍会拒绝整单。
+        const model = "platform::silent-video";
+        const profile = defaultModelCapabilityConfig(undefined, "silent-video");
+        profile.video!.generateAudio = { supported: false, default: false };
+        profile.video!.watermark = { supported: false, default: false };
+        const config: AiConfig = {
+            ...defaultConfig,
+            videoGenerateAudio: "true",
+            videoWatermark: "true",
+            channels: [{
+                id: "platform",
+                name: "平台模型",
+                baseUrl: "/api",
+                apiKey: "system",
+                apiFormat: "openai",
+                scope: "system",
+                models: ["silent-video"],
+                modelCosts: [{
+                    model: "silent-video",
+                    capability: "video",
+                    billingMode: "per_second",
+                    unitPriceMicrocredits: 1,
+                    logicalModelId: "silent-video",
+                    logicalCapabilitySpec: {
+                        version: 1,
+                        capability: "video",
+                        options: {
+                            videoGenerateAudio: { values: [false] },
+                            videoWatermark: { values: [false] },
+                        },
+                    },
+                    capabilityConfig: profile,
+                }],
+            }],
+            models: [model],
+            videoModels: [model],
+            videoModel: model,
+            model,
+        };
+
+        const input = await prepareBackendGenerationTask({
+            mode: "video",
+            prompt: "夜间城市空镜",
+            config,
+            referenceImages: [],
+            referenceVideos: [],
+            referenceAudios: [],
+        });
+
+        const payload = input.input as { config: { videoGenerateAudio: string }; capabilityOptions?: { videoGenerateAudio?: boolean } };
+        expect(payload.config.videoGenerateAudio).toBe("false");
+        expect(payload.capabilityOptions?.videoGenerateAudio).toBe(false);
+    });
 
     test("渠道视频能力配置优先于旧的全局 6 秒和 1:1 配置", () => {
         const model = "autodl-channel::MiniMax H3";

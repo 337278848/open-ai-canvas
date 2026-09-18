@@ -1,6 +1,9 @@
 package app
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestProviderFailureDetailsReadsTopLevelModerationError(t *testing.T) {
 	code, message := providerFailureDetails(map[string]any{
@@ -57,5 +60,41 @@ func TestProviderPayloadBusinessFailureRecognizesStringErrorCode(t *testing.T) {
 func TestProviderPayloadBusinessFailureAcceptsStringSuccessCode(t *testing.T) {
 	if code, message, failed := providerPayloadBusinessFailure(map[string]any{"code": "Success", "data": map[string]any{"task_id": "task-1"}}); failed {
 		t.Fatalf("success payload was marked failed: (%q, %q)", code, message)
+	}
+}
+
+func TestProviderStreamBusinessFailureDetectsSSEErrorFrame(t *testing.T) {
+	// 复刻线上响应：HTTP 200，正文先给 message_start 再给 error 帧。
+	// 不识别 error 帧就会把这次调用记成成功，任务失败原因在调用日志里消失，
+	// 费用也随之卡在"待核对"。
+	stream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"resp-test","role":"assistant","content":[]}}` + "\n\n" +
+		"event: error\n" +
+		`data: {"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"api_error"},"type":"error"}` + "\n\n"
+	_, message, failed := providerResponseBusinessFailure([]byte(stream))
+	if !failed {
+		t.Fatal("SSE error frame was not recognized as a business failure")
+	}
+	if !strings.Contains(message, "overloaded") {
+		t.Fatalf("providerResponseBusinessFailure() message = %q, want upstream reason", message)
+	}
+}
+
+func TestProviderStreamBusinessFailureIgnoresHealthyStream(t *testing.T) {
+	stream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"resp-test"}}` + "\n\n" +
+		"event: content_block_delta\n" +
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}` + "\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	if code, message, failed := providerResponseBusinessFailure([]byte(stream)); failed {
+		t.Fatalf("healthy stream marked failed: code=%q message=%q", code, message)
+	}
+}
+
+func TestProviderStreamBusinessFailureIgnoresPlainJSONError(t *testing.T) {
+	// 非流式 JSON 走原有分支，不能因为新增 SSE 解析而改变判定。
+	code, message, failed := providerResponseBusinessFailure([]byte(`{"error":{"code":"invalid_request","message":"invalid size"}}`))
+	if !failed || code != "invalid_request" || message != "invalid size" {
+		t.Fatalf("response business failure = (%q, %q, %v)", code, message, failed)
 	}
 }

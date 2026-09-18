@@ -175,7 +175,8 @@ describe("Agnes Video 2.5 request contract", () => {
         await expect(createAgnesVideoTask(providerDeps(flashConfig).deps, flashConfig, "agnes::agnes-video-2.5-flash", "test", [], [], [])).rejects.toThrow("仅支持 720P");
 
         const config = resolveModelRequestConfig(configForAgnes(), "agnes::agnes-video-2.5");
-        await expect(createAgnesVideoTask(providerDeps(config).deps, config, "agnes::agnes-video-2.5", "test", [{ id: "image-1", name: "local.png", type: "image/png", dataUrl: "data:image/png;base64,AAAA" }], [], [])).rejects.toThrow("需要公网 URL");
+        // 仅本地编码的素材无法交给上游；上传到服务器资源库后由后端切换公网地址。
+        await expect(createAgnesVideoTask(providerDeps(config).deps, config, "agnes::agnes-video-2.5", "test", [{ id: "image-1", name: "local.png", type: "image/png", dataUrl: "data:image/png;base64,AAAA" }], [], [])).rejects.toThrow("必须先上传到服务器资源库");
     });
 
     test("publishes Agnes-specific capability limits", () => {

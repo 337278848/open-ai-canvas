@@ -41,10 +41,14 @@ type Resource struct {
 	PlaybackObjectKey string `json:"playbackObjectKey"`
 	PlaybackError     string `json:"playbackError" gorm:"type:text"`
 	// UploadKey 是客户端逻辑上传身份的摘要；NULL 表示不参与幂等约束。
-	UploadKey *string   `json:"-" gorm:"size:64;uniqueIndex:idx_resources_user_upload_key,priority:2"`
-	Error     string    `json:"error"`
-	CreatedAt time.Time `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	UploadKey *string `json:"-" gorm:"size:64;uniqueIndex:idx_resources_user_upload_key,priority:2"`
+	// RelayURL 是本地存储在缺少自备公网地址时，经第三方临时图床换取的公网参考地址。
+	// 该地址有固定存活期，只用于上游模型读取，不参与浏览器交付，也不能替代资源本体。
+	RelayURL       string     `json:"-" gorm:"size:512"`
+	RelayExpiresAt *time.Time `json:"-"`
+	Error          string     `json:"error"`
+	CreatedAt      time.Time  `json:"createdAt" gorm:"index:idx_resources_user_created,priority:2"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 }
 
 // ResourceDeletionJob is the durable handoff between database deletion and

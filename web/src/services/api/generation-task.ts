@@ -390,6 +390,10 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
     const requestConfig = resolveModelRequestConfig(config, config.model);
     const workflow = resolveGenerationWorkflowExecution(config, mode);
     if (workflow) return workflowProviderConfig(config, requestConfig, workflow);
+    // 同步音频/水印是模型的硬能力，不是可继承的偏好。模型声明不支持时必须强制关掉，
+    // 否则全局默认值或节点残留值会一路送到后端 admission，被以
+    // 「参数 同步音频超出支持范围」拒绝整单。
+    const videoBoolean = gatedVideoBooleanOptions(config, mode);
     const generationOptions = {
         size: config.size,
         quality: omittedImageQuality(config.quality),
@@ -397,8 +401,8 @@ export function backendProviderConfig(config: AiConfig, mode: BackendGenerationM
         count: config.count,
         videoSeconds: config.videoSeconds,
         vquality: config.vquality,
-        videoGenerateAudio: config.videoGenerateAudio,
-        videoWatermark: config.videoWatermark,
+        videoGenerateAudio: videoBoolean.videoGenerateAudio,
+        videoWatermark: videoBoolean.videoWatermark,
         videoArkPrivateAssetUpload: config.videoArkPrivateAssetUpload,
         audioVoice: config.audioVoice,
         audioFormat: config.audioFormat,
@@ -472,10 +476,13 @@ function workflowPublicExecution(workflow: GenerationWorkflowExecution) {
 function logicalCapabilityOptions(config: AiConfig, mode: BackendGenerationMode) {
     const channel = resolveModelChannel(config, config.model);
     const spec = channel.modelCosts?.find((item) => item.model === modelOptionName(config.model))?.logicalCapabilitySpec;
+    // 与 backendProviderConfig 共用同一条收敛规则：能力匹配和真实请求必须看到同一份规格，
+    // 否则模型声明不支持同步音频时，这里仍会把全局 true 送进路由并被判为超出支持范围。
+    const videoBoolean = gatedVideoBooleanOptions(config, mode);
     const candidates: Record<string, unknown> = mode === "image"
         ? { size: config.size, quality: omittedImageQuality(config.quality), transparentBackground: config.transparentBackground === "true", count: Number(config.count) }
         : mode === "video"
-            ? { size: config.size, videoSeconds: Number(config.videoSeconds), vquality: config.vquality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" }
+            ? { size: config.size, videoSeconds: Number(config.videoSeconds), vquality: config.vquality, videoGenerateAudio: videoBoolean.videoGenerateAudio === "true", videoWatermark: videoBoolean.videoWatermark === "true" }
             : mode === "audio"
                 ? { audioVoice: config.audioVoice, audioFormat: config.audioFormat, audioSpeed: Number(config.audioSpeed) }
                 : {};
@@ -488,6 +495,22 @@ function logicalCapabilityOptions(config: AiConfig, mode: BackendGenerationMode)
 function omittedImageQuality(value: string | undefined) {
     const normalized = String(value || "").trim().toLowerCase();
     return normalized === "auto" || normalized === "any" ? undefined : value;
+}
+
+// 视频布尔能力（同步音频/水印）必须以模型声明为准。请求规格是路由、校验和计费共用的
+// 唯一事实来源，不能把模型未声明支持的偏好值继续下发，否则后端 admission 会拒绝整单。
+function gatedVideoBooleanOptions(config: AiConfig, mode: BackendGenerationMode): { videoGenerateAudio: string; videoWatermark: string } {
+    const requested = {
+        videoGenerateAudio: config.videoGenerateAudio,
+        videoWatermark: config.videoWatermark,
+    };
+    if (mode !== "video") return requested;
+    const profile = modelCapabilityConfigFor(config, config.model).video;
+    if (!profile) return requested;
+    return {
+        videoGenerateAudio: profile.generateAudio?.supported ? requested.videoGenerateAudio : "false",
+        videoWatermark: profile.watermark?.supported ? requested.videoWatermark : "false",
+    };
 }
 
 export function parseBackendGenerationResult(task: GenerationTask): BackendGenerationResult {

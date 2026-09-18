@@ -218,6 +218,8 @@ type (
 	PublicLinuxDOSetting                   = app.PublicLinuxDOSetting
 	PublicLogicalModel                     = app.PublicLogicalModel
 	PublicLogicalModelPriceTier            = app.PublicLogicalModelPriceTier
+	PublicUpstreamMediaRelaySetting        = app.PublicUpstreamMediaRelaySetting
+	UpstreamMediaRelaySettingRequest       = app.UpstreamMediaRelaySettingRequest
 	PublicModelChannel                     = app.PublicModelChannel
 	PublicOSSSetting                       = app.PublicOSSSetting
 	PublicRegistrationSetting              = app.PublicRegistrationSetting

@@ -6,11 +6,12 @@ import (
 	"infinite-canvas/backend/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func (r *Repository) UserIdentity(provider string, subject string) (*model.UserIdentity, error) {
 	var identity model.UserIdentity
-	if err := r.db.First(&identity, "provider = ? AND subject = ?", provider, subject).Error; err != nil {
+	if err := r.db.Session(&gorm.Session{Logger: r.db.Logger.LogMode(logger.Silent)}).First(&identity, "provider = ? AND subject = ?", provider, subject).Error; err != nil {
 		return nil, err
 	}
 	return &identity, nil
@@ -18,7 +19,7 @@ func (r *Repository) UserIdentity(provider string, subject string) (*model.UserI
 
 func (r *Repository) UserIdentityForUser(userID string, provider string) (*model.UserIdentity, error) {
 	var identity model.UserIdentity
-	if err := r.db.First(&identity, "user_id = ? AND provider = ?", userID, provider).Error; err != nil {
+	if err := r.db.Session(&gorm.Session{Logger: r.db.Logger.LogMode(logger.Silent)}).First(&identity, "user_id = ? AND provider = ?", userID, provider).Error; err != nil {
 		return nil, err
 	}
 	return &identity, nil

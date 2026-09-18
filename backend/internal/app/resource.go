@@ -66,12 +66,14 @@ func (s *Service) Resource(userID string, id string) (*model.Resource, error) {
 }
 
 // DirectResourceURL 先校验资源归属，再按实际存储位置签发短时下载地址。
+// 该地址的用途是交给上游模型访问，因此在本地存储且部署没有自备公网地址时，
+// 与 provider 链路一致地优先换取图床中继地址，浏览器侧的视频渠道同样依赖它。
 func (s *Service) DirectResourceURL(userID string, id string) (string, error) {
 	resource, err := s.repo.ResourceForUser(userID, id)
 	if err != nil {
 		return "", err
 	}
-	return s.directResourceURL(resource, time.Now().Add(directResourceURLTTL))
+	return s.upstreamProviderMediaURL(userID, resource, time.Now().Add(directResourceURLTTL))
 }
 
 func (s *Service) directResourceURL(resource *model.Resource, expiresAt time.Time) (string, error) {
@@ -229,15 +231,27 @@ func (s *Service) signPublicResource(resourceID string, expires string) (string,
 }
 
 func (s *Service) publicResourceBaseURL() (*url.URL, error) {
-	_, setting, err := s.readOSSSetting()
+	raw, err := s.configuredPublicBaseURL()
 	if err != nil {
 		return nil, err
 	}
-	raw := firstNonEmpty(setting.PublicBaseURL, os.Getenv("CANVAS_PUBLIC_BASE_URL"))
 	if raw == "" {
 		return nil, BadAuthRequest("服务器本地存储尚未配置服务器访问地址，请设置 CANVAS_PUBLIC_BASE_URL 或在存储设置中配置公网访问地址（或改用 OSS 存储）")
 	}
 	return validatePublicResourceBaseURL(raw)
+}
+
+// configuredPublicBaseURL 只读取部署自备的服务器访问地址，不做 DNS 与协议校验。
+// 上游素材是否需要图床中继只取决于「有没有配置」，因此这条判定不能依赖真实出网解析。
+func (s *Service) configuredPublicBaseURL() (string, error) {
+	if raw := strings.TrimSpace(s.publicBaseURLOverride); raw != "" {
+		return raw, nil
+	}
+	_, setting, err := s.readOSSSetting()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(firstNonEmpty(setting.PublicBaseURL, os.Getenv("CANVAS_PUBLIC_BASE_URL"))), nil
 }
 
 func validatePublicResourceBaseURL(raw string) (*url.URL, error) {

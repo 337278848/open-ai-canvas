@@ -4,11 +4,12 @@ import (
 	"infinite-canvas/backend/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func (r *Repository) AgentProfile(userID, scope, projectID, canvasID string) (*model.AgentProfile, error) {
 	var profile model.AgentProfile
-	if err := r.db.Where("user_id = ? AND scope = ? AND project_id = ? AND canvas_id = ?", userID, scope, projectID, canvasID).First(&profile).Error; err != nil {
+	if err := r.db.Session(&gorm.Session{Logger: r.db.Logger.LogMode(logger.Silent)}).Where("user_id = ? AND scope = ? AND project_id = ? AND canvas_id = ?", userID, scope, projectID, canvasID).First(&profile).Error; err != nil {
 		return nil, err
 	}
 	return &profile, nil
@@ -20,7 +21,7 @@ func (r *Repository) SaveAgentProfile(profile *model.AgentProfile, expectedRevis
 	}
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var current model.AgentProfile
-		err := tx.Where("user_id = ? AND scope = ? AND project_id = ? AND canvas_id = ?", profile.UserID, profile.Scope, profile.ProjectID, profile.CanvasID).First(&current).Error
+		err := tx.Session(&gorm.Session{Logger: tx.Logger.LogMode(logger.Silent)}).Where("user_id = ? AND scope = ? AND project_id = ? AND canvas_id = ?", profile.UserID, profile.Scope, profile.ProjectID, profile.CanvasID).First(&current).Error
 		if err != nil && err != gorm.ErrRecordNotFound {
 			return err
 		}

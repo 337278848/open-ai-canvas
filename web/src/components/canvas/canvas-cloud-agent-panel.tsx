@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { Button, Dropdown, Input } from "antd";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowLeft, Bot, Check, ChevronRight, CircleDot, Clock3, Download, History, LoaderCircle, MessageSquarePlus, Settings2, ShieldCheck, Trash2, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Bot, Check, ChevronRight, CircleDot, Clock3, Download, History, LoaderCircle, MessageSquarePlus, Pencil, RotateCcw, Settings2, ShieldCheck, Trash2, Sparkles, X } from "lucide-react";
 import { saveAs } from "file-saver";
 import { buildAgentDebugExport } from "@/lib/canvas/agent-debug-export";
 import { markdownPlainText } from "@/lib/markdown-plain-text";
@@ -12,6 +12,7 @@ import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { agentErrorPresentation, agentSubmissionErrorTitle } from "@/lib/canvas/agent-error-presentation";
+import { agentTurnParentId, isAgentRunTerminalForUser, recoverableAgentPrompt, withoutFailedTurnErrors } from "@/lib/canvas/agent-turn-recovery";
 import { cancelAgentRun, getAgentCapabilities, getAgentProfile, getAgentRun, createAgentRun, decideAgentApproval, sendAgentMessage, subscribeAgentEvents, updateAgentProfile, type AgentEvent, type AgentPermissionMode, type AgentProfileScope, type AgentProfileView, type AgentReasoningMode, type AgentRun } from "@/services/api/agent";
 import { agentApprovalPresentation } from "@/lib/canvas/agent-approval-presentation";
 import { addSkill, listAddedSkills, listSkills, type Skill, type SkillCategory } from "@/services/api/skills";
@@ -63,6 +64,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
     const [approvalSubmitting, setApprovalSubmitting] = useState(false);
     const [exporting, setExporting] = useState(false);
     const [stopping, setStopping] = useState(false);
+    const [resending, setResending] = useState(false);
     const [approval, setApproval] = useState<ApprovalState | null>(null);
     const [permissionMode, setPermissionMode] = useState<AgentPermissionMode>("request_approval");
     const [contextScope, setContextScope] = useState<AgentContextKey[]>(["canvas"]);
@@ -71,6 +73,9 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
     const [maxVideoSeconds, setMaxVideoSeconds] = useState("0");
     const [conversations, setConversations] = useState<CloudAgentConversation[]>([]);
     const [activeConversationId, setActiveConversationId] = useState(() => nanoid());
+    // 通话里最后一个真正完成的轮次。连续失败时，重发必须回溯到它，
+    // 而不是沿着失败链逐级继承失败事实。
+    const [lastCleanRunId, setLastCleanRunId] = useState<string | undefined>(undefined);
     const [historyHydrated, setHistoryHydrated] = useState(false);
     const [pendingHydrated, setPendingHydrated] = useState(false);
     const panelLayout = useAgentPanelLayout();
@@ -94,6 +99,20 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
     const currentScope = useRef(conversationScope);
     currentScope.current = conversationScope;
     const running = Boolean(run?.cleanupPending) || run?.status === "running" || run?.status === "queued" || run?.status === "waiting_approval";
+    // 失败/取消轮次不是干净的上下文父节点：服务端会把失败轮的提示词和失败
+    // 摘要一起拼进下一轮历史。重发时挂回失败轮的父轮，让对话链保持干净。
+    const runTerminal = isAgentRunTerminalForUser(run);
+    const nextTurnParentId = agentTurnParentId(run, lastCleanRunId);
+    const failedTurnPrompt = useMemo(() => runTerminal ? recoverableAgentPrompt(messages, prompt) : "", [messages, prompt, runTerminal]);
+    // running 也要排除：终态但还在清理时，提交会被 sendPrompt 直接挡回，
+    // 按钮保持可用只会让用户以为点击没生效。
+    const canRecoverFailedTurn = runTerminal && !busy && !running && !resending && Boolean(failedTurnPrompt);
+
+    // 只有真正完成的轮次可以作为干净父轮。失败/取消不更新它，
+    // 这样连续失败时回溯目标始终停在最后一次成功的位置。
+    useEffect(() => {
+        if (run?.id && run.status === "completed") setLastCleanRunId(run.id);
+    }, [run?.id, run?.status]);
     const selectedModel = config.textModel || config.model || "";
     const reasoningSupported = Boolean(modelCapabilityConfigFor(config, selectedModel).text?.thinking);
     useEffect(() => { if (!reasoningSupported && reasoningMode !== "off") setReasoningMode("off"); }, [reasoningSupported, reasoningMode]);
@@ -223,6 +242,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
         setConversations([]);
         setRun(null);
         setMessages([]);
+        setLastCleanRunId(undefined);
         setApproval(null);
         setApprovalSubmitting(false);
         approvalRequestRef.current = null;
@@ -238,6 +258,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                     setRun(current.run);
                     setPermissionMode(current.permissionMode);
                     setSelectedSkillIds(current.skillIds || []);
+                    setLastCleanRunId(current.lastCleanRunId);
                     if (current.model) setModel(current.model);
                     const pending = await loadCloudAgentPendingSubmission(canvasId, current.id);
                     if (!active) return;
@@ -271,6 +292,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                 title: cloudAgentConversationTitle(messages),
                 messages,
                 run,
+                lastCleanRunId: lastCleanRunId || existing?.lastCleanRunId,
                 model: selectedModel || undefined,
                 permissionMode,
                 skillIds: selectedSkillIds,
@@ -279,7 +301,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
             };
             return [next, ...current.filter((conversation) => conversation.id !== activeConversationId)];
         });
-    }, [activeConversationId, historyHydrated, messages, permissionMode, run, selectedModel, selectedSkillIds]);
+    }, [activeConversationId, historyHydrated, lastCleanRunId, messages, permissionMode, run, selectedModel, selectedSkillIds]);
 
     useEffect(() => {
         if (!historyHydrated) return;
@@ -327,8 +349,12 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
         return () => window.removeEventListener("online", reconnect);
     }, [run?.id, connectionStatus]);
 
-    const submit = async () => {
-        const value = prompt.trim();
+    // 发送被抽成“显式提示词”版本：失败轮次的原样重发与取回修改都复用同一条
+    // 幂等提交链路，避免复制出第二套会绕过待确认记录的发送逻辑。
+    // baseMessages 让重发路径可以在"已清理掉上一轮失败气泡"的消息序列上追加，
+    // 而不是复用闭包里那份仍带着旧错误的时间线。默认值就是当前渲染的快照。
+    const sendPrompt = async (rawValue: string, baseMessages: CloudAgentChatMessage[] = messages) => {
+        const value = rawValue.trim();
         if (!value || busy || running || (run && connectionStatus !== "connected") || submissionRequestRef.current || !historyHydrated || !pendingHydrated || currentScope.current !== conversationScope) return;
         const scope = conversationScope;
         submissionRequestRef.current = true;
@@ -336,6 +362,9 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
         let accepted = false;
         try {
             const pending = pendingSubmission.current;
+            // 已存在的待确认记录拥有自己的幂等身份与父轮；重算会制造 409。
+            // 只有全新提交才使用“干净父轮”推导出的 nextTurnParentId。
+            const parentRunId = pending?.parentRunId ?? nextTurnParentId;
             // An ambiguous previous POST owns its body/key until reconciled.
             // Editing model settings or prompt must not silently create a new charge.
             if (pending?.request && pending.request.prompt !== value) throw new Error("上一条请求结果待确认，请先原样重试上一条消息，再发送新要求");
@@ -359,10 +388,10 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                     permissionMode, contextScope,
                     budget: { maxCredits: positiveNumber(maxCredits), maxGenerationTasks: permissionMode === "read_only" ? 0 : Number(maxGenerationTasks), maxVideoSeconds: permissionMode === "read_only" ? 0 : Number(maxVideoSeconds) },
                 };
-                const fingerprint = JSON.stringify({ scope, parent: run?.id, input });
+                const fingerprint = JSON.stringify({ scope, parent: parentRunId, input });
                 if (pending && pending.fingerprint !== fingerprint) throw new Error("上一条请求尚未确认，请恢复原消息与设置后核对，不能覆盖原幂等记录");
                 const key = pending?.key || crypto.randomUUID();
-                const next = { fingerprint, key, request: { ...input, idempotencyKey: key }, parentRunId: run?.id, messageId: `user-${key}` };
+                const next = { fingerprint, key, request: { ...input, idempotencyKey: key }, parentRunId, messageId: `user-${key}` };
                 // Persist before sending. A failed local save must not submit a request
                 // whose recovery identity will disappear on reload.
                 await saveCloudAgentPendingSubmission(canvasId, activeConversationId, next);
@@ -371,13 +400,14 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
             }
             const submission = pendingSubmission.current!;
             const request = submission.request!;
-            const nextMessages = appendUniqueMessage(messages, { id: submission.messageId || `user-${submission.key}`, role: "user", text: request.prompt });
+            const nextMessages = appendUniqueMessage(baseMessages, { id: submission.messageId || `user-${submission.key}`, role: "user", text: request.prompt });
             const now = new Date().toISOString();
             const existing = conversations.find((item) => item.id === activeConversationId);
             // Persist a discoverable conversation before POST as well as its key;
             // otherwise a reload of a brand-new chat can orphan the pending record.
             await saveCloudAgentConversations(canvasId, activeConversationId, [{
                 id: activeConversationId, title: cloudAgentConversationTitle(nextMessages), messages: nextMessages, run,
+                lastCleanRunId,
                 model: selectedModel || undefined, permissionMode, skillIds: selectedSkillIds,
                 createdAt: existing?.createdAt || now, updatedAt: now,
             }, ...conversations.filter((item) => item.id !== activeConversationId)]);
@@ -410,6 +440,34 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
             submissionRequestRef.current = false;
             if (currentScope.current === scope) setBusy(false);
         }
+    };
+
+    const submit = () => sendPrompt(prompt);
+
+    // 失败轮次的两种补救都复用 sendPrompt：不新增第二条提交链路，也就不会
+    // 绕过待确认记录或幂等键。原样重发把失败轮当作已丢弃的一轮；
+    // 取回修改则把原提示词放回输入框，并把失败轮从“当前父轮”位置上摘掉。
+    const resendFailedTurn = async () => {
+        const value = failedTurnPrompt;
+        if (!value || !canRecoverFailedTurn) return;
+        setResending(true);
+        try {
+            // 清掉失败轮留下的运行级报错；技能库、画布同步等非运行级报错保留，
+            // 否则重发会顺手抹掉与这一轮无关、用户还需要处理的问题。
+            const cleaned = withoutFailedTurnErrors(messages, run?.id);
+            setMessages(cleaned);
+            await sendPrompt(value, cleaned);
+        } finally {
+            setResending(false);
+        }
+    };
+
+    const editFailedTurn = () => {
+        if (!canRecoverFailedTurn) return;
+        // 只把原提示词放回输入框即可：失败轮仍在时间线上可回看，而
+        // nextTurnParentId 已经指向失败轮之前那一轮，下一次发送天然不会把
+        // 失败记录带进模型上下文。用户改完再发，就是一次干净的新轮次。
+        setPrompt(failedTurnPrompt);
     };
 
     const stop = async () => {
@@ -499,6 +557,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
         setActiveConversationId(id);
         setRun(null);
         setMessages([]);
+        setLastCleanRunId(undefined);
         setPrompt("");
         setApproval(null);
         lastSeqRef.current = 0;
@@ -515,6 +574,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
         setActiveConversationId(conversation.id);
         setRun(conversation.run);
         setMessages(conversation.messages);
+        setLastCleanRunId(conversation.lastCleanRunId);
         setPermissionMode(conversation.permissionMode);
         setSelectedSkillIds(conversation.skillIds || []);
         setApproval(null);
@@ -669,6 +729,23 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                                         onApprove={() => void submitApproval("approve")}
                                         onReject={() => void submitApproval("reject")}
                                     />
+                                    {runTerminal ? (
+                                        <div data-agent-failed-turn className="mx-3 mb-2 shrink-0 rounded-xl px-3 py-2.5" style={{ background: theme.node.fill, color: theme.node.muted }}>
+                                            <div className="text-xs leading-5">
+                                                {run?.status === "cancelled" ? "本轮已取消。" : "本轮已失败。"}
+                                                下一轮会从失败之前那一轮继续，失败记录不会带进模型上下文。
+                                            </div>
+                                            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                                                <Button size="small" icon={resending ? <LoaderCircle className="size-3.5 animate-spin" /> : <RotateCcw className="size-3.5" />} disabled={!canRecoverFailedTurn} onClick={() => void resendFailedTurn()}>
+                                                    {resending ? "重新发送中" : "原样重发"}
+                                                </Button>
+                                                <Button size="small" icon={<Pencil className="size-3.5" />} disabled={!canRecoverFailedTurn} onClick={editFailedTurn}>
+                                                    取回修改
+                                                </Button>
+                                                {!failedTurnPrompt ? <span className="text-[var(--fs-label)]">未找到可重发的提示词，请直接输入新要求</span> : null}
+                                            </div>
+                                        </div>
+                                    ) : null}
                                     <AgentChatComposer
                                         prompt={prompt}
                                         disabled={busy || running || Boolean(run && connectionStatus !== "connected") || !historyHydrated || !pendingHydrated}

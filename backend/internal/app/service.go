@@ -69,6 +69,10 @@ type Service struct {
 	prompts                  *prompts.Service
 	auth                     *auth.Service
 	canvas                   *canvas.Service
+	// 可注入的上游素材中继出口：测试替换图床上传与部署公网地址，避免真实网络请求。
+	relayUploadOverride   func(name string, fileName string, mimeType string, data []byte) (string, error)
+	publicBaseURLOverride string
+	relayProviderOverride map[string]upstreamRelayProviderSpec
 }
 
 const taskWorkerConcurrency = 3

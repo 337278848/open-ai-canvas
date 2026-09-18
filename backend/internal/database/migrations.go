@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 15
+const CurrentSchemaVersion int64 = 16
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -67,6 +67,27 @@ var schemaMigrations = []migration{
 	{version: 15, name: "agent_profiles", checksum: "sha256:agent-profiles-v15-20260914", apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.AgentProfile{})
 	}},
+	{version: 16, name: "resource_upstream_relay", checksum: "sha256:resource-upstream-relay-v16-20260915", apply: migrateSchemaV16},
+}
+
+// migrateSchemaV16 为资源增加上游图床中继字段：本地存储且部署没有自备公网地址时，
+// 参考素材经第三方临时图床换取公网地址，缓存结果有固定存活期，可安全重建。
+func migrateSchemaV16(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.Resource{}) {
+		return fmt.Errorf("资源表不存在")
+	}
+	for _, column := range []struct {
+		field string
+		label string
+	}{{field: "RelayURL", label: "图床中继地址"}, {field: "RelayExpiresAt", label: "图床中继过期时间"}} {
+		if tx.Migrator().HasColumn(&model.Resource{}, column.field) {
+			continue
+		}
+		if err := tx.Migrator().AddColumn(&model.Resource{}, column.field); err != nil {
+			return fmt.Errorf("增加资源%s列：%w", column.label, err)
+		}
+	}
+	return nil
 }
 
 func migrateSchemaV14(tx *gorm.DB) error {

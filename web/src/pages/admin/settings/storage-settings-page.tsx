@@ -1,13 +1,13 @@
 import { App, Button, Form, Input, Skeleton } from "antd";
 import { Select } from "@/components/ui/base/select";
 import { Switch } from "@/components/ui/base/switch";
-import { AlertTriangle, BadgeCheck, Check, Cloud, Database, Globe2, HardDrive, KeyRound, LocateFixed, RefreshCw, RotateCcw, Save, Server, ShieldCheck, Wifi } from "lucide-react";
+import { AlertTriangle, BadgeCheck, Check, Cloud, CloudDownload, Database, Globe2, HardDrive, KeyRound, LocateFixed, RefreshCw, RotateCcw, Save, Server, ShieldCheck, Wifi } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";
 
 import { changesRequireOSSRetest, DEFAULT_OSS_PATH_PREFIX, getS3PresetHints, normalizeOSSConnectionTestInput, S3_PRESET_OPTIONS, type OSSConnectionTestResult, type S3Preset } from "@/lib/oss-settings";
 import { cn } from "@/lib/utils";
-import { getAdminOSSSetting, testAdminOSSConnection, updateAdminOSSSetting, type AdminOSSSetting } from "@/services/api/auth";
+import { getAdminOSSSetting, getAdminUpstreamMediaRelaySetting, testAdminOSSConnection, updateAdminOSSSetting, updateAdminUpstreamMediaRelaySetting, type AdminOSSSetting, type UpstreamMediaRelaySetting } from "@/services/api/auth";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminStatusBadge, configuredSecretText, SettingsSectionCard } from "../components/admin-ui";
@@ -53,6 +53,9 @@ export default function StorageSettingsPage() {
     const [draftMode, setDraftMode] = useState<StorageMode>("local");
     const [loadError, setLoadError] = useState("");
     const [saveError, setSaveError] = useState("");
+    const [relay, setRelay] = useState<UpstreamMediaRelaySetting | null>(null);
+    const [relayLoading, setRelayLoading] = useState(true);
+    const [relaySaving, setRelaySaving] = useState(false);
     const [form] = Form.useForm<OSSFormValues>();
     const requestVersionRef = useRef(0);
     const navigationConfirmOpenRef = useRef(false);
@@ -69,6 +72,16 @@ export default function StorageSettingsPage() {
                 if (requestVersion !== requestVersionRef.current) return;
                 if (!isAdminOSSSetting(result.setting)) throw new Error("服务端返回的存储配置格式无效");
                 setSetting(result.setting);
+                try {
+                    const relayResult = await getAdminUpstreamMediaRelaySetting();
+                    if (requestVersion !== requestVersionRef.current) return;
+                    setRelay(relayResult.setting);
+                } catch {
+                    // 中继配置读取失败不应阻断存储配置主流程；区块自行显示不可用状态。
+                    if (requestVersion === requestVersionRef.current) setRelay(null);
+                } finally {
+                    if (requestVersion === requestVersionRef.current) setRelayLoading(false);
+                }
                 setTestResult(result.setting.testedAt ? { ok: true, testedAt: result.setting.testedAt, testedDigest: result.setting.testedDigest } : null);
                 setTestStale(false);
                 setDirty(false);
@@ -243,6 +256,21 @@ export default function StorageSettingsPage() {
             await save(values);
         } catch {
             // 保存错误已在 save 中就地提示。
+        }
+    };
+
+    const toggleRelay = async () => {
+        if (!relay || relay.envDisabled) return;
+        const next = !relay.enabled;
+        setRelaySaving(true);
+        try {
+            const result = await updateAdminUpstreamMediaRelaySetting({ enabled: next });
+            setRelay(result.setting);
+            message.success(next ? "已启用上游素材中转" : "已关闭上游素材中转");
+        } catch (error) {
+            message.error(error instanceof Error ? error.message : "更新上游素材中转失败");
+        } finally {
+            setRelaySaving(false);
         }
     };
 
@@ -590,6 +618,57 @@ export default function StorageSettingsPage() {
                                 </Form.Item>
                             </div>
                         </Form>
+                    </SettingsSectionCard>
+                </div>
+
+                <div id="admin-storage-upstream-relay" className="admin-settings-anchor">
+                    <SettingsSectionCard
+                        className="admin-storage-section"
+                        icon={<CloudDownload className="size-4" aria-hidden="true" />}
+                        title="3. 上游素材中转"
+                        description="服务器本地存储且未配置公网地址时，参考素材先上传到临时图床，再交给上游模型读取。"
+                        status={
+                            <AdminStatusBadge
+                                label={relayLoading ? "读取中" : relay?.envDisabled ? "已由环境变量关闭" : relay?.enabled ? "已启用" : "已关闭"}
+                                tone={relayLoading ? "neutral" : relay?.envDisabled ? "warning" : relay?.enabled ? "success" : "neutral"}
+                            />
+                        }
+                        footer={
+                            <div className="admin-storage-footer-note">
+                                <AlertTriangle className="size-4" aria-hidden="true" />
+                                <span>临时图床由第三方运营，素材链接在存活期内不可猜但可访问；商用部署建议改用对象存储，或用环境变量 CANVAS_UPSTREAM_MEDIA_RELAY=false 强制关闭。</span>
+                            </div>
+                        }
+                    >
+                        <div className="admin-storage-form-section">
+                            <FormSectionTitle
+                                icon={<CloudDownload className="size-4" />}
+                                title="临时稿通道"
+                                description="仅在本地存储且没有自备公网地址时生效；已配置对象存储或服务器访问地址时，参考素材仍走原有链路。"
+                            />
+                            {relay?.providers?.length ? (
+                                <div className="admin-storage-context-note">
+                                    <ShieldCheck className="size-4" aria-hidden="true" />
+                                    <span>
+                                        图床顺序：{relay.providers.join(" → ")}；存活期 {relay.ttl}，单文件上限 {relay.maxMB}MB。
+                                    </span>
+                                </div>
+                            ) : null}
+                            <div className="flex flex-wrap items-center gap-3">
+                                <Button
+                                    loading={relaySaving}
+                                    disabled={relayLoading || !relay || relay.envDisabled}
+                                    onClick={() => void toggleRelay()}
+                                >
+                                    {relay?.enabled ? "关闭上游素材中转" : "启用上游素材中转"}
+                                </Button>
+                                {relay && !relay.envDisabled ? (
+                                    <span className="text-sm text-foreground/60">
+                                        {formatSettingTime(relay.updatedAt, "使用内置默认值")}
+                                    </span>
+                                ) : null}
+                            </div>
+                        </div>
                     </SettingsSectionCard>
                 </div>
             </div>

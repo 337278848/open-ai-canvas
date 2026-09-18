@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 type AnalyticsFilter struct {
@@ -173,7 +174,7 @@ func (r *Repository) APICallLogTasks(ids []string) ([]model.Task, error) {
 
 func (r *Repository) LatestProviderRequestIDForTask(taskID string) (string, error) {
 	var log model.ApiCallLog
-	err := r.db.Select("provider_request_id").
+	err := r.db.Session(&gorm.Session{Logger: r.db.Logger.LogMode(logger.Silent)}).Select("provider_request_id").
 		Where("task_id = ? AND provider_request_id <> ''", taskID).
 		Order("created_at desc").
 		First(&log).Error

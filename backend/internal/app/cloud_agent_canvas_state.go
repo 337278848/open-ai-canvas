@@ -31,9 +31,16 @@ func cloudAgentCanvasHash(doc map[string]any) string {
 	return creationHash(content)
 }
 
-func cloudAgentCanvasState(repo *repository.Repository, userID string, doc map[string]any, offset int, ids []string, storyboardOffset int) (any, error) {
+func cloudAgentCanvasState(repo *repository.Repository, userID string, doc map[string]any, offset int, ids []string, storyboardOffset int, requestedMaxItems ...int) (any, error) {
 	if offset < 0 || storyboardOffset < 0 || len(ids) > 8 {
 		return nil, BadAuthRequest("画布读取分页参数无效")
+	}
+	maxItems := 40
+	if len(requestedMaxItems) > 0 && requestedMaxItems[0] != 0 {
+		if requestedMaxItems[0] < 1 || requestedMaxItems[0] > 40 {
+			return nil, BadAuthRequest("画布读取分页参数无效")
+		}
+		maxItems = requestedMaxItems[0]
 	}
 	all := creationMaps(doc["nodes"])
 	wanted := map[string]bool{}
@@ -57,7 +64,7 @@ func cloudAgentCanvasState(repo *repository.Repository, userID string, doc map[s
 			if index < offset {
 				continue
 			}
-			if len(nodes) == 40 {
+			if len(nodes) == maxItems {
 				next = index
 				break
 			}

@@ -532,11 +532,31 @@ export function testAdminOSSConnection(input: OSSConnectionTestInput) {
 }
 
 export function getAdminArkPrivateAssetSetting() {
-    return http.get<{ setting: AdminArkPrivateAssetSetting }>("/admin/settings/ark-private-assets");
+	return http.get<{ setting: AdminArkPrivateAssetSetting }>("/admin/settings/ark-private-assets");
 }
 
 export function updateAdminArkPrivateAssetSetting(input: Partial<AdminArkPrivateAssetSetting>) {
     return http.patch<{ setting: AdminArkPrivateAssetSetting }>("/admin/settings/ark-private-assets", input);
+}
+
+export type UpstreamMediaRelaySetting = {
+    enabled: boolean;
+    providers: string[];
+    ttl: string;
+    maxMB: number;
+    envDisabled: boolean;
+    configured: boolean;
+    updatedBy?: string;
+    createdAt?: string;
+    updatedAt?: string;
+};
+
+export function getAdminUpstreamMediaRelaySetting() {
+    return http.get<{ setting: UpstreamMediaRelaySetting }>("/admin/settings/upstream-media-relay");
+}
+
+export function updateAdminUpstreamMediaRelaySetting(input: Partial<UpstreamMediaRelaySetting>) {
+    return http.patch<{ setting: UpstreamMediaRelaySetting }>("/admin/settings/upstream-media-relay", input);
 }
 
 export function getAdminRuntimePolicySetting() {

@@ -783,6 +783,41 @@ func TestProviderPayloadErrorCategoryReportsUnclassifiedBodies(t *testing.T) {
 	}
 }
 
+func TestProviderPayloadErrorCategoryFlagsUpstreamOverloadAsRetryable(t *testing.T) {
+	// 复刻线上正文：上游用 HTTP 200 + SSE error 帧返回"服务器过载"。
+	// 如果不归类，用户会看到"模型服务返回失败，请检查请求内容或渠道配置"，
+	// 误以为是提示词或渠道配置有错，而不是"稍后重试即可"。
+	for _, raw := range []string{
+		`{"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"api_error"}}`,
+		"upstream is overloaded, please try again later",
+		"服务暂时不可用，请稍后重试",
+	} {
+		message, ok := providerPayloadErrorCategory(raw)
+		if !ok || !strings.Contains(message, "过载") {
+			t.Fatalf("providerPayloadErrorCategory(%q) = (%q, %v), want overload category", raw, message, ok)
+		}
+	}
+}
+
+func TestProviderPayloadErrorCategoryIsIdempotent(t *testing.T) {
+	// 任务表里存的是归类后的文案；二次归类必须命中同一类目，
+	// 否则下游会退回"模型任务未成功"这类无法行动的提示。
+	for _, raw := range []string{
+		"上游模型服务暂时过载或不可用，请稍后重试",
+		"模型服务响应超时，请稍后重试",
+		"模型服务额度不足，请检查渠道余额或配额",
+	} {
+		first, ok := providerPayloadErrorCategory(raw)
+		if !ok {
+			t.Fatalf("providerPayloadErrorCategory(%q) found no category", raw)
+		}
+		second, ok := providerPayloadErrorCategory(first)
+		if !ok || second != first {
+			t.Fatalf("providerPayloadErrorCategory(%q) = (%q, %v), want stable %q", raw, second, ok, first)
+		}
+	}
+}
+
 func TestProviderUserFacingErrorMessageClassifiesRejectedRequestBodies(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -2907,5 +2942,65 @@ func TestRunMiniMaxVideoTaskReturnsFailureReason(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "content violates policy") {
 		t.Fatalf("runVideoTask() error = %v", err)
+	}
+}
+
+// 类目顺序是行为的一部分：tool_choice 兼容失败必须继续被识别成
+// "降级 tool_choice 后重试"的信号，参数错误必须优先于瞬时故障措辞。
+// 新增过载类目时若插错位置，这两种语义都会被吞掉。
+func TestProviderPayloadErrorCategoryKeepsPrecedence(t *testing.T) {
+	toolChoice := `{"error":{"message":"Thinking mode does not support this tool_choice","request_id":"secret"}}`
+	message, ok := providerPayloadErrorCategory(toolChoice)
+	if !ok || !strings.Contains(message, "不支持强制工具调用") {
+		t.Fatalf("tool_choice category lost its precedence: (%q, %v)", message, ok)
+	}
+	// 参数错误正文里同时出现瞬时故障措辞时，仍应归为参数错误。
+	if message, ok := providerPayloadErrorCategory("invalid parameter: size; upstream internal error"); !ok || !strings.Contains(message, "拒绝了请求") {
+		t.Fatalf("parameter category lost its precedence: (%q, %v)", message, ok)
+	}
+}
+
+// 复刻线上事故：Claude 协议上游用 HTTP 200 返回 message_start，再在同一个
+// SSE 流里发 error 帧（服务器过载）。修复前这会被当成"没有返回内容的正
+// 常流"，用户只看到笼统的"模型服务返回失败，请检查请求内容或渠道配置"，
+// 任务失败原因也在调用日志里消失。
+func TestStreamingAgentSurfacesUpstreamOverloadFromSSEErrorFrame(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"id":"resp-test","type":"message","role":"assistant","content":[],"model":"gpt-5.6-sol","stop_reason":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+
+event: error
+data: {"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"api_error"},"type":"error"}
+
+`))
+	}))
+	defer server.Close()
+	config := providerConfig{BaseURL: server.URL, APIKey: "test-key", Model: "gpt-5.6-sol", APIFormat: "claude", InterfaceType: string(model.ChannelInterfaceClaudeAPI)}
+	t.Setenv("CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS", "127.0.0.1")
+
+	_, err := postStreamingAgent(context.Background(), config, "/messages", map[string]interface{}{"model": "gpt-5.6-sol"}, "claude-api", nil)
+	if err == nil {
+		t.Fatal("overloaded stream was treated as a successful empty response")
+	}
+	// 用户看到的是可行动的归类原因，而不是笼统的渠道配置提示。
+	if message := providerPayloadErrorMessage(err.Error()); !strings.Contains(message, "过载") {
+		t.Fatalf("user-facing message = %q, want overload category", message)
+	}
+}
+
+// 同一个流经调用日志归类时必须被记为失败，否则费用会卡在"待核对"
+// 且任务中心看不到失败原因。
+func TestRecordedOverloadStreamIsClassifiedAsBusinessFailure(t *testing.T) {
+	stream := "event: message_start\n" +
+		`data: {"type":"message_start","message":{"id":"resp-test","content":[]}}` + "\n\n" +
+		"event: error\n" +
+		`data: {"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"api_error"},"type":"error"}` + "\n\n"
+	_, message, failed := providerResponseBusinessFailure([]byte(stream))
+	if !failed {
+		t.Fatal("recorded overload stream was not classified as a failed call")
+	}
+	if classified, ok := providerPayloadErrorCategory(message); !ok || !strings.Contains(classified, "过载") {
+		t.Fatalf("classified = (%q, %v), want overload category", classified, ok)
 	}
 }

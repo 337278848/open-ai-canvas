@@ -286,12 +286,17 @@ export function resolveModelGenerationDefaults(
             ratio: source("size"),
             resolution: source("vquality"),
         });
+        // 同步音频/水印是模型的硬能力，不是可继承的偏好。模型声明不支持时，
+        // 节点残留值（切换模型未清理）和全局默认值都不能继续外泄到请求里，
+        // 否则后端 admission 会以「参数 同步音频超出支持范围」拒绝整单。
+        const generateAudioSupported = profile.video.generateAudio?.supported === true;
+        const watermarkSupported = profile.video.watermark?.supported === true;
         return {
             videoSeconds: normalized.seconds,
             size: normalized.ratio,
             vquality: normalized.resolution.replace(/p$/i, ""),
-            videoGenerateAudio: source("videoGenerateAudio") ?? String(profile.video.generateAudio.default),
-            videoWatermark: source("videoWatermark") ?? String(profile.video.watermark.default),
+            videoGenerateAudio: generateAudioSupported ? source("videoGenerateAudio") ?? String(profile.video.generateAudio.default) : "false",
+            videoWatermark: watermarkSupported ? source("videoWatermark") ?? String(profile.video.watermark.default) : "false",
         };
     }
 

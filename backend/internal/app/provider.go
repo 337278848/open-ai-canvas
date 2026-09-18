@@ -279,14 +279,37 @@ func providerUserFacingErrorMessage(err error) string {
 	return "连接模型服务失败，请检查渠道地址和网络"
 }
 
+// providerErrorCategories 是 providerPayloadErrorCategory 全部固定类目文案。
+// 归类函数对这些文案必须是幂等的：任务表里已经存了归类结果时，二次归类
+// 必须命中同一类目，而不是因为文案里没有英文关键词退回笼统提示。
+var providerErrorCategories = []string{
+	"输入素材疑似包含真人形象，该模型拒绝生成，请更换为非真人素材或改用其他模型",
+	"请求内容未通过模型服务安全审核，请调整后重试",
+	"模型服务额度不足，请检查渠道余额或配额",
+	"模型不存在或当前渠道未获得模型权限",
+	"上游模型服务暂时过载或不可用，请稍后重试",
+	"模型服务请求过于频繁，请稍后重试",
+	"模型服务响应超时，请稍后重试",
+	"当前模型为思考/推理模式，不支持强制工具调用（tool_choice=required），请改用自动工具选择或更换非思考模式模型",
+	"模型服务拒绝了请求，请检查模型和参数",
+}
+
 // providerPayloadErrorCategory 把上游失败正文归类为固定的用户可见原因。
 // 第二个返回值为 false 表示正文无法归类，调用方应退回到更通用的提示，
 // 不要因为归类失败就把正文本身当作错误信息。
 // 正文可能包含密钥或内部诊断信息，只能参与归类，不得回传用户或写入日志。
+//
+// 归类结果本身也是输入：任务表里往往已经存着上一次归类后的文案，二次归类
+// 必须得到同一结果，否则下游会退回笼统提示。中文类目因此先于关键词规则匹配。
 func providerPayloadErrorCategory(raw string) (string, bool) {
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	if normalized == "" {
 		return "", false
+	}
+	for _, category := range providerErrorCategories {
+		if strings.Contains(strings.TrimSpace(raw), category) {
+			return category, true
+		}
 	}
 	switch {
 	// 真人肖像类目只匹配供应商错误码里的稳定标识，不扫描自然语言。
@@ -304,13 +327,29 @@ func providerPayloadErrorCategory(raw string) (string, bool) {
 	// 推理/思考模式模型通常禁止强制指定工具调用：DeepSeek 思考模式返回
 	// "Thinking mode does not support this tool_choice"，其他 OpenAI 兼容
 	// 供应商措辞类似。归为固定可行动原因，画布智能体据此把首步的
-	// tool_choice=required 降级为 auto 重试一次。排在通用参数类目之前，
-	// 避免这类稳定标识落回笼统的"请检查模型和参数"。
+	// tool_choice=required 降级为 auto 重试一次。必须排在通用参数类目之前，
+	// 否则这类稳定标识会落回笼统的"请检查模型和参数"。
 	case (strings.Contains(normalized, "thinking") || strings.Contains(normalized, "reasoning")) && strings.Contains(normalized, "tool_choice"),
 		strings.Contains(normalized, "tool_choice") && (strings.Contains(normalized, "not support") || strings.Contains(normalized, "unsupported")):
 		return "当前模型为思考/推理模式，不支持强制工具调用（tool_choice=required），请改用自动工具选择或更换非思考模式模型", true
+	// 参数类目排在过载类之前：400/422 的正文里同时出现 "invalid parameter"
+	// 和 "internal error" 这类措辞时，请求本身有错才是可行动的结论，
+	// 不能因为正文碰巧含瞬时故障字样就建议用户"稍后重试"。
 	case strings.Contains(normalized, "invalid"), strings.Contains(normalized, "parameter"), strings.Contains(normalized, "argument"):
 		return "模型服务拒绝了请求，请检查模型和参数", true
+	// 上游“暂时过载/稍后再试”属于可重试的瞬时故障。若不单独归类，它会落回
+	// 笼统的“模型服务返回失败”，让用户误以为提示词或渠道配置有错，也让
+	// 失败轮次失去“可以直接重试”的语义。只匹配明确的瞬时措辞，不扫描
+	// 泛化单词（如 api_error），避免把永久性错误误判成过载。
+	case strings.Contains(normalized, "overloaded"), strings.Contains(normalized, "overload"),
+		strings.Contains(normalized, "try again later"), strings.Contains(normalized, "please retry"), strings.Contains(normalized, "please try again"),
+		strings.Contains(normalized, "temporarily unavailable"), strings.Contains(normalized, "service unavailable"),
+		strings.Contains(normalized, "server error"), strings.Contains(normalized, "internal error"),
+		strings.Contains(normalized, "server is busy"), strings.Contains(normalized, "high load"), strings.Contains(normalized, "capacity"),
+		strings.Contains(normalized, "过载"), strings.Contains(normalized, "繁忙"), strings.Contains(normalized, "暂时不可用"), strings.Contains(normalized, "请稍后重试"):
+		return "上游模型服务暂时过载或不可用，请稍后重试", true
+	case strings.Contains(normalized, "rate limit"), strings.Contains(normalized, "rate_limit"), strings.Contains(normalized, "too many requests"), strings.Contains(normalized, "限流"):
+		return "模型服务请求过于频繁，请稍后重试", true
 	}
 	return "", false
 }
@@ -760,7 +799,9 @@ func (s *Service) hydrateProviderMedia(userID string, media *providerMedia, poli
 	}
 	useObjectURL := policy.requireURL || (policy.preferURL && resourceUsesObjectStorage(resource))
 	if useObjectURL {
-		signedURL, err := s.directResourceURL(resource, time.Now().Add(providerResourceURLTTL))
+		// 上游必须能直连参考素材：本地存储且部署没有自备公网地址时，
+		// upstreamProviderMediaURL 会先换一个临时图床地址，再回退到原有签名链路。
+		signedURL, err := s.upstreamProviderMediaURL(userID, resource, time.Now().Add(providerResourceURLTTL))
 		if err != nil {
 			return fmt.Errorf("生成参考素材地址失败：%w", err)
 		}

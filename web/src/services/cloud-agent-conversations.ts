@@ -18,6 +18,11 @@ export type CloudAgentConversation = {
     title: string;
     messages: CloudAgentConversationMessage[];
     run: AgentRun | null;
+    /**
+     * 该对话最后一个真正完成的轮次。连续失败时下一轮回溯到它，而不是
+     * 沿着失败链一级级继承失败事实，避免整段对话被失败污染。
+     */
+    lastCleanRunId?: string;
     model?: string;
     permissionMode: AgentPermissionMode;
     skillIds?: string[];
