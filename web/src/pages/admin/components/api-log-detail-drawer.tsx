@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { App, Button, Descriptions, Drawer, Skeleton, Tabs, Typography } from "antd";
-import { EmptyState } from "@/components/ui/product/empty-state";
+import { AdminEmpty } from "@/pages/admin/components/admin-ui";
 import { RefreshCw } from "lucide-react";
 
 import { formatCredits } from "@/constant/credits";
@@ -50,7 +50,7 @@ export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: st
 
     return (
         <Drawer title="请求详情" open={Boolean(logId)} onClose={onClose} width="min(1200px, 90vw)" destroyOnHidden rootClassName="admin-drawer">
-            {loading ? <Skeleton active paragraph={{ rows: 12 }} /> : log ? <LogDetail log={log} querying={querying} onQueryProviderTask={queryProviderTask} /> : <EmptyState size="compact" title="没有请求详情" />}
+            {loading ? <Skeleton active paragraph={{ rows: 12 }} /> : log ? <LogDetail log={log} querying={querying} onQueryProviderTask={queryProviderTask} /> : <AdminEmpty size="compact" title="没有请求详情" />}
         </Drawer>
     );
 }
@@ -103,7 +103,8 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
                 <span className="text-foreground/35">未返回</span>
             ),
         ],
-        ["积分计费", billingText(log)],
+        ["销售价格（积分）", billingText(log)],
+        ["成本价格（积分）", log.creditCostMicrocredits !== undefined ? `${formatCredits(log.creditCostMicrocredits)} 积分` : log.creditCostConfigured ? "待核算" : "未配置"],
         ["上游成本", log.costAvailable ? <span className="font-mono tabular-nums">{log.currency || "USD"} {(log.estimatedCostMicros / 1_000_000).toFixed(6)}</span> : <span className="text-foreground/35">未配置成本</span>],
         [
             "错误信息",
@@ -163,7 +164,7 @@ function requestKindText(value: ApiCallLog["requestKind"]) {
 }
 
 function PayloadPanel({ value, empty }: { value?: string; empty: string }) {
-    if (!value) return <EmptyState size="compact" title={empty} />;
+    if (!value) return <AdminEmpty size="compact" title={empty} />;
     return (
         <div className="relative">
             <div className="absolute right-3 top-2 z-10">

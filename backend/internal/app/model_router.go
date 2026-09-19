@@ -634,11 +634,7 @@ func (s *Service) loadRouteCatalog() (*routeCatalogSnapshot, error) {
 			}
 			cached.Routes = append(cached.Routes, cachedLogicalRoute{Route: route, CapabilitySpec: capabilitySpec, ChannelModel: channelModel})
 		}
-		routeSpecs := make([]CapabilitySpec, 0, len(cached.Routes))
-		for _, route := range cached.Routes {
-			routeSpecs = append(routeSpecs, route.CapabilitySpec)
-		}
-		productSpec = capabilitySpecWithRoutePresets(productSpec, routeSpecs)
+		productSpec = capabilitySpecWithRoutePresets(productSpec, enabledLogicalRouteSpecs(cached.Routes))
 		defaults, defaultsErr := decodeLogicalDefaults(graph.Revision.DefaultOptionsJSON, productSpec)
 		if defaultsErr != nil {
 			log.Printf("logical model omitted from route catalog id=%s: invalid defaults: %v", item.ID, defaultsErr)
@@ -761,6 +757,9 @@ func skuSelectorForIntent(intent ModelRequestIntent) map[string]string {
 		}
 		if seconds, err := strconv.Atoi(strings.TrimSpace(fmt.Sprint(intent.Options["videoSeconds"]))); err == nil && seconds > 0 {
 			selector["videoSeconds"] = strconv.Itoa(seconds)
+		}
+		if audio := normalizedScalar(intent.Options["videoGenerateAudio"]); audio == "true" || audio == "false" {
+			selector["videoGenerateAudio"] = audio
 		}
 	case "image":
 		if intent.Inputs["image"] > 0 {
@@ -1204,7 +1203,15 @@ func (s *Service) switchTaskToNextRoute(task *model.Task, attempts []model.Route
 		replacement.Model = logicalModel.Code
 	}
 	previousRouteID := task.RouteID
-	if err := s.repo.SwitchTaskLogicalRoute(task.ID, previousRouteID, selected.Route.ID, string(encoded), task.BillingOrderID, selected.ChannelModel.ChannelID, selected.ChannelModel.ID, replacement); err != nil {
+	var costOrder model.BillingOrder
+	if replacement != nil {
+		costOrder.BillingCostSnapshot = replacement.BillingCostSnapshot
+	} else if task.BillingOrderID != "" {
+		config, _ := nextInput["config"].(map[string]any)
+		capability := selected.ChannelModel.Capability
+		snapshotCreditCost(&costOrder, channelModelPriceTierForIntent(selected.ChannelModel, intent), billingQuantity(capability, config["videoSeconds"]), estimateTaskBillingTokens(nextInput, capability))
+	}
+	if err := s.repo.SwitchTaskLogicalRoute(task.ID, previousRouteID, selected.Route.ID, string(encoded), task.BillingOrderID, selected.ChannelModel.ChannelID, selected.ChannelModel.ID, replacement, costOrder.BillingCostSnapshot); err != nil {
 		if errors.Is(err, repository.ErrInsufficientCredits) {
 			return nil, BadAuthRequest("模型服务价格发生变化，当前积分余额不足")
 		}

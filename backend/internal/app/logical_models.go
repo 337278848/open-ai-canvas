@@ -165,11 +165,7 @@ func (s *Service) PublicLogicalModels(intent *ModelRequestIntent) ([]PublicLogic
 
 func publicLogicalModel(cached cachedLogicalModel, available bool) PublicLogicalModel {
 	item := cached.Model
-	routeSpecs := make([]CapabilitySpec, 0, len(cached.Routes))
-	for _, route := range cached.Routes {
-		routeSpecs = append(routeSpecs, route.CapabilitySpec)
-	}
-	productSpec := capabilitySpecWithRoutePresets(cached.ProductSpec, routeSpecs)
+	productSpec := capabilitySpecWithRoutePresets(cached.ProductSpec, enabledLogicalRouteSpecs(cached.Routes))
 	profiles := make([]CapabilitySpec, 0, len(cached.Routes))
 	seen := make(map[string]bool, len(cached.Routes))
 	for _, route := range cached.Routes {
@@ -253,9 +249,22 @@ func normalizeLegacyModelIDs(values []string) []string {
 	return result
 }
 
+func enabledLogicalRouteSpecs(routes []cachedLogicalRoute) []CapabilitySpec {
+	specs := make([]CapabilitySpec, 0, len(routes))
+	for _, route := range routes {
+		if !route.Route.Enabled || route.Route.Weight <= 0 {
+			continue
+		}
+		specs = append(specs, route.CapabilitySpec)
+	}
+	return specs
+}
+
 // capabilitySpecWithRoutePresets repairs old front-model snapshots that stored
 // only `*` for a custom size. The wildcard remains for matching custom values,
 // while route presets are restored for admin and creator-side selectors.
+// Callers must pass only currently enabled routes; disabled or zero-weight
+// routes would otherwise advertise size tiers the public catalog cannot route.
 func capabilitySpecWithRoutePresets(spec CapabilitySpec, routes []CapabilitySpec) CapabilitySpec {
 	result := spec
 	result.Options = make(map[string]OptionConstraint, len(spec.Options))
@@ -280,23 +289,21 @@ func capabilitySpecWithRoutePresets(spec CapabilitySpec, routes []CapabilitySpec
 		}
 		result.Options[name] = OptionConstraint{Values: values}
 	}
-	if result.ImageSize == nil || result.ImageSize.Parameter == "" || len(result.ImageSize.Presets) == 0 {
-		if merged := mergeCapabilityImageSize(append([]CapabilitySpec{spec}, routes...)); merged != nil {
-			if result.ImageSize == nil {
-				result.ImageSize = merged
-			} else {
-				restored := *result.ImageSize
-				if restored.Parameter == "" {
-					restored.Parameter = merged.Parameter
-				}
-				if !restored.AllowCustom {
-					restored.AllowCustom = merged.AllowCustom
-				}
-				if len(restored.Presets) == 0 {
-					restored.Presets = merged.Presets
-				}
-				result.ImageSize = &restored
+	// 前台规格里的预设可能只来自单条线路的快照（后续新增的供应线路还没同步进来），
+	// 因此不管自身是否已有预设都要与各线路取并集，否则多档会被压成单档。
+	if merged := mergeCapabilityImageSize(append([]CapabilitySpec{spec}, routes...)); merged != nil {
+		if result.ImageSize == nil {
+			result.ImageSize = merged
+		} else {
+			restored := *result.ImageSize
+			if restored.Parameter == "" {
+				restored.Parameter = merged.Parameter
 			}
+			if !restored.AllowCustom {
+				restored.AllowCustom = merged.AllowCustom
+			}
+			restored.Presets = merged.Presets
+			result.ImageSize = &restored
 		}
 	}
 	return result
@@ -657,6 +664,11 @@ func (s *Service) logicalModelBundle(actor *model.User, id string, req LogicalMo
 	if pricePolicy == "unified" && billingMode == "per_second" && capability != "video" {
 		return nil, nil, nil, false, BadAuthRequest("只有视频前台模型可以按秒计费")
 	}
+	if pricePolicy == "unified" && billingMode == "token" {
+		if err := validateTokenPrices(capability, req.InputPriceMicrocredits, req.OutputPriceMicrocredits, req.CachedPriceMicrocredits); err != nil {
+			return nil, nil, nil, false, err
+		}
+	}
 	creating := strings.TrimSpace(id) == ""
 	var item *model.LogicalModel
 	if creating {
@@ -749,7 +761,7 @@ func (s *Service) logicalModelBundle(actor *model.User, id string, req LogicalMo
 	}
 	if pricePolicy == "unified" && billingMode == "token" {
 		if !supportsLogicalModelTokenBilling(capability, enabledRouteProtocols) {
-			return nil, nil, nil, false, BadAuthRequest("Token 计费仅支持文本前台模型，或全部启用供应线路均为火山方舟视频协议的视频前台模型")
+			return nil, nil, nil, false, BadAuthRequest("Token 计费仅支持文本和视频前台模型")
 		}
 	}
 	// 停用必须始终可执行，便于管理员立即阻止失效线路继续对外服务；重新启用时再强校验结构能力和计费可用性。

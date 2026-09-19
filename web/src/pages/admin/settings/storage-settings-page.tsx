@@ -1,6 +1,5 @@
 import { App, Button, Form, Input, Skeleton } from "antd";
-import { Select } from "@/components/ui/base/select";
-import { Switch } from "@/components/ui/base/switch";
+import { Select, Switch } from "@/pages/admin/ui/controls";
 import { AlertTriangle, BadgeCheck, Check, Cloud, CloudDownload, Database, Globe2, HardDrive, KeyRound, LocateFixed, RefreshCw, RotateCcw, Save, Server, ShieldCheck, Wifi } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useBlocker } from "react-router";

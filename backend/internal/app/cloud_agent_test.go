@@ -564,20 +564,13 @@ func TestCloudAgentToolLoopPersistsApprovalAndAppliesCanvasWrite(t *testing.T) {
 func TestCloudAgentNodeTypesExposeExecutableAllowList(t *testing.T) {
 	result := cloudAgentNodeTypes()
 	nodes, ok := result["nodes"].([]map[string]any)
-	if !ok || len(nodes) < 7 {
+	if !ok || len(nodes) != 8 {
 		t.Fatalf("unexpected node registry: %#v", result)
 	}
-	foundBatchTable := false
 	for _, node := range nodes {
 		if node["type"] == "panorama" {
 			t.Fatal("UI-only node must not be exposed")
 		}
-		if node["type"] == "batch-table" {
-			foundBatchTable = true
-		}
-	}
-	if !foundBatchTable {
-		t.Fatal("batch-table node must be exposed to the Agent")
 	}
 }
 

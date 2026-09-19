@@ -68,6 +68,7 @@ export type ToolbarHandlers = {
     onCreateReferenceGroup: () => void;
     onBatchConnect: () => void;
     onMergeVideos: () => void;
+    onSendSelectionToAgent: () => void;
     // 节点悬停工具栏——节点操作（均接收当前节点）
     onNodeInfo: (node: CanvasNodeData) => void;
     onNodeDelete: (node: CanvasNodeData) => void;
@@ -82,6 +83,8 @@ export type ToolbarHandlers = {
     onNodeDownload: (node: CanvasNodeData) => void;
     onNodeSaveAsset: (node: CanvasNodeData) => void;
     onNodeMaskEdit: (node: CanvasNodeData) => void;
+    onNodeImageEdit: (node: CanvasNodeData) => void;
+    onNodeRemoveBackground: (node: CanvasNodeData) => void;
     onNodeEmotion: (node: CanvasNodeData) => void;
     onNodePortraitTexture: (node: CanvasNodeData) => void;
     onNodeCrop: (node: CanvasNodeData) => void;

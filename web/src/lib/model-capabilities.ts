@@ -216,7 +216,7 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         image.responseFormat = { supported: true };
         image.outputFormat = { supported: false };
         image.maxOutputs = 1;
-    } else if (protocol === "volcengine-ark-image") {
+    } else if (protocol === "volcengine-ark-image" || protocol === "volcengine-ark-agent-plan-image") {
         image.references.maskSupported = false;
         image.quality.supported = false;
         image.transparentBackground.supported = false;
@@ -244,6 +244,26 @@ export function defaultImageCapabilityConfig(protocol?: ModelProtocol, model = "
         image.responseFormat = { supported: false };
         image.outputFormat = { supported: false };
         image.maxOutputs = 4;
+    }
+    if (protocol === "agnes-image") {
+        // Agnes 图像：size 必填，取 1K/2K/3K/4K 档位或 WxH 精确尺寸，画面比例走独立的 ratio 字段；
+        // 参考图放 extra_body.image，支持多图合成，但没有蒙版端点。
+        image.references.maxImages = 9;
+        image.references.maskSupported = false;
+        image.size = {
+            parameter: "aspect_ratio",
+            values: ["1:1", "3:4", "4:3", "16:9", "9:16", "2:3", "3:2", "21:9"],
+            default: "1:1",
+            allowCustom: false,
+        };
+        // 官方档位是 1K/2K/3K/4K，统一层只提供 1k/2k/4k 三档；3K 保留在协议映射里但不在界面露出。
+        image.quality = { supported: true, values: ["1k", "2k", "4k"], default: "2k" };
+        image.transparentBackground = { supported: false, default: false };
+        // 顶层 response_format 是官方明确的错误写法，输出格式只能在 extra_body 内声明。
+        image.responseFormat = { supported: false };
+        image.outputFormat = { supported: false };
+        // 该端点不接受 n，单次请求固定返回一张图片。
+        image.maxOutputs = 1;
     }
     if (protocol !== "grok-image" && model.trim().toLowerCase().startsWith("grok-imagine-image")) {
         image.references.maxImages = 0;
@@ -300,7 +320,7 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.duration = { selection: "enum", values: [4, 6, 8], default: 6 };
         video.resolutions = ["720p", "1080p"];
     }
-    if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2") {
+    if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video" || protocol === "newapi-channel-1" || protocol === "newapi-channel-2") {
         video.references.maxVideos = 3;
         video.references.maxAudios = 3;
         video.references.maxVideoBytes = 200 * 1024 * 1024;
@@ -309,8 +329,8 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.references.maxAudioDurationSeconds = 15;
         video.generateAudio = { supported: true, default: true };
     }
-    if (protocol === "volcengine-ark-video" || protocol === "newapi-channel-1") video.resolutions = ["480p", "720p", "1080p"];
-    if (protocol === "volcengine-ark-video") {
+    if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video" || protocol === "newapi-channel-1") video.resolutions = ["480p", "720p", "1080p"];
+    if (protocol === "volcengine-ark-video" || protocol === "volcengine-ark-agent-plan-video") {
         video.watermark = { supported: true, default: false };
         video.operations.push("reference_to_video", "audio_to_video");
     }

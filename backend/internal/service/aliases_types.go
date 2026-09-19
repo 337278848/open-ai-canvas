@@ -3,10 +3,22 @@ package service
 import "infinite-canvas/backend/internal/app"
 
 type (
+	PaymentOrderQuery                      = app.PaymentOrderQuery
+	PaymentReconciliationQuery             = app.PaymentReconciliationQuery
 	CloudAgentRequest                      = app.CloudAgentRequest
+	CloudAgentMediaSettings                = app.CloudAgentMediaSettings
 	CloudAgentCapabilitySet                = app.CloudAgentCapabilitySet
 	AgentProfileRequest                    = app.AgentProfileRequest
 	AgentProfileView                       = app.AgentProfileView
+	AgentLessonView                        = app.AgentLessonView
+	AgentLessonAdminView                   = app.AgentLessonAdminView
+	AgentMemoryRequest                     = app.AgentMemoryRequest
+	AgentMemoryBundle                      = app.AgentMemoryBundle
+	AgentMemoryImportResult                = app.AgentMemoryImportResult
+	AgentMemoryCompactRequest              = app.AgentMemoryCompactRequest
+	AgentMemorySettingRequest              = app.AgentMemorySettingRequest
+	AgentMemoryCompactView                 = app.AgentMemoryCompactView
+	AgentMemoryCompactSummary              = app.AgentMemoryCompactSummary
 	APICallLogPage                         = app.APICallLogPage
 	APICallLogQuery                        = app.APICallLogQuery
 	AccountFileStorageUsage                = app.AccountFileStorageUsage
@@ -56,6 +68,8 @@ type (
 	AnnouncementPage                       = app.AnnouncementPage
 	AppError                               = app.AppError
 	AppearanceSetting                      = app.AppearanceSetting
+	AppearanceSkinButtonFill               = app.AppearanceSkinButtonFill
+	AppearanceSkinButtons                  = app.AppearanceSkinButtons
 	AppearanceSkinComponentTokens          = app.AppearanceSkinComponentTokens
 	AppearanceSkinModeTokens               = app.AppearanceSkinModeTokens
 	AppearanceSkinTheme                    = app.AppearanceSkinTheme
@@ -73,7 +87,7 @@ type (
 	BulkDisableUsersResult                 = app.BulkDisableUsersResult
 	CanvasLibraryPage                      = app.CanvasLibraryPage
 	CanvasLibrarySummary                   = app.CanvasLibrarySummary
-	CanvasProjectsSyncRequest              = app.CanvasProjectsSyncRequest
+	CanvasHistoryList                      = app.CanvasHistoryList
 	CanvasShareRequest                     = app.CanvasShareRequest
 	CanvasShareStatus                      = app.CanvasShareStatus
 	CapabilityMatch                        = app.CapabilityMatch
@@ -84,6 +98,7 @@ type (
 	ChannelModelCatalogOptions             = app.ChannelModelCatalogOptions
 	ChannelModelPriceTierRequest           = app.ChannelModelPriceTierRequest
 	ChannelModelRequest                    = app.ChannelModelRequest
+	ChannelModelQuoteRequest               = app.ChannelModelQuoteRequest
 	ChannelModelSortRequest                = app.ChannelModelSortRequest
 	ChannelModelsRequest                   = app.ChannelModelsRequest
 	ChannelOrderItem                       = app.ChannelOrderItem
@@ -97,6 +112,7 @@ type (
 	ConfirmProjectAssetCandidateRequest    = app.ConfirmProjectAssetCandidateRequest
 	CreateAdminUserRequest                 = app.CreateAdminUserRequest
 	CreateAnnouncementRequest              = app.CreateAnnouncementRequest
+	CreateBannerAnnouncementRequest        = app.CreateBannerAnnouncementRequest
 	CreateAssetCandidatesRequest           = app.CreateAssetCandidatesRequest
 	CreateAssetFolderRequest               = app.CreateAssetFolderRequest
 	CreateAssetVersionRequest              = app.CreateAssetVersionRequest
@@ -294,6 +310,7 @@ type (
 	TimelineTranscriptionCreateRequest     = app.TimelineTranscriptionCreateRequest
 	TopupProductRequest                    = app.TopupProductRequest
 	UpdateAnnouncementRequest              = app.UpdateAnnouncementRequest
+	UpdateBannerAnnouncementRequest        = app.UpdateBannerAnnouncementRequest
 	UpdateAssetFolderRequest               = app.UpdateAssetFolderRequest
 	UpdateManager                          = app.UpdateManager
 	UpdatePaymentProviderConfigRequest     = app.UpdatePaymentProviderConfigRequest

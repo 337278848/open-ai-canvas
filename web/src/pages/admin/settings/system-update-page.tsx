@@ -154,7 +154,7 @@ export default function SystemUpdatePage() {
     return (
         <AdminPageFrame
             title="系统更新"
-            description="检查远程发布版本，并在完成备份、迁移和健康验证后切换版本。"
+            description="检查 GitHub Release，并在完成备份、迁移和健康验证后切换版本。"
             scroll
             actions={
                 <Button icon={<RefreshCw className="size-4" />} loading={checking} disabled={operationActive || !status?.supported} onClick={() => void requestCheck()}>
@@ -178,7 +178,7 @@ export default function SystemUpdatePage() {
                         layout="stacked"
                         icon={<ServerCog className="size-4" />}
                         title="可用版本"
-                        description={status?.updateAvailable ? "发现比当前运行版本更新的发布构建。" : "检查远程发布版本与当前运行版本。"}
+                        description={status?.updateAvailable ? `当前运行 ${status.currentVersion}，可更新到 ${status.latestRelease?.version}。` : "检查 GitHub Release 与当前运行的镜像标签。"}
                         status={<PhaseBadge phase={status?.operation.phase ?? "idle"} />}
                         footer={
                             <>
@@ -190,20 +190,35 @@ export default function SystemUpdatePage() {
                         }
                     >
                         <div className="admin-system-update-release-body">
-                            <div className="admin-system-update-version-row">
-                                <strong>{status?.latestRelease?.version || "尚未检查"}</strong>
-                                {status?.latestRelease?.prerelease ? <AdminStatusBadge label="预览版" tone="warning" /> : null}
+                            <div className="admin-system-update-versions">
+                                <div>
+                                    <span>当前运行</span>
+                                    <strong>{status?.currentVersion || "未识别"}</strong>
+                                    {status?.currentVersion && !isReleaseVersion(status.currentVersion) ? <AdminStatusBadge label="非正式版本" tone="warning" /> : null}
+                                </div>
+                                <div>
+                                    <span>最新发布</span>
+                                    <strong>{status?.latestRelease?.version || "尚未检查"}</strong>
+                                    {status?.latestRelease?.prerelease ? <AdminStatusBadge label="预览版" tone="warning" /> : null}
+                                    {status?.updateAvailable ? <AdminStatusBadge label="可更新" tone="success" /> : null}
+                                </div>
                             </div>
+                            {status?.updateAvailable && status.latestRelease ? (
+                                <p className="admin-system-update-hint">
+                                    {isReleaseVersion(status.currentVersion)
+                                        ? `可以从 ${status.currentVersion} 更新到 ${status.latestRelease.version}。`
+                                        : `当前镜像标签不是正式版本号，所以会显示成 ${status.currentVersion}。点开始更新后会切换到 ${status.latestRelease.version}。`}
+                                </p>
+                            ) : null}
                             <dl className="admin-system-update-facts">
-                                <dt>当前版本</dt><dd>{status?.currentVersion || "未识别"}</dd>
                                 <dt>部署方式</dt><dd>{status?.deployment || "未知"}</dd>
                                 <dt>发布时间</dt><dd>{formatDate(status?.latestRelease?.publishedAt)}</dd>
-                                <dt>发布来源</dt><dd>{status?.repository ? "远程发布服务" : "未配置"}</dd>
+                                <dt>代码仓库</dt><dd>{status?.repository || "ddcat-ai/open-ai-canvas"}</dd>
                             </dl>
                             {status?.latestRelease ? (
                                 <div className="admin-system-update-notes">
-                                    <div className="flex items-center justify-between gap-3"><h3>版本说明</h3><a href={status.latestRelease.url} target="_blank" rel="noreferrer">查看版本详情 <ExternalLink className="size-3" /></a></div>
-                                    <pre>{status.latestRelease.body || "本版本未填写说明。"}</pre>
+                                    <div className="flex items-center justify-between gap-3"><h3>更新日志</h3><a href={status.latestRelease.url} target="_blank" rel="noreferrer">查看 Release <ExternalLink className="size-3" /></a></div>
+                                    <pre>{status.latestRelease.body || "本版本未填写更新日志。"}</pre>
                                 </div>
                             ) : null}
                         </div>
@@ -281,4 +296,8 @@ function formatBytes(value: number) {
     const units = ["B", "KB", "MB", "GB", "TB"];
     const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
     return `${(value / 1024 ** index).toFixed(index > 1 ? 2 : 0)} ${units[index]}`;
+}
+
+function isReleaseVersion(value?: string) {
+    return Boolean(value && /^v?\d+\.\d+\.\d+/.test(value));
 }

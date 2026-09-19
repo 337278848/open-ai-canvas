@@ -4,23 +4,23 @@ import type { PublicAppearance } from "@/services/api/appearance";
 import { applySkinTheme, DEFAULT_CLASSIC_SKIN, normalizeSkinDefinition } from "@/lib/skin-themes";
 
 export const DEFAULT_PUBLIC_APPEARANCE: PublicAppearance = {
-    schemaVersion: 7,
-    brandName: "创作平台",
-    brandSlug: "studio",
+    schemaVersion: 8,
+    brandName: "影策",
+    brandSlug: "open-ai-canvas",
     authHeroTitle: "让一个故事，\n从文字走向银幕。",
     authHeroDescription: "",
-    logoUrl: "",
-    darkLogoUrl: "",
+    logoUrl: "/logo.svg",
+    darkLogoUrl: "/logo.svg",
     logoFrameEnabled: true,
-    authVideoUrl: "",
-    authVideoPosterUrl: "",
+    authVideoUrl: "https://boss-shjd.biliapi.net/updream/aniforge/video/video_bbcb00bd-650d-4249-9346-5cd21fd2484c_m1hc-u0-1pu13x-3v1s.mp4",
+    authVideoPosterUrl: "https://i0.hdslb.com/bfs/aitool/aniforge/image/02933f26-5f1b-49ff-a811-b7f95ee5e5b8_m1hc-u0-sau.jpg",
     authVideoAutoplay: true,
     skinId: "classic",
     activeSkin: DEFAULT_CLASSIC_SKIN,
-    seoTitle: "创作平台",
-    seoDescription: "面向 AI 影视与短剧创作的工作台。",
+    seoTitle: "影策",
+    seoDescription: "影策，面向 AI 影视与短剧创作的工作台。",
     seoKeywords: "",
-    footerCopyright: "",
+    footerCopyright: `© ${new Date().getFullYear()} 影策. All rights reserved.`,
     icpFilingEnabled: false,
     icpFilingNumber: "",
     logoConfigured: false,
@@ -49,7 +49,7 @@ export function normalizePublicAppearance(value?: Partial<PublicAppearance> | nu
     const authHeroTitle = normalizeAppearanceCopy(value?.authHeroTitle, DEFAULT_PUBLIC_APPEARANCE.authHeroTitle);
     const authHeroDescription = normalizeAppearanceCopy(value?.authHeroDescription, DEFAULT_PUBLIC_APPEARANCE.authHeroDescription, true);
     const customVideo = Boolean(value?.authVideoConfigured);
-    const logoUrl = safeAppearanceURL(value?.logoUrl, "");
+    const logoUrl = safeAppearanceURL(value?.logoUrl, DEFAULT_PUBLIC_APPEARANCE.logoUrl);
     const darkLogoUrl = safeAppearanceURL(value?.darkLogoUrl, logoUrl);
     const resolvedBrandName = brandName || DEFAULT_PUBLIC_APPEARANCE.brandName;
     const seoTitle = normalizeAppearanceCopy(value?.seoTitle, resolvedBrandName);
@@ -60,7 +60,7 @@ export function normalizePublicAppearance(value?: Partial<PublicAppearance> | nu
     return {
         ...DEFAULT_PUBLIC_APPEARANCE,
         ...value,
-        schemaVersion: 7,
+        schemaVersion: 8,
         brandName: resolvedBrandName,
         brandSlug,
         authHeroTitle,
@@ -68,8 +68,8 @@ export function normalizePublicAppearance(value?: Partial<PublicAppearance> | nu
         logoUrl,
         darkLogoUrl,
         logoFrameEnabled: value?.logoFrameEnabled !== false,
-        authVideoUrl: safeAppearanceURL(value?.authVideoUrl, ""),
-        authVideoPosterUrl: safeAppearanceURL(value?.authVideoPosterUrl, ""),
+        authVideoUrl: safeAppearanceURL(value?.authVideoUrl, DEFAULT_PUBLIC_APPEARANCE.authVideoUrl),
+        authVideoPosterUrl: safeAppearanceURL(value?.authVideoPosterUrl, customVideo ? "" : DEFAULT_PUBLIC_APPEARANCE.authVideoPosterUrl),
         authVideoAutoplay: value?.authVideoAutoplay !== false,
         skinId: normalizeSkinDefinition(value?.activeSkin).id,
         activeSkin: normalizeSkinDefinition(value?.activeSkin),
@@ -155,8 +155,8 @@ export function appearanceLogoURL(appearance: PublicAppearance, theme: "light" |
 }
 
 export function brandStudioLabel(appearance: PublicAppearance) {
-    const slug = appearance.brandSlug.replace(/-+/g, " ").trim();
-    return slug ? slug.toLocaleUpperCase() : "";
+    if (appearance.brandName === DEFAULT_PUBLIC_APPEARANCE.brandName && appearance.brandSlug === DEFAULT_PUBLIC_APPEARANCE.brandSlug) return "YINGCE STUDIO";
+    return appearance.brandSlug.replace(/-+/g, " ").toLocaleUpperCase();
 }
 
 function normalizeBrandSlug(value: unknown) {
@@ -174,7 +174,7 @@ function safeAppearanceURL(value: unknown, fallback: string) {
         const parsed = new URL(candidate);
         if (parsed.protocol === "https:") return parsed.toString();
     } catch {
-        // Invalid or unsafe asset locations are ignored.
+        // Invalid or unsafe asset locations fall back to the bundled appearance.
     }
-    return "";
+    return fallback;
 }
