@@ -567,6 +567,55 @@ func manifestTestBody(t *testing.T, spec RequestSpec) map[string]any {
 	return body
 }
 
+func TestOfficialHCAtomSeedanceV3Profile(t *testing.T) {
+	adapter := officialPackageAdapter(t, "hc-atom-seedance-v3.yingce-plugin", "hc-atom-seedance-v3-video")
+	create, err := adapter.BuildCreate(context.Background(), RequestContext{Request: GenerationRequest{
+		Model:       "doubao-seedance-2.5",
+		Prompt:      "一个人在海边奔跑",
+		AspectRatio: "9:16",
+		Resolution:  "720p",
+		Duration:    6,
+		Images: []MediaReference{
+			{URL: "https://example.com/first.png", Role: "first_frame"},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if create.Method != "POST" || create.Path != "/v3/video/tasks" {
+		t.Fatalf("create spec = %#v", create)
+	}
+	body := manifestTestBody(t, create)
+	if body["model"] != "doubao-seedance-2.5" || body["ratio"] != "9:16" || body["resolution"] != "720p" || body["duration"] != float64(6) {
+		t.Fatalf("create body = %#v", body)
+	}
+	content, ok := body["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("content = %#v", body["content"])
+	}
+	if content[1].(map[string]any)["role"] != "first_frame" {
+		t.Fatalf("image role = %#v", content[1])
+	}
+
+	poll, err := adapter.BuildPoll(context.Background(), PollContext{TaskID: "cgt-1", Model: "doubao-seedance-2.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if poll.Method != "GET" || poll.Path != "/v3/video/tasks/cgt-1" {
+		t.Fatalf("poll spec = %#v", poll)
+	}
+	result, err := adapter.ParsePoll(context.Background(), PollContext{TaskID: "cgt-1", Model: "doubao-seedance-2.5"}, []byte(`{"id":"cgt-1","status":"succeeded","content":{"video_url":"https://example.com/result.mp4"},"usage":{"total_tokens":123}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != StatusSucceeded || result.Result == nil || len(result.Result.Videos) != 1 {
+		t.Fatalf("poll result = %#v", result)
+	}
+	if result.Result.Videos[0].URL != "https://example.com/result.mp4" || !result.Result.Videos[0].Ephemeral {
+		t.Fatalf("video result = %#v", result.Result.Videos[0])
+	}
+}
+
 func TestOfficialArkSeedreamMapsAspectRatioToPixelSize(t *testing.T) {
 	adapter := officialPackageAdapter(t, "volcengine-ark-seedream.yingce-plugin", "volcengine-ark-image")
 	tests := []struct {
