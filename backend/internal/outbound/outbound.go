@@ -22,7 +22,7 @@ const (
 	maxOutboundHeaderCount   = 32
 	maxOutboundHeaderBytes   = 16 << 10
 	CustomRelayHeadersHeader = "X-Canvas-Upstream-Headers"
-	DefaultOutboundUserAgent = "InfiniteCanvas/1.0 (+https://github.com/ddcat-ai/open-ai-canvas)"
+	DefaultOutboundUserAgent = "CreativeStudio/1.0"
 )
 
 type OutboundHeader struct {

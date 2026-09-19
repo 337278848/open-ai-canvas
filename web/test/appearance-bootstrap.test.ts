@@ -2,13 +2,13 @@ import { expect, test } from "bun:test";
 
 import { appearanceLogoURL, normalizePublicAppearance } from "../src/stores/use-appearance-store";
 
-test("initial HTML stays brand neutral until the public appearance is resolved", async () => {
+test("initial HTML stays brand neutral without blocking application startup on public appearance", async () => {
     const [html, mainSource] = await Promise.all([Bun.file(new URL("../index.html", import.meta.url)).text(), Bun.file(new URL("../src/main.tsx", import.meta.url)).text()]);
 
     expect(html).not.toContain("影策");
     expect(html).not.toContain("/logo.svg");
     expect(html).toContain("<title>正在加载</title>");
-    expect(mainSource.indexOf("bootstrapAppearance()")).toBeLessThan(mainSource.indexOf('import("./application")'));
+    expect(mainSource.indexOf('import("./application")')).toBeLessThan(mainSource.indexOf("bootstrapAppearance()"));
 });
 
 test("a custom login video never falls back to the built-in poster", () => {
@@ -44,7 +44,7 @@ test("appearance URLs reject executable and insecure remote schemes", () => {
         authVideoUrl: "http://example.com/brand.mp4",
     });
 
-    expect(appearance.logoUrl).toBe("/logo.svg");
+    expect(appearance.logoUrl).toBe("");
     expect(appearance.authVideoUrl).not.toContain("example.com");
 });
 
@@ -119,10 +119,10 @@ test("object storage can adopt the configured English brand identifier without r
     expect(source).toContain("setting.pathPrefix || DEFAULT_OSS_PATH_PREFIX");
 });
 
-test("appearance management exposes a server-side reset to the built-in Yingce brand", async () => {
+test("appearance management exposes a server-side reset to the neutral default", async () => {
     const [pageSource, apiSource] = await Promise.all([Bun.file(new URL("../src/pages/admin/settings/appearance-settings-page.tsx", import.meta.url)).text(), Bun.file(new URL("../src/services/api/appearance.ts", import.meta.url)).text()]);
 
-    expect(pageSource).toContain("恢复影策默认");
+    expect(pageSource).toContain("恢复默认外观");
     expect(pageSource).toContain("resetAdminAppearance()");
     expect(pageSource).toContain("已上传文件仍保留在存储资源中");
     expect(apiSource).toContain('http.delete<{ setting: AdminAppearance }>("/admin/settings/appearance")');

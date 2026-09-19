@@ -7,7 +7,7 @@
 
 /* =========================================================================
    Design Token System — 三层架构 (Primitive → Semantic → Component)
-   详见 Wayfinder #96: https://github.com/ddcat-ai/open-ai-canvas/issues/96
+   详见 Wayfinder 设计记录
    规范：禁止在组件中新增裸 text-[Npx]/rounded-[Npx]/z-[N]，必须使用 token
    ========================================================================= */
 
@@ -2109,7 +2109,7 @@
     }
 
     .full-screen-loader-logo-image { width: 38px; height: 38px; }
-    .full-screen-loader-logo-fallback { display: block; width: 36px; height: 36px; background: currentColor; mask: url('/logo.svg') center / contain no-repeat; -webkit-mask: url('/logo.svg') center / contain no-repeat; }
+    .full-screen-loader-logo-fallback { display: block; width: 36px; height: 36px; }
     .workspace-route-loader-logo .full-screen-loader-logo-fallback { width: 16px; height: 16px; }
 
     .full-screen-loader-orbit {
@@ -15136,7 +15136,7 @@ html:not(.dark) .creation-history-drawer-root {
     .creation-empty-workspace > .creation-empty-suggest { margin-top: 20px; }
 }
 
-/* ===== 素材库 · 重构（影策影视资产） =====
+/* ===== 素材库 · 重构（影视资产） =====
    与画布库共用 studio-band 毛玻璃页头与 frame 外壳；类型化封面、accent 反白筛选、
    批量操作条、banner+欢迎卡空态、资产档案抽屉。全局保持黑白单色。 */
 .assets-library-page .assets-header-meta { gap: 6px; }

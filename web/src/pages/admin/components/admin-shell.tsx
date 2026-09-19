@@ -26,7 +26,6 @@ import {
     Paintbrush,
     PlugZap,
     RadioTower,
-    RefreshCw,
     Settings2,
     ShieldAlert,
     ShieldCheck,
@@ -38,7 +37,6 @@ import {
 import { Suspense, useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router";
 
-import { AppChangelogButton } from "@/components/layout/app-changelog-modal";
 import { BrandLogoFrame } from "@/components/brand/brand-logo";
 import { WorkspacePage } from "@/components/layout/workspace-page";
 import { publishWorkspaceSidebarCollapsed, readWorkspaceSidebarCollapsed, subscribeWorkspaceSidebarCollapsed } from "@/components/layout/workspace-sidebar-state";
@@ -97,7 +95,6 @@ const adminNavigation: Array<{ label: string; items: AdminNavigationItem[] }> = 
             { path: "/admin/settings/ark-private-assets", label: "方舟素材库", description: "Seedance 可信参考素材", icon: <CloudUpload className="size-4" /> },
             { path: "/admin/settings/response-interception", label: "模型响应拦截", description: "先启用策略，再配置替换规则", icon: <ShieldAlert className="size-4" /> },
             { path: "/admin/settings/third-party", label: "第三方参数配置", description: "先配置凭据，再开放用户入口", icon: <KeyRound className="size-4" /> },
-            { path: "/admin/settings/system-update", label: "系统更新", description: "检查版本、备份与安全更新", icon: <RefreshCw className="size-4" /> },
         ],
     },
 ];
@@ -134,17 +131,10 @@ export function AdminShell() {
             <main className="admin-shell app-user-workspace flex h-full min-h-0 overflow-hidden text-foreground">
                 <aside className={cn("app-workspace-sidebar admin-sidebar hidden shrink-0 flex-col overflow-hidden lg:flex", collapsed && "is-collapsed")}>
                     <div className="admin-sidebar-identity shrink-0">
-                        <Tooltip delay={100} title={collapsed ? "查看更新日志" : undefined} placement="right">
-                            <AppChangelogButton
-                                className={cn("admin-sidebar-brand-button", collapsed && "is-collapsed")}
-                                icon={<BrandLogoFrame className="admin-sidebar-brand-mark grid shrink-0 place-items-center bg-foreground text-background" logoClassName="size-5 object-contain" alt="" fallback={<InfinityIcon className="size-4" />} />}
-                                label={appearance.brandName}
-                                showLabel={!collapsed}
-                                showVersion={!collapsed}
-                                labelClassName="admin-sidebar-brand-title"
-                                versionClassName="admin-sidebar-brand-version"
-                            />
-                        </Tooltip>
+                        <div className={cn("admin-sidebar-brand-button", collapsed && "is-collapsed")}>
+                            <BrandLogoFrame className="admin-sidebar-brand-mark grid shrink-0 place-items-center bg-foreground text-background" logoClassName="size-5 object-contain" alt="" fallback={<InfinityIcon className="size-4" />} />
+                            {!collapsed ? <span className="admin-sidebar-brand-title">{appearance.brandName}</span> : null}
+                        </div>
                     </div>
                     <AdminNavigation collapsed={collapsed} />
                     <div className="admin-sidebar-footer shrink-0">
@@ -278,7 +268,6 @@ function MobileAdminNavigation() {
                         <Home className="size-4" aria-hidden="true" />
                     </Link>
                 </Tooltip>
-                <AppChangelogButton className="admin-mobile-navigation-action [&_svg]:size-4" />
             </div>
         </nav>
     );

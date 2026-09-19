@@ -22,14 +22,14 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestAppearanceDefaultsPreserveBuiltInBrand(t *testing.T) {
+func TestAppearanceDefaultsStayBrandNeutral(t *testing.T) {
 	svc, _, _, _ := newAppearanceTestService(t)
 
 	appearance, err := svc.Appearance()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if appearance.Configured || appearance.SchemaVersion != appearanceSchemaVersion || appearance.BrandName != defaultAppearanceBrandName || appearance.BrandSlug != defaultAppearanceBrandSlug || appearance.AuthHeroTitle != defaultAppearanceHeroTitle || appearance.AuthHeroDescription != "" || appearance.LogoURL != defaultAppearanceLogoURL || appearance.DarkLogoURL != defaultAppearanceLogoURL || !appearance.LogoFrameEnabled || appearance.AuthVideoURL != defaultAppearanceVideoURL || appearance.AuthVideoPosterURL != defaultAppearancePosterURL || !appearance.AuthVideoAutoplay || appearance.SkinID != defaultAppearanceSkinID || appearance.SEOTitle != defaultAppearanceBrandName || !strings.Contains(appearance.SEODescription, defaultAppearanceBrandName) || !strings.Contains(appearance.FooterCopyright, defaultAppearanceBrandName) || appearance.ICPFilingEnabled {
+	if appearance.Configured || appearance.SchemaVersion != appearanceSchemaVersion || appearance.BrandName != defaultAppearanceBrandName || appearance.BrandSlug != defaultAppearanceBrandSlug || appearance.AuthHeroTitle != defaultAppearanceHeroTitle || appearance.AuthHeroDescription != "" || appearance.LogoURL != "" || appearance.DarkLogoURL != "" || !appearance.LogoFrameEnabled || appearance.AuthVideoURL != "" || appearance.AuthVideoPosterURL != "" || !appearance.AuthVideoAutoplay || appearance.SkinID != defaultAppearanceSkinID || appearance.SEOTitle != defaultAppearanceBrandName || !strings.Contains(appearance.SEODescription, defaultAppearanceBrandName) || !strings.Contains(appearance.FooterCopyright, defaultAppearanceBrandName) || appearance.ICPFilingEnabled {
 		t.Fatalf("Appearance() = %#v", appearance)
 	}
 	if appearance.LogoConfigured || appearance.DarkLogoConfigured || appearance.AuthVideoConfigured || appearance.AuthVideoPosterConfigured || appearance.Revision != "builtin" {
@@ -107,7 +107,7 @@ func TestAppearanceBackfillsVersionSevenFieldsForExistingSetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if appearance.SchemaVersion != appearanceSchemaVersion || appearance.BrandName != "旧品牌" || appearance.BrandSlug != defaultAppearanceBrandSlug || appearance.AuthHeroTitle != defaultAppearanceHeroTitle || appearance.AuthHeroDescription != "" || appearance.DarkLogoURL != defaultAppearanceLogoURL || !appearance.LogoFrameEnabled || !appearance.AuthVideoAutoplay || appearance.SEOTitle != "旧品牌" || !strings.Contains(appearance.SEODescription, "旧品牌") || !strings.Contains(appearance.FooterCopyright, "旧品牌") || appearance.ActiveSkin.ID != "classic" {
+	if appearance.SchemaVersion != appearanceSchemaVersion || appearance.BrandName != "旧品牌" || appearance.BrandSlug != defaultAppearanceBrandSlug || appearance.AuthHeroTitle != defaultAppearanceHeroTitle || appearance.AuthHeroDescription != "" || appearance.DarkLogoURL != "" || !appearance.LogoFrameEnabled || !appearance.AuthVideoAutoplay || appearance.SEOTitle != "旧品牌" || !strings.Contains(appearance.SEODescription, "旧品牌") || !strings.Contains(appearance.FooterCopyright, "旧品牌") || appearance.ActiveSkin.ID != "classic" {
 		t.Fatalf("legacy appearance = %#v", appearance)
 	}
 }
@@ -302,7 +302,7 @@ func TestAppearanceFallsBackWhenConfiguredLogoResourceIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if appearance.LogoConfigured || appearance.LogoURL != defaultAppearanceLogoURL || appearance.DarkLogoURL != defaultAppearanceLogoURL {
+	if appearance.LogoConfigured || appearance.LogoURL != "" || appearance.DarkLogoURL != "" {
 		t.Fatalf("missing logo public appearance = %#v", appearance)
 	}
 	adminAppearance, err := svc.AdminAppearance(admin)
@@ -334,7 +334,7 @@ func TestAppearanceFallsBackWhenLocalLogoFileIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if appearance.LogoConfigured || appearance.LogoURL != defaultAppearanceLogoURL {
+	if appearance.LogoConfigured || appearance.LogoURL != "" {
 		t.Fatalf("missing local logo public appearance = %#v", appearance)
 	}
 }

@@ -98,9 +98,7 @@ body:has(.welcome-page) {
     object-fit: contain;
 }
 .welcome-brand-logo.is-fallback {
-    background: currentColor;
-    mask: url("/logo.svg") center / contain no-repeat;
-    -webkit-mask: url("/logo.svg") center / contain no-repeat;
+    background: transparent;
 }
 .welcome-nav {
     margin-left: auto;
@@ -469,6 +467,16 @@ body:has(.welcome-page) {
     width: 100%;
     height: 100%;
     object-fit: contain;
+}
+.welcome-workbench-preview-empty {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    padding: 24px;
+    color: var(--welcome-muted);
+    font-size: 14px;
+    text-align: center;
 }
 .welcome-workbench-caption {
     padding: 24px 0 0;

@@ -90,14 +90,37 @@ describe("workspace route loading", () => {
         expect(wallet).toContain("WALLET_STALE_TIME_MS");
     });
 
-    test("defers modal-only markdown and canvas creation runtimes until interaction", () => {
-        const changelogButton = source("../src/components/layout/app-changelog-modal.tsx");
+    test("does not expose source metadata in customer-facing workspace chrome", () => {
+        const accountMenu = source("../src/components/layout/workspace-account-menu.tsx");
+        const sidebarFooter = source("../src/components/layout/workspace-sidebar-footer.tsx");
+        const adminShell = source("../src/pages/admin/components/admin-shell.tsx");
+        const skillsPage = source("../src/pages/skills/index.tsx");
+        const skillInstall = source("../src/pages/skills/skill-install-modal.tsx");
+        const skillDetail = source("../src/pages/skills/skill-detail-drawer.tsx");
+        const skillEditor = source("../src/pages/skills/skill-editor-drawer.tsx");
+        const viteConfig = source("../vite.config.ts");
+
+        for (const customerChrome of [accountMenu, sidebarFooter, adminShell]) {
+            expect(customerChrome).not.toContain("AppChangelogButton");
+            expect(customerChrome).not.toContain("更新日志");
+            expect(customerChrome).not.toContain("__APP_CHANGELOG__");
+        }
+        for (const customerSkillPage of [skillsPage, skillInstall, skillDetail, skillEditor]) {
+            expect(customerSkillPage).not.toContain(">GitHub<");
+            expect(customerSkillPage).not.toContain("GitHub 地址");
+            expect(customerSkillPage).not.toContain("连接 GitHub");
+            expect(customerSkillPage).not.toContain("GitHub 仓库");
+            expect(customerSkillPage).not.toContain("GitHub 技能");
+        }
+        expect(viteConfig).not.toContain("__APP_CHANGELOG__");
+        expect(viteConfig).not.toContain("CHANGELOG.md");
+    });
+
+    test("defers canvas creation runtimes until interaction", () => {
         const announcements = source("../src/components/layout/system-announcement-center.tsx");
         const projectDetail = source("../src/pages/projects/detail.tsx");
         const workflow = source("../src/pages/projects/detail/workflow-production-workbench.tsx");
 
-        expect(changelogButton).toContain('lazy(() => import("@/components/layout/app-changelog-dialog")');
-        expect(changelogButton).not.toContain('from "react-markdown"');
         expect(announcements).toContain('lazy(() => import("@/components/ui/aceternity/announcement-timeline-modal")');
         expect(projectDetail).toContain('import("@/services/user-data-sync")');
         expect(projectDetail).not.toContain('import { createCanvasProjectWithRemoteSync } from "@/services/user-data-sync"');

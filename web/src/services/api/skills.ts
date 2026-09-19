@@ -123,7 +123,7 @@ export type InstallSkillUploadInput = {
     isPrivate?: boolean;
 };
 
-export type InstallGitHubSkillInput = {
+export type InstallRemoteSkillInput = {
     url: string;
     ref?: string;
     subdir?: string;
@@ -191,7 +191,7 @@ export function installSkillUpload(input: InstallSkillUploadInput) {
     return http.post<{ skill: Skill }>("/skills/install", form).finally(invalidateAddedSkillsCache);
 }
 
-export function installGitHubSkill(input: InstallGitHubSkillInput) {
+export function installRemoteSkill(input: InstallRemoteSkillInput) {
     return http.post<{ skill: Skill }>("/skills/install/github", input).finally(invalidateAddedSkillsCache);
 }
 

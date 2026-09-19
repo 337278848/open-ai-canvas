@@ -230,8 +230,8 @@ export default function AppearanceSettingsPage() {
     const restoreBuiltInAppearance = () => {
         if (!setting?.configured || saving || refreshing || restoring) return;
         modal.confirm({
-            title: "恢复影策默认品牌标识？",
-            content: "品牌名称、英文标识、Logo、登录页文案、视频、封面、SEO、备案和皮肤主题会立即恢复为项目内置值。已上传文件仍保留在存储资源中，不会被删除。",
+            title: "恢复默认外观？",
+            content: "品牌名称、英文标识、Logo、登录页文案、视频、封面、SEO、备案和皮肤主题会立即恢复为中性默认值。已上传文件仍保留在存储资源中，不会被删除。",
             okText: "恢复默认",
             cancelText: "取消",
             okButtonProps: { danger: true },
@@ -245,7 +245,7 @@ export default function AppearanceSettingsPage() {
                     Object.values(inputRefs).forEach((ref) => {
                         if (ref.current) ref.current.value = "";
                     });
-                    message.success("已恢复影策默认品牌标识");
+                    message.success("已恢复默认外观");
                 } catch (error) {
                     message.error(error instanceof Error ? error.message : "恢复默认外观失败");
                     throw error;
@@ -439,7 +439,7 @@ export default function AppearanceSettingsPage() {
                                 </Button>
                             ) : null}
                             <Button icon={<RotateCcw className="size-4" />} loading={restoring} disabled={!setting.configured || saving || refreshing} onClick={restoreBuiltInAppearance}>
-                                恢复影策默认
+                                恢复默认外观
                             </Button>
                             <Button icon={<RefreshCw className="size-4" />} loading={refreshing} disabled={saving || restoring} onClick={requestRefresh}>
                                 刷新状态
@@ -499,7 +499,7 @@ export default function AppearanceSettingsPage() {
                                     onSelect={selectFile}
                                     onReset={resetAsset}
                                     disabled={saving || refreshing || restoring}
-                                    emptyLabel={lightLogoSelected ? "将自动复用浅色模式 Logo" : "未上传时使用项目原始 Logo"}
+                                    emptyLabel={lightLogoSelected ? "将自动复用浅色模式 Logo" : "未上传时保持空白"}
                                 />
                                 <div className="admin-appearance-logo-frame-option">
                                     <div className="admin-appearance-logo-frame-copy">
@@ -532,7 +532,7 @@ export default function AppearanceSettingsPage() {
                         description="登录、注册与找回密码共享左侧品牌文案和影片；更换视频会同时取消旧封面，避免品牌串帧。"
                         status={
                             <AdminStatusBadge
-                                label={copyCustomized || setting.authVideoResourceId || setting.authVideoPosterResourceId ? "已配置" : "使用原始内容"}
+                                label={copyCustomized || setting.authVideoResourceId || setting.authVideoPosterResourceId ? "已配置" : "使用中性内容"}
                                 tone={copyCustomized || setting.authVideoResourceId || setting.authVideoPosterResourceId ? "success" : "neutral"}
                             />
                         }
@@ -598,10 +598,10 @@ export default function AppearanceSettingsPage() {
                                     <AdminStatusBadge label={dirty ? "未保存" : "线上版本"} tone={dirty ? "warning" : "success"} />
                                 </div>
                                 <div className="admin-appearance-preview-stage">
-                                    <video key={`${previews.video}-${authVideoAutoplay}`} src={previews.video} poster={previews.poster || undefined} muted loop playsInline autoPlay={authVideoAutoplay} preload="metadata" />
+                                    {previews.video ? <video key={`${previews.video}-${authVideoAutoplay}`} src={previews.video} poster={previews.poster || undefined} muted loop playsInline autoPlay={authVideoAutoplay} preload="metadata" /> : previews.poster ? <img src={previews.poster} alt="" /> : null}
                                     <span className="admin-appearance-preview-shade" />
                                     <span className="admin-appearance-preview-brand">
-                                        <img src={previews.logoDark} alt="" />
+                                        {previews.logoDark ? <img src={previews.logoDark} alt="" /> : null}
                                         <strong>{brandName.trim() || "未命名品牌"}</strong>
                                     </span>
                                     <span className="admin-appearance-preview-copy">
@@ -742,7 +742,7 @@ function AssetPicker({
                     选择文件
                 </Button>
                 <Button type="text" danger={configured || Boolean(file)} disabled={disabled || (!configured && !file)} onClick={() => onReset(slot)}>
-                    恢复原始
+                    移除配置
                 </Button>
             </span>
         </div>
@@ -755,15 +755,14 @@ function useAppearancePreviews(setting: AdminAppearance | null, files: DraftFile
     const videoObjectURL = useObjectURL(files.video);
     const posterObjectURL = useObjectURL(files.poster);
     return useMemo(() => {
-        if (!setting) return { logoLight: DEFAULT_PUBLIC_APPEARANCE.logoUrl, logoDark: DEFAULT_PUBLIC_APPEARANCE.darkLogoUrl, video: DEFAULT_PUBLIC_APPEARANCE.authVideoUrl, poster: DEFAULT_PUBLIC_APPEARANCE.authVideoPosterUrl };
-        const customVideo = Boolean(files.video || (!resets.video && setting.authVideoResourceId));
+        if (!setting) return { logoLight: "", logoDark: "", video: "", poster: "" };
         const lightLogo = logoObjectURL || (!resets.logo && setting.logoResourceId ? setting.public.logoUrl : "");
         const darkLogo = darkLogoObjectURL || (!resets["logo-dark"] && setting.darkLogoResourceId ? setting.public.darkLogoUrl : "");
         return {
-            logoLight: lightLogo || darkLogo || DEFAULT_PUBLIC_APPEARANCE.logoUrl,
-            logoDark: darkLogo || lightLogo || DEFAULT_PUBLIC_APPEARANCE.darkLogoUrl,
-            video: videoObjectURL || (resets.video ? DEFAULT_PUBLIC_APPEARANCE.authVideoUrl : setting.public.authVideoUrl),
-            poster: posterObjectURL || (resets.poster ? (customVideo ? "" : DEFAULT_PUBLIC_APPEARANCE.authVideoPosterUrl) : setting.public.authVideoPosterUrl),
+            logoLight: lightLogo || darkLogo,
+            logoDark: darkLogo || lightLogo,
+            video: videoObjectURL || (resets.video ? "" : setting.public.authVideoUrl),
+            poster: posterObjectURL || (resets.poster ? "" : setting.public.authVideoPosterUrl),
         };
     }, [darkLogoObjectURL, files.video, logoObjectURL, posterObjectURL, resets, setting, videoObjectURL]);
 }
@@ -772,7 +771,7 @@ function LogoThemePreview({ label, icon, src, dark, frameEnabled }: { label: str
     return (
         <div className={cn("admin-appearance-logo-preview", dark ? "is-dark" : "is-light")}>
             <span className={cn("admin-appearance-logo-preview-mark", !frameEnabled && "is-unframed")}>
-                <img src={src} alt="" />
+                {src ? <img src={src} alt="" /> : null}
             </span>
             <span className="admin-appearance-logo-preview-label">
                 {icon}

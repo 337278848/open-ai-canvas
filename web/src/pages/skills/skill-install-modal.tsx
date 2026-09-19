@@ -6,7 +6,7 @@ import { FileArchive, FileText, GitBranch, UploadCloud } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { fallbackSkillCategories } from "@/pages/skills/skill-catalog";
-import { installGitHubSkill, installSkillUpload, type Skill } from "@/services/api/skills";
+import { installRemoteSkill, installSkillUpload, type Skill } from "@/services/api/skills";
 
 type InstallMode = "markdown" | "zip" | "github";
 
@@ -24,7 +24,7 @@ type InstallFormValues = {
 const modeOptions = [
     { value: "markdown", label: <span className="inline-flex items-center gap-1.5"><FileText className="size-3.5" />Markdown</span> },
     { value: "zip", label: <span className="inline-flex items-center gap-1.5"><FileArchive className="size-3.5" />ZIP 技能包</span> },
-    { value: "github", label: <span className="inline-flex items-center gap-1.5"><GitBranch className="size-3.5" />GitHub</span> },
+    { value: "github", label: <span className="inline-flex items-center gap-1.5"><GitBranch className="size-3.5" />远程仓库</span> },
 ];
 
 export function SkillInstallModal({ open, onClose, onInstalled, onManualCreate }: { open: boolean; onClose: () => void; onInstalled: (skill: Skill) => void; onManualCreate: () => void }) {
@@ -51,7 +51,7 @@ export function SkillInstallModal({ open, onClose, onInstalled, onManualCreate }
         setInstalling(true);
         try {
             const result = mode === "github"
-                ? await installGitHubSkill({
+                ? await installRemoteSkill({
                     url: values.url || "",
                     ref: values.ref || undefined,
                     subdir: values.subdir || undefined,
@@ -92,14 +92,14 @@ export function SkillInstallModal({ open, onClose, onInstalled, onManualCreate }
                 </div>
             )}
         >
-            <p className="mb-4 text-sm leading-6 text-foreground/55">支持标准 <code>SKILL.md</code>、包含多层目录的 ZIP 技能包，或公开 GitHub 仓库。名称和简介会优先从技能入口自动读取。</p>
+            <p className="mb-4 text-sm leading-6 text-foreground/55">支持标准 <code>SKILL.md</code>、包含多层目录的 ZIP 技能包，或公开远程技能仓库。名称和简介会优先从技能入口自动读取。</p>
 <SegmentedControl className="skill-install-mode" block options={modeOptions} value={mode} onChange={(value) => { setMode(value as InstallMode); setFileList([]); }} />
 
             <Form form={form} layout="vertical" requiredMark="optional" className="skill-install-form">
                 {mode === "github" ? (
                     <>
-                        <Form.Item name="url" label="GitHub 地址" rules={[{ required: true, message: "请填写 GitHub 仓库地址" }, { type: "url", message: "请输入有效链接" }]}>
-                            <Input type="url" inputMode="url" spellCheck={false} prefix={<GitBranch className="size-4 text-foreground/35" />} placeholder="https://github.com/owner/repository" />
+                        <Form.Item name="url" label="仓库地址" rules={[{ required: true, message: "请填写仓库地址" }, { type: "url", message: "请输入有效链接" }]}>
+                            <Input type="url" inputMode="url" spellCheck={false} prefix={<GitBranch className="size-4 text-foreground/35" />} placeholder="https://example.com/owner/repository" />
                         </Form.Item>
                         <div className="grid gap-x-3 sm:grid-cols-2">
                             <Form.Item name="ref" label="分支或标签" extra="留空时使用默认分支"><Input spellCheck={false} placeholder="main" /></Form.Item>

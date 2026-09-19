@@ -175,7 +175,7 @@ export default function SkillsPage() {
             message.success(result.skill.versionId === skill.versionId ? "已是最新版本" : "已同步最新版本");
             reload();
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "GitHub 技能同步失败");
+            message.error(error instanceof Error ? error.message : "远程技能同步失败");
         } finally {
             setMutatingID("");
         }
@@ -257,7 +257,7 @@ export default function SkillsPage() {
                                         <span className="text-[var(--fs-label)] text-foreground/32">{group.skills.length} 个</span>
                                     </div>
                                     <div className="library-grid skill-library-grid">
-                                        {groupedSkills[0] === group ? <button type="button" className="library-create-card" onClick={() => setInstallOpen(true)}><span className="library-create-cover"><Plus className="size-8" /></span><span className="library-create-title">安装技能</span><span className="library-create-meta">上传 MD / ZIP 或连接 GitHub</span></button> : null}
+                                        {groupedSkills[0] === group ? <button type="button" className="library-create-card" onClick={() => setInstallOpen(true)}><span className="library-create-cover"><Plus className="size-8" /></span><span className="library-create-title">安装技能</span><span className="library-create-meta">上传 MD / ZIP 或连接远程仓库</span></button> : null}
                                         {group.skills.map((skill, index) => <SkillCard key={skill.skillId} skill={skill} categories={categories} loading={mutatingID === skill.skillId} style={{ animationDelay: `${Math.min(index, 10) * 45}ms` }} onOpen={() => void openSkill(skill)} onAdd={() => void toggleAdded(skill)} onLike={() => void toggleLiked(skill)} onEdit={() => void openEditor(skill)} onDelete={() => confirmDelete(skill)} />)}
                                     </div>
                                 </section>
