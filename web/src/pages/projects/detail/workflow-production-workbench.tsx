@@ -13,11 +13,14 @@ import { Link, useNavigate } from "react-router";
 import { CanvasResourceMentionTextarea } from "@/components/canvas/canvas-resource-mention-textarea";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { ModelPicker } from "@/components/model-picker";
+import { ModelCapabilityHint } from "@/components/model-capability-hint";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationOptions } from "@/lib/model-capabilities";
 import { modelQuoteDescription, modelQuoteRequest } from "@/lib/model-pricing";
 import { customShotTitle, formatShotOrdinal, normalizeDefaultShotTitle } from "@/lib/shot-label";
-import { modelCompatibilityError, resolveCompatibleModel, resolveModelVideoBooleanOptions, type ModelRequirements } from "@/lib/model-selection";
+import { modelCompatibilityError, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
+import { assessModelApplicability } from "@/lib/model-applicability";
+import { videoCreationAdmission, videoCreationConfig, videoCreationDefaultSelection } from "@/lib/video-creation-admission";
 import { formatVideoResolutionLabel } from "@/lib/video-generation-options";
 import { submitBackendGenerationTask } from "@/services/api/generation-task";
 import { quoteModel, type LogicalModelQuote } from "@/services/api/logical-models";
@@ -53,6 +56,7 @@ import {
     type ShortDramaWorkflowStage,
 } from "./workflow-shared";
 import { buildShotAssetReferenceContext, ensureShotAssetMentionPrompt, resolveShotAssetMentionPrompt } from "./workflow-shot-references";
+import { workflowVideoCreationRequirements } from "./workflow-video-creation-request";
 
 type ShotEditorValues = Omit<ShotRevisionInput, "durationMs"> & {
     title: string;
@@ -88,6 +92,8 @@ export default function WorkflowProductionWorkbench(props: Props) {
     const [form] = Form.useForm<ShotEditorValues>();
     const watchedDuration = Form.useWatch("durationSeconds", form);
     const watchedTitle = Form.useWatch("title", form);
+    const watchedVideoPrompt = Form.useWatch((values: ShotEditorValues) => [values.videoPrompt || values.plotDescription, values.action, values.dialogue && `台词：${values.dialogue}`, values.continuityNotes].filter(Boolean).join("\n"), form);
+    const watchedDialogue = Form.useWatch("dialogue", form);
     const [leftTab, setLeftTab] = useState<"assets" | "episodes" | "shots">("episodes");
     const [previewTab, setPreviewTab] = useState<"latest" | "history">("latest");
     const [previewArtifactId, setPreviewArtifactId] = useState("");
@@ -120,7 +126,8 @@ export default function WorkflowProductionWorkbench(props: Props) {
     const defaultModel = projectDefaultModel && configuredModelMatchesCapability(effectiveConfig, projectDefaultModel, generationCapability) ? projectDefaultModel : globalDefaultModel;
     const initialModel = defaultModel || modelOptions[0] || "";
     const [selectedModel, setSelectedModel] = useState(initialModel);
-    const selectedModelRef = useRef(initialModel);
+    const initializedModelContext = useRef("");
+    const [resetVideoSpecs, setResetVideoSpecs] = useState(false);
     const [aspectRatio, setAspectRatio] = useState(detail.project.aspectRatio || "16:9");
     const [resolution, setResolution] = useState(effectiveConfig.vquality || "720");
     const [imageQuality, setImageQuality] = useState(effectiveConfig.quality || "auto");
@@ -134,41 +141,49 @@ export default function WorkflowProductionWorkbench(props: Props) {
             ...(reference.asset?.primaryVersionId ? [[reference.asset.primaryVersionId, reference] as const] : []),
         ]));
     }, [detail.shotReferences, selectedShot?.id]);
-    const currentDurationSeconds = Number(watchedDuration || Math.max(0.5, (selectedShot?.durationMs || 3000) / 1000));
-    const generationSeconds = String(Math.max(1, Math.round(currentDurationSeconds)));
+    const currentDurationSeconds = Number(watchedDuration ?? Math.max(0.5, (selectedShot?.durationMs || 3000) / 1000));
+    const generationSeconds = String(currentDurationSeconds);
     const generationReferenceAudios = generationCapability === "video" ? shotAssetReferenceContext.referenceAudios : [];
-    const videoEditOperation = generationCapability === "video" && shotAssetReferenceContext.referenceImages.length ? "reference_to_video" : undefined;
-    const modelRequirements = useMemo<ModelRequirements>(() => ({
+    const requestedVideoConfig = useMemo(() => videoCreationConfig(effectiveConfig, selectedModel, {
+        size: aspectRatio,
+        vquality: resolution,
+        videoSeconds: generationSeconds,
+    }), [aspectRatio, effectiveConfig, generationSeconds, resolution, selectedModel]);
+    const videoPromptPreview = useMemo(() => {
+        try {
+            return resolveShotAssetMentionPrompt(watchedVideoPrompt || "", shotAssetReferenceContext, { dialogue: watchedDialogue });
+        } catch {
+            // Stale asset mentions are reported by the submission path.
+            return watchedVideoPrompt || "";
+        }
+    }, [shotAssetReferenceContext, watchedDialogue, watchedVideoPrompt]);
+    const modelRequirements = useMemo<ModelRequirements>(() => generationCapability === "video"
+        ? workflowVideoCreationRequirements(requestedVideoConfig, shotAssetReferenceContext.referenceImages, generationReferenceAudios, videoPromptPreview)
+        : ({
         capability: generationCapability,
-        input: { textCount: 1, imageCount: shotAssetReferenceContext.referenceImages.length, videoCount: 0, audioCount: generationReferenceAudios.length, characterCount: 0 },
-        videoOperation: videoEditOperation,
-        videoSeconds: generationCapability === "video" ? generationSeconds : undefined,
-        imageSize: generationCapability === "image" ? aspectRatio : undefined,
-        options: generationCapability === "video"
-            ? { size: aspectRatio, vquality: resolution, videoSeconds: Number(generationSeconds) }
-            : { size: aspectRatio, quality: imageQuality },
-    }), [aspectRatio, generationCapability, generationReferenceAudios.length, generationSeconds, imageQuality, resolution, shotAssetReferenceContext.referenceImages.length, videoEditOperation]);
-    const routedModel = resolveCompatibleModel(effectiveConfig, selectedModel, modelRequirements) || selectedModel;
-    const activeProfile = useMemo(() => modelCapabilityConfigFor(effectiveConfig, routedModel), [effectiveConfig, routedModel]);
+        input: { textCount: 1, imageCount: shotAssetReferenceContext.referenceImages.length, videoCount: 0, audioCount: 0, characterCount: 0 },
+        imageSize: aspectRatio,
+        options: { size: aspectRatio, quality: imageQuality },
+    }), [aspectRatio, generationCapability, generationReferenceAudios, imageQuality, requestedVideoConfig, shotAssetReferenceContext.referenceImages, videoPromptPreview]);
+    const routedModel = generationCapability === "video" ? selectedModel : resolveCompatibleModel(effectiveConfig, selectedModel, modelRequirements) || selectedModel;
+    const videoCapabilityUnknown = generationCapability === "video" && assessModelApplicability(requestedVideoConfig, routedModel, modelRequirements).status === "unknown";
+    const activeProfile = useMemo<ReturnType<typeof modelCapabilityConfigFor>>(() => videoCapabilityUnknown ? { version: 1 } : modelCapabilityConfigFor(effectiveConfig, routedModel), [effectiveConfig, routedModel, videoCapabilityUnknown]);
     const videoProfile = generationCapability === "video" ? activeProfile.video : undefined;
     const imageProfile = generationCapability === "image" ? activeProfile.image : undefined;
-    const videoBooleanOptions = useMemo(() => generationCapability === "video"
-        ? resolveModelVideoBooleanOptions(effectiveConfig, routedModel, {}, {
-              videoGenerateAudio: effectiveConfig.videoGenerateAudio,
-              videoWatermark: effectiveConfig.videoWatermark,
-          })
-        : undefined, [effectiveConfig, generationCapability, routedModel]);
-    const generationConfig = useMemo(() => ({
+    const generationConfig = useMemo(() => generationCapability === "video" ? requestedVideoConfig : ({
         ...effectiveConfig,
         model: routedModel,
-        imageModel: generationCapability === "image" ? routedModel : effectiveConfig.imageModel,
-        videoModel: generationCapability === "video" ? routedModel : effectiveConfig.videoModel,
+        imageModel: routedModel,
         size: aspectRatio,
         quality: imageQuality,
         vquality: resolution,
         videoSeconds: generationSeconds,
-        ...(videoBooleanOptions || {}),
-    }), [aspectRatio, effectiveConfig, generationCapability, generationSeconds, imageQuality, resolution, routedModel, videoBooleanOptions]);
+    }), [aspectRatio, effectiveConfig, generationCapability, generationSeconds, imageQuality, resolution, routedModel, requestedVideoConfig]);
+    const videoAdmission = generationCapability === "video" ? videoCreationAdmission(generationConfig, modelRequirements) : undefined;
+    const videoSelectionRequirements = videoAdmission
+        ? resetVideoSpecs ? videoCreationDefaultSelection(videoAdmission.selectionRequirements) : videoAdmission.selectionRequirements
+        : undefined;
+    const generationBlocked = Boolean(videoAdmission?.error) || resetVideoSpecs;
     const priceChannel = resolveModelChannel(generationConfig, routedModel);
     const configuredCredits = requestCreditCost({
         channelMode: priceChannel.scope === "system" ? "remote" : "local",
@@ -180,19 +195,23 @@ export default function WorkflowProductionWorkbench(props: Props) {
         config: generationConfig,
         requirements: modelRequirements,
     });
-    const quoteRequest = useMemo(() => modelQuoteRequest(generationConfig, routedModel, generationCapability, modelRequirements), [generationCapability, generationConfig, modelRequirements, routedModel]);
+    const quoteRequest = useMemo(() => generationBlocked ? undefined : modelQuoteRequest(generationConfig, routedModel, generationCapability, modelRequirements), [generationBlocked, generationCapability, generationConfig, modelRequirements, routedModel]);
     const quoteRequestKey = JSON.stringify(quoteRequest || null);
-    const [routeQuote, setRouteQuote] = useState<LogicalModelQuote | null>(null);
-    const generationCredits = routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : configuredCredits;
+    const [quotedRoute, setQuotedRoute] = useState<{ key: string; quote: LogicalModelQuote } | null>(null);
+    const routeQuote = quotedRoute?.key === quoteRequestKey ? quotedRoute.quote : null;
+    const generationCredits = generationBlocked ? null : routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : configuredCredits;
     const formattedGenerationCredits = generationCredits?.toLocaleString("zh-CN", { maximumFractionDigits: 6 });
     const modelSummary = routedModel ? modelDisplayName(effectiveConfig, routedModel) : "未选择模型";
     const durationSummary = `${Number(watchedDuration || Math.max(0.5, (selectedShot?.durationMs || 3000) / 1000))}s`;
     const resolutionSummary = generationCapability === "video" ? formatVideoResolutionLabel(resolution) : imageQuality.toUpperCase();
 
     useEffect(() => {
-        selectedModelRef.current = initialModel;
+        const context = `${projectId}:${generationCapability}`;
+        if (generationCapability === "video" && initializedModelContext.current === context) return;
+        if (initialModel) initializedModelContext.current = context;
         setSelectedModel(initialModel);
         if (!initialModel) return;
+        if (generationCapability === "video" && assessModelApplicability(effectiveConfig, initialModel, { capability: "video" }).status === "unknown") return;
         const profile = modelCapabilityConfigFor(effectiveConfig, initialModel);
         if (generationCapability === "video" && profile.video) {
             const normalized = normalizeVideoValue(profile.video, {
@@ -200,27 +219,30 @@ export default function WorkflowProductionWorkbench(props: Props) {
                 ratio: detail.project.aspectRatio || effectiveConfig.size,
                 resolution: effectiveConfig.vquality,
             });
-            setAspectRatio(normalized.ratio);
+            setAspectRatio(detail.project.aspectRatio || normalized.ratio);
             setResolution(normalized.resolution);
-            form.setFieldValue("durationSeconds", Number(normalized.seconds));
         } else if (generationCapability === "image" && profile.image) {
             const normalized = normalizeImageValue(profile.image, { size: detail.project.aspectRatio || effectiveConfig.size, quality: effectiveConfig.quality, count: "1" });
             setAspectRatio(normalized.size);
             setImageQuality(normalized.quality);
         }
-    }, [detail.project.aspectRatio, effectiveConfig, form, generationCapability, initialModel]);
+    }, [detail.project.aspectRatio, effectiveConfig, form, generationCapability, initialModel, projectId]);
+
+    useEffect(() => setResetVideoSpecs(false), [generationCapability, selectedShot?.id]);
 
     useEffect(() => {
         if (!creditsEnabled || !quoteRequest) {
-            setRouteQuote(null);
+            setQuotedRoute(null);
             return;
         }
         const controller = new AbortController();
-        setRouteQuote(null);
+        setQuotedRoute(null);
         quoteModel(quoteRequest, controller.signal)
-            .then(({ quote }) => setRouteQuote(quote))
+            .then(({ quote }) => {
+                if (!controller.signal.aborted) setQuotedRoute({ key: quoteRequestKey, quote });
+            })
             .catch(() => {
-                if (!controller.signal.aborted) setRouteQuote(null);
+                if (!controller.signal.aborted) setQuotedRoute(null);
             });
         return () => controller.abort();
         // quoteRequestKey captures the normalized request without retriggering on object identity.
@@ -229,10 +251,6 @@ export default function WorkflowProductionWorkbench(props: Props) {
 
     useEffect(() => {
         const shotDurationSeconds = Math.max(0.5, (revision?.durationMs || selectedShot?.durationMs || 3000) / 1000);
-        const currentModel = selectedModelRef.current || initialModel;
-        const normalizedDurationSeconds = generationCapability === "video" && currentModel
-            ? Number(normalizeVideoValue(modelCapabilityConfigFor(effectiveConfig, currentModel).video!, { seconds: String(shotDurationSeconds) }).seconds)
-            : shotDurationSeconds;
         const videoPrompt = ensureShotAssetMentionPrompt(revision?.videoPrompt || "", shotAssetReferenceContext.mentionReferences);
         form.setFieldsValue({
             title: normalizeDefaultShotTitle(selectedShot?.title, Math.max(0, shotIndex)),
@@ -242,7 +260,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
             shotSize: revision?.shotSize || "",
             cameraAngle: revision?.cameraAngle || "",
             cameraMovement: revision?.cameraMovement || "",
-            durationSeconds: normalizedDurationSeconds,
+            durationSeconds: shotDurationSeconds,
             imagePrompt: revision?.imagePrompt || "",
             videoPrompt,
             negativePrompt: revision?.negativePrompt || "",
@@ -251,23 +269,21 @@ export default function WorkflowProductionWorkbench(props: Props) {
         setPreviewArtifactId("");
         setImagePreviewArtifact(null);
         setEditorDirty(!revision || videoPrompt !== revision.videoPrompt);
-    }, [effectiveConfig, form, generationCapability, initialModel, revision?.id, selectedShot?.id, shotAssetReferenceContext.mentionReferences]);
+    }, [form, generationCapability, revision?.id, selectedShot?.id, shotAssetReferenceContext.mentionReferences]);
 
     const changeGenerationModel = (nextModel: string) => {
-        selectedModelRef.current = nextModel;
         setSelectedModel(nextModel);
-        const profile = modelCapabilityConfigFor(effectiveConfig, nextModel);
-        if (generationCapability === "video" && profile.video) {
-            const normalized = normalizeVideoValue(profile.video, {
-                seconds: String(form.getFieldValue("durationSeconds") || generationSeconds),
-                ratio: aspectRatio,
-                resolution,
-            });
-            setAspectRatio(normalized.ratio);
-            setResolution(normalized.resolution);
-            form.setFieldValue("durationSeconds", Number(normalized.seconds));
+        if (generationCapability === "video") {
+            if (resetVideoSpecs) {
+                const defaults = videoCreationConfig(effectiveConfig, nextModel);
+                setAspectRatio(defaults.size);
+                setResolution(defaults.vquality);
+                form.setFieldValue("durationSeconds", Number(defaults.videoSeconds));
+            }
+            setResetVideoSpecs(false);
             return;
         }
+        const profile = modelCapabilityConfigFor(effectiveConfig, nextModel);
         if (generationCapability === "image" && profile.image) {
             const normalized = normalizeImageValue(profile.image, { size: aspectRatio, quality: imageQuality, count: "1" });
             setAspectRatio(normalized.size);
@@ -315,33 +331,14 @@ export default function WorkflowProductionWorkbench(props: Props) {
     });
 
     const generateArtifact = async () => {
-        if (!selectedShot || submittingShotIds.has(selectedShot.id)) return;
+        if (!selectedShot || submittingShotIds.has(selectedShot.id) || resetVideoSpecs) return;
         const submittingShot = selectedShot;
         setSubmittingShotIds((current) => new Set(current).add(submittingShot.id));
         try {
             const values = await form.validateFields();
-            let productionStep = workflowStep;
-            if (!productionStep) {
-                const initialized = await createUnitWorkflow(projectId, unitId);
-                productionStep = (initialized.workflow.steps || []).find((step) => step.stepKey === activeStage);
-            }
-            if (!productionStep) throw new Error("当前生成阶段不可用，请刷新页面后重试");
-            if (productionStep.status === "failed") throw new Error("当前生成阶段失败，请刷新后重试");
-            if (!routedModel) throw new Error(activeStage === "video" ? "请先配置视频模型" : "请先配置图片模型");
-            const compatibilityError = modelCompatibilityError(effectiveConfig, routedModel, modelRequirements);
-            if (compatibilityError) throw new Error(`当前模型配置不可用：${compatibilityError}`);
-            const saved = await saveProjectShot(projectId, {
-                id: submittingShot.id,
-                unitId,
-                title: values.title,
-                description: values.plotDescription,
-                position: submittingShot.position,
-                durationMs: Math.round(values.durationSeconds * 1000),
-                status: submittingShot.status,
-                revision: revisionInput(values),
-            });
             const mode = generationCapability;
-            const config = { ...generationConfig, videoSeconds: String(Math.max(1, Math.round(values.durationSeconds))) };
+            const config = { ...generationConfig, videoSeconds: String(values.durationSeconds) };
+            if (!routedModel) throw new Error(activeStage === "video" ? "请先配置视频模型" : "请先配置图片模型");
             if (!isAiConfigReady(config, routedModel)) throw new Error("当前模型渠道配置不完整，请先到设置中补齐");
             const basePrompt = mode === "video"
                 ? [values.videoPrompt || values.plotDescription, values.action, values.dialogue && `台词：${values.dialogue}`, values.continuityNotes].filter(Boolean).join("\n")
@@ -352,6 +349,30 @@ export default function WorkflowProductionWorkbench(props: Props) {
                 prompt: resolvedPrompt,
                 skills: availableSkills,
                 selectedSkillIds,
+            });
+            const submissionRequirements = mode === "video"
+                ? workflowVideoCreationRequirements(config, shotAssetReferenceContext.referenceImages, generationReferenceAudios, skillExecution.prompt)
+                : modelRequirements;
+            const compatibilityError = mode === "video"
+                ? videoCreationAdmission(config, submissionRequirements).error
+                : modelCompatibilityError(config, routedModel, submissionRequirements);
+            if (compatibilityError) throw new Error(`当前模型配置不可用：${compatibilityError}`);
+            let productionStep = workflowStep;
+            if (!productionStep) {
+                const initialized = await createUnitWorkflow(projectId, unitId);
+                productionStep = (initialized.workflow.steps || []).find((step) => step.stepKey === activeStage);
+            }
+            if (!productionStep) throw new Error("当前生成阶段不可用，请刷新页面后重试");
+            if (productionStep.status === "failed") throw new Error("当前生成阶段失败，请刷新后重试");
+            const saved = await saveProjectShot(projectId, {
+                id: submittingShot.id,
+                unitId,
+                title: values.title,
+                description: values.plotDescription,
+                position: submittingShot.position,
+                durationMs: Math.round(values.durationSeconds * 1000),
+                status: submittingShot.status,
+                revision: revisionInput(values),
             });
             await submitBackendGenerationTask({
                 projectId,
@@ -370,7 +391,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
                     artifactType,
                     role: "output",
                     source: "short-drama-workflow",
-                    ...(mode === "video" && shotAssetReferenceContext.referenceImages.length ? { videoEditOperation: "reference_to_video" } : {}),
+                    ...(mode === "video" ? { videoEditOperation: submissionRequirements.videoOperation } : {}),
                     resolvedCharacterVersions: shotAssetReferenceContext.resolvedCharacterVersions,
                     artifactMetadata: { model: routedModel, aspectRatio, resolution, durationSeconds: values.durationSeconds, ...skillExecution.metadata },
                 },
@@ -472,7 +493,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
                         </div>
                         <div className="flex items-center gap-1"><span className="mr-1 text-[var(--fs-micro)] text-foreground/45">{shotIndex + 1} / {shots.length}</span><Button type="text" size="small" icon={<ChevronLeft className="size-4" />} disabled={shotIndex <= 0} onClick={() => selectRelativeShot(-1)} aria-label="上一个镜头" /><Button type="text" size="small" icon={<ChevronRight className="size-4" />} disabled={shotIndex >= shots.length - 1} onClick={() => selectRelativeShot(1)} aria-label="下一个镜头" /></div>
                     </header>
-                    <Form form={form} layout="vertical" className="workflow-shot-form" onValuesChange={() => setEditorDirty(true)} onFinish={(values) => saveShot.mutate(values)}>
+                    <Form form={form} layout="vertical" className="workflow-shot-form" onValuesChange={(changed) => { setEditorDirty(true); if ("durationSeconds" in changed) setResetVideoSpecs(false); }} onFinish={(values) => saveShot.mutate(values)}>
                         <div className="workflow-shot-form-scroll thin-scrollbar">
                             <div className="workflow-form-section-heading"><span>镜头脚本</span><small>先写清镜头里发生什么，再调整生成参数</small></div>
                             <Form.Item name="title" label="镜头名称" rules={[{ required: true, message: "请输入镜头名称" }]}><Input placeholder="用一句话概括这个镜头" /></Form.Item>
@@ -496,6 +517,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
                                             value={selectedModel}
                                             capability={generationCapability}
                                             requirements={modelRequirements}
+                                            selectionRequirements={videoSelectionRequirements}
                                             onChange={changeGenerationModel}
                                             fullWidth
                                             className="workflow-model-picker"
@@ -503,6 +525,13 @@ export default function WorkflowProductionWorkbench(props: Props) {
                                             showSelectedPrice
                                         />
                                     </Form.Item>
+                                    {videoAdmission ? (
+                                        <div className="space-y-2">
+                                            <ModelCapabilityHint config={generationConfig} model={routedModel} requirements={videoAdmission.selectionRequirements} />
+                                            <Button type="link" size="small" onClick={() => setResetVideoSpecs((current) => !current)}>{resetVideoSpecs ? "取消重新选模型" : "清除规格约束，重新选模型"}</Button>
+                                            {resetVideoSpecs ? <p className="text-xs">请选择模型，将恢复新模型默认规格；已选素材不会移除，确认前不生成。</p> : null}
+                                        </div>
+                                    ) : null}
                                     <Form.Item label="技能库"><SkillRuntimePicker profile="shortDrama" skills={availableSkills} loading={skillsLoading} value={selectedSkillIds} onChange={setSelectedSkillIds} /></Form.Item>
                                     <div className="workflow-form-grid is-three">
                                         <Form.Item name="durationSeconds" label="镜头时长（秒）">
@@ -510,9 +539,9 @@ export default function WorkflowProductionWorkbench(props: Props) {
                                                 ? <Select options={videoDurationOptions(videoProfile).map((value) => ({ value, label: `${value} 秒` }))} />
                                                 : <InputNumber className="w-full" min={generationCapability === "video" ? videoProfile?.duration.min || 1 : 0.5} max={generationCapability === "video" ? videoProfile?.duration.max || 60 : 60} step={generationCapability === "video" ? videoProfile?.duration.step || 1 : 0.5} />}
                                         </Form.Item>
-                                        {generationCapability === "video" ? <Form.Item label="画幅"><Select value={aspectRatio} onChange={setAspectRatio} options={(videoProfile?.ratios || []).map((value) => ({value, label:value}))} /></Form.Item> : null}
+                                        {generationCapability === "video" ? <Form.Item label="画幅"><Select value={aspectRatio} onChange={(value) => { setResetVideoSpecs(false); setAspectRatio(value); }} options={(videoProfile?.ratios || []).map((value) => ({value, label:value}))} /></Form.Item> : null}
                                         {generationCapability === "video" ? (
-                                            <Form.Item label="分辨率"><Select value={resolution} onChange={setResolution} options={(videoProfile?.resolutions || []).map((value) => ({ value, label: formatVideoResolutionLabel(value) }))} /></Form.Item>
+                                            <Form.Item label="分辨率"><Select value={resolution} onChange={(value) => { setResetVideoSpecs(false); setResolution(value); }} options={(videoProfile?.resolutions || []).map((value) => ({ value, label: formatVideoResolutionLabel(value) }))} /></Form.Item>
                                         ) : imageProfile?.quality.supported && !imageResolutionUsesQuality(imageProfile) ? (
                                             <Form.Item label="生成画质"><Select value={imageQuality} onChange={setImageQuality} options={imageProfile.quality.values.map((value) => ({ value, label: value.toUpperCase() }))} /></Form.Item>
                                         ) : <div />}
@@ -545,9 +574,9 @@ export default function WorkflowProductionWorkbench(props: Props) {
                         </div>
                         <footer className="workflow-editor-actions">
                             <div className="workflow-generation-cost" aria-live="polite">
-                                {creditsEnabled && formattedGenerationCredits ? <><CreditSymbol /><span title={routeQuote ? modelQuoteDescription(routeQuote) : undefined}>本次{routeQuote?.estimated ? "预估" : "费用"} {formattedGenerationCredits} 积分</span></> : creditsEnabled && routedModel ? <span>本次费用将在提交时按实际规格计算</span> : null}
+                                {generationBlocked ? <span role="status">{resetVideoSpecs ? "请选择新模型或取消清除规格" : videoAdmission?.error}</span> : creditsEnabled && formattedGenerationCredits ? <><CreditSymbol /><span title={routeQuote ? modelQuoteDescription(routeQuote) : undefined}>本次{routeQuote?.estimated ? "预估" : "费用"} {formattedGenerationCredits} 积分</span></> : creditsEnabled && routedModel ? <span>本次费用将在提交时按实际规格计算</span> : null}
                             </div>
-                            <div className="flex items-center gap-2"><Button danger icon={<Trash2 className="size-4" />} loading={deleteShot.isPending} disabled={saveShot.isPending || selectedShotSubmitting || changeAssetBinding.isPending} onClick={requestDeleteShot}>删除镜头</Button><Button htmlType="submit" icon={<Save className="size-4" />} loading={saveShot.isPending} disabled={!editorDirty || deleteShot.isPending}>保存脚本</Button><Button type="primary" icon={<Play className="size-4" />} loading={selectedShotSubmitting || shotTask?.status === "queued" || shotTask?.status === "running"} disabled={deleteShot.isPending} onClick={() => void generateArtifact()}>{selectedShotSubmitting ? `${stageCopy.action}（正在提交）` : shotTask?.status === "queued" || shotTask?.status === "running" ? `${stageCopy.action}（已运行${shotTaskElapsed}）` : shotTask?.status === "failed" ? `${stageCopy.action}（上次失败，可重试）` : shotTask?.status === "succeeded" && !newestArtifact ? `${stageCopy.action}（已完成，正在同步）` : newestArtifact ? `${stageCopy.action}（已生成）` : stageCopy.action}</Button></div>
+                            <div className="flex items-center gap-2"><Button danger icon={<Trash2 className="size-4" />} loading={deleteShot.isPending} disabled={saveShot.isPending || selectedShotSubmitting || changeAssetBinding.isPending} onClick={requestDeleteShot}>删除镜头</Button><Button htmlType="submit" icon={<Save className="size-4" />} loading={saveShot.isPending} disabled={!editorDirty || deleteShot.isPending}>保存脚本</Button><Button type="primary" icon={<Play className="size-4" />} loading={selectedShotSubmitting || shotTask?.status === "queued" || shotTask?.status === "running"} disabled={deleteShot.isPending || generationBlocked} onClick={() => void generateArtifact()}>{selectedShotSubmitting ? `${stageCopy.action}（正在提交）` : shotTask?.status === "queued" || shotTask?.status === "running" ? `${stageCopy.action}（已运行${shotTaskElapsed}）` : shotTask?.status === "failed" ? `${stageCopy.action}（上次失败，可重试）` : shotTask?.status === "succeeded" && !newestArtifact ? `${stageCopy.action}（已完成，正在同步）` : newestArtifact ? `${stageCopy.action}（已生成）` : stageCopy.action}</Button></div>
                         </footer>
                     </Form>
                 </section>
@@ -570,7 +599,7 @@ export default function WorkflowProductionWorkbench(props: Props) {
                     <div className="workflow-preview-scroll thin-scrollbar">
                         {previewTab === "latest" ? <LatestPreview artifact={previewArtifact} emptyText={stageCopy.empty} onPreviewImage={setImagePreviewArtifact} /> : <ArtifactHistory artifacts={artifacts} activeId={previewArtifact?.id} onSelect={(artifact) => { setPreviewArtifactId(artifact.id); setPreviewTab("latest"); }} />}
                         <div className="workflow-preview-summary"><div className="flex items-center justify-between gap-2"><span className="text-xs font-medium">当前产物</span><ArtifactStatus artifact={newestArtifact} compact /></div><div className="mt-1 text-[var(--fs-micro)] text-foreground/45">{newestArtifact ? `${formatDuration(selectedShot.durationMs)} · ${resolution}p · v${newestArtifact.version}` : "当前镜头还没有生成产物"}</div></div>
-                        <div className="workflow-preview-actions"><Button icon={<RefreshCcw className="size-3.5" />} loading={selectedShotSubmitting || shotTask?.status === "queued" || shotTask?.status === "running"} onClick={() => void generateArtifact()}>重新生成</Button><Button icon={<Download className="size-3.5" />} disabled={!previewArtifact?.resourceId} onClick={() => previewArtifact?.resourceId && void downloadArtifact(previewArtifact, selectedShot.title, message.error)}>下载{activeStage === "video" ? "视频" : "图片"}</Button></div>
+                        <div className="workflow-preview-actions"><Button icon={<RefreshCcw className="size-3.5" />} loading={selectedShotSubmitting || shotTask?.status === "queued" || shotTask?.status === "running"} disabled={generationBlocked} onClick={() => void generateArtifact()}>重新生成</Button><Button icon={<Download className="size-3.5" />} disabled={!previewArtifact?.resourceId} onClick={() => previewArtifact?.resourceId && void downloadArtifact(previewArtifact, selectedShot.title, message.error)}>下载{activeStage === "video" ? "视频" : "图片"}</Button></div>
                         <ArtifactHistory artifacts={artifacts.slice(0, 4)} activeId={previewArtifact?.id} onSelect={(artifact) => setPreviewArtifactId(artifact.id)} compact />
                     </div>
                 </aside>

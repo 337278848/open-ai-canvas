@@ -1,4 +1,4 @@
-import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, STANDARD_IMAGE_SIZE_VALUES, videoDurationAllowed, type ImageCapabilityConfig } from "@/lib/model-capabilities";
+import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, STANDARD_IMAGE_SIZE_VALUES, videoDurationAllowed, videoResolutionRequest, type ImageCapabilityConfig, type VideoCapabilityConfig } from "@/lib/model-capabilities";
 import { videoResolutionComparisonKey } from "@/lib/video-generation-options";
 import { imageSizePresets } from "@/lib/image-size-presets";
 import { modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
@@ -15,9 +15,14 @@ export type ModelRequirements = {
     capability?: ModelCapability;
     input?: ModelInputSummary;
     videoOperation?: string;
+    /** True for a chosen mode; absent for legacy node metadata that follows connected inputs. */
+    videoOperationExplicit?: boolean;
     videoSeconds?: string;
     imageSize?: string;
     options?: Record<string, unknown>;
+    /** Known metadata only; absence must not be interpreted as a zero-byte file. */
+    media?: Array<{ kind: "image" | "video" | "audio"; bytes?: number; durationSeconds?: number }>;
+    prompt?: string;
 };
 
 export type DisplayModelGroup = {
@@ -60,7 +65,7 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
     const logicalCost = channel.modelCosts?.find((item) => item.model === modelOptionName(model));
     const logicalSpecs = logicalCost?.logicalCapabilityProfiles?.length ? logicalCost.logicalCapabilityProfiles : logicalCost?.logicalCapabilitySpec ? [logicalCost.logicalCapabilitySpec] : [];
     if (logicalSpecs.length) {
-        const publicOptionNames = logicalCost?.logicalCapabilitySpec?.options || {};
+        const publicOptionNames = logicalCost?.logicalCapabilitySpec?.options || Object.assign({}, ...logicalSpecs.map((spec) => spec.options || {}));
         const logicalRequirements = {
             ...requirements,
             options: Object.fromEntries(Object.entries(requirements.options || {}).filter(([name]) => Boolean(publicOptionNames[name]))),
@@ -82,12 +87,26 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
 
     if (capability === "video") {
         const profile = modelCapabilityConfigFor(config, model).video!;
-        if (requirements.videoSeconds && !videoDurationAllowed(profile, Number(requirements.videoSeconds))) return "不支持当前视频时长";
+        const seconds = requirements.videoSeconds ?? requirements.options?.videoSeconds;
+        if (seconds !== undefined && seconds !== "" && !videoDurationAllowed(profile, Number(seconds))) return "不支持当前视频时长";
+        const ratio = String(requirements.options?.size ?? requirements.options?.aspectRatio ?? "").trim();
+        if (ratio && !videoRatioMatches(profile.ratios, ratio)) return "不支持当前画面比例";
+        const resolution = String(requirements.options?.vquality ?? requirements.options?.resolution ?? "").trim();
+        if (resolution && !["auto", "default", "medium", "high"].includes(resolution.toLowerCase()) && profile.resolutions.length && !videoResolutionRequest(profile, resolution)) return "不支持当前分辨率";
+        if (isTrueOption(requirements.options?.videoGenerateAudio) && !profile.generateAudio.supported) return "不支持开启生成声音";
+        if (isTrueOption(requirements.options?.videoWatermark) && !profile.watermark.supported) return "不支持开启水印";
+        const mediaError = videoReferenceMetadataError(profile, requirements.media);
+        if (mediaError) return mediaError;
+        if (requirements.prompt) {
+            const promptError = modelPromptLengthError(config, model, "video", requirements.prompt);
+            if (promptError) return promptError;
+        }
         if (!input) return "";
         if (visualInputCount > profile.references.maxImages) return `最多支持 ${profile.references.maxImages} 张参考图`;
         if (input.videoCount > profile.references.maxVideos) return `最多支持 ${profile.references.maxVideos} 个参考视频`;
         if (input.audioCount > profile.references.maxAudios) return `最多支持 ${profile.references.maxAudios} 个参考音频`;
-        const operation = resolveVideoOperation(input, requirements.videoOperation);
+        if (visualInputCount < profile.references.minImages) return `至少需要 ${profile.references.minImages} 张参考图，当前 ${visualInputCount} 张`;
+        const operation = resolvedVideoRequirementOperation(requirements)!;
         if (operation !== "concat" && !profile.operations.includes(operation)) return `不支持${videoOperationLabel(operation)}`;
         return "";
     }
@@ -100,6 +119,36 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
 
     if (input.characterCount > 1) return "角色配音一次只能引用一个角色卡";
     return input.imageCount > 0 || input.videoCount > 0 || input.audioCount > 0 ? "音频模型只接受文本或单个角色卡输入" : "";
+}
+
+function isTrueOption(value: unknown) {
+    return value === true || value === "true";
+}
+
+// Match the backend's pixel-size compatibility for legacy saved canvas nodes.
+function videoRatioMatches(options: string[], value: string) {
+    const normalized = value.toLowerCase().replaceAll("×", "x");
+    if (options.some((option) => option.trim().toLowerCase() === normalized)) return true;
+    const dimensions = /^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/.exec(normalized);
+    if (!dimensions || Number(dimensions[1]) <= 0 || Number(dimensions[2]) <= 0) return false;
+    const actual = Number(dimensions[1]) / Number(dimensions[2]);
+    return options.some((option) => {
+        const parts = option.split(":").map(Number);
+        const ratio = parts.length === 2 && parts.every((part) => Number.isFinite(part) && part > 0) ? parts[0] / parts[1] : 0;
+        return ratio > 0 && Math.abs(actual - ratio) / ratio < 0.01;
+    });
+}
+
+function videoReferenceMetadataError(profile: VideoCapabilityConfig, media: ModelRequirements["media"]) {
+    for (const item of media || []) {
+        const { maxImageBytes, maxVideoBytes, maxAudioBytes, maxVideoDurationSeconds, maxAudioDurationSeconds } = profile.references;
+        const label = item.kind === "image" ? "参考图片" : item.kind === "video" ? "参考视频" : "参考音频";
+        const maxBytes = item.kind === "image" ? maxImageBytes : item.kind === "video" ? maxVideoBytes : maxAudioBytes;
+        if (maxBytes > 0 && item.bytes !== undefined && item.bytes > maxBytes) return `${label}单个文件不能超过 ${Number((maxBytes / 1024 / 1024).toFixed(2))} MB`;
+        const maxSeconds = item.kind === "video" ? maxVideoDurationSeconds : item.kind === "audio" ? maxAudioDurationSeconds : 0;
+        if (maxSeconds > 0 && item.durationSeconds !== undefined && item.durationSeconds > maxSeconds) return `${label}单个时长不能超过 ${maxSeconds} 秒`;
+    }
+    return "";
 }
 
 export function modelPromptLengthError(config: AiConfig, model: string, capability: ModelCapability, prompt: string) {
@@ -142,7 +191,7 @@ function logicalModelCompatibilityError(spec: NonNullable<NonNullable<AiConfig["
         if (!constraint && count > 0) return `不支持${kind}输入`;
         if (constraint && (count < constraint.min || count > constraint.max)) return `${kind}输入需为 ${constraint.min}-${constraint.max} 个`;
     }
-    const operation = requirements.capability === "video" && input ? resolveVideoOperation(input, requirements.videoOperation) : requirements.videoOperation;
+    const operation = requirements.capability === "video" ? resolvedVideoRequirementOperation(requirements) : requirements.videoOperation;
     if (operation && spec.operations?.length && !spec.operations.includes(operation)) return "不支持当前生成模式";
     // 图片创作状态也会携带全局默认视频时长；这个字段只对视频模型有意义，
     // 不能把它拼进图片逻辑模型的能力匹配，否则图片模型会被误判为“不支持当前时长”。
@@ -286,17 +335,11 @@ export function resolveModelGenerationDefaults(
             ratio: source("size"),
             resolution: source("vquality"),
         });
-        // 同步音频/水印是模型的硬能力，不是可继承的偏好。模型声明不支持时，
-        // 节点残留值（切换模型未清理）和全局默认值都不能继续外泄到请求里，
-        // 否则后端 admission 会以「参数 同步音频超出支持范围」拒绝整单。
-        const generateAudioSupported = profile.video.generateAudio?.supported === true;
-        const watermarkSupported = profile.video.watermark?.supported === true;
         return {
             videoSeconds: normalized.seconds,
             size: normalized.ratio,
             vquality: normalized.resolution.replace(/p$/i, ""),
-            videoGenerateAudio: generateAudioSupported ? source("videoGenerateAudio") ?? String(profile.video.generateAudio.default) : "false",
-            videoWatermark: watermarkSupported ? source("videoWatermark") ?? String(profile.video.watermark.default) : "false",
+            ...resolveModelVideoBooleanOptions(config, model, explicit, fallback),
         };
     }
 
@@ -307,13 +350,26 @@ export function resolveModelVideoBooleanOptions(
     config: AiConfig,
     model: string,
     explicit: Partial<ModelVideoBooleanOptions> = {},
-    fallback: Partial<ModelVideoBooleanOptions> = {},
+    _fallback: Partial<ModelVideoBooleanOptions> = {},
 ): ModelVideoBooleanOptions {
-    const profile = modelCapabilityConfigFor(config, model).video!;
-    const defaults = resolveModelGenerationDefaults(config, model, "video", explicit, fallback);
+    const channel = resolveModelChannel(config, model);
+    const cost = channel.modelCosts?.find((item) => item.model === modelOptionName(model));
+    const profile = cost?.capabilityConfig?.video;
+    const specs = cost?.logicalCapabilitySpec ? [cost.logicalCapabilitySpec] : cost?.logicalCapabilityProfiles || [];
+    // 只以真实声明授权开关；保留旧 fallback 入参，但全局偏好和协议兜底不能补出模型能力。
+    const resolve = (key: keyof ModelVideoBooleanOptions, profileKey: "generateAudio" | "watermark") => {
+        if (profile) {
+            const option = profile[profileKey];
+            return option?.supported === true ? explicit[key] ?? String(option.default === true) : "false";
+        }
+        const values = specs.filter((spec) => spec.capability === "video").flatMap((spec) => spec.options?.[key]?.values || []);
+        if (!values?.some(isTrueOption)) return "false";
+        const initial = cost?.defaultOptions?.[key] ?? values.find((value) => typeof value === "boolean" || value === "true" || value === "false");
+        return explicit[key] ?? String(isTrueOption(initial));
+    };
     return {
-        videoGenerateAudio: profile.generateAudio.supported ? defaults.videoGenerateAudio ?? String(profile.generateAudio.default) : "false",
-        videoWatermark: profile.watermark.supported ? defaults.videoWatermark ?? String(profile.watermark.default) : "false",
+        videoGenerateAudio: resolve("videoGenerateAudio", "generateAudio"),
+        videoWatermark: resolve("videoWatermark", "watermark"),
     };
 }
 
@@ -366,6 +422,11 @@ export function inferVideoOperation(input: ModelInputSummary) {
 export function resolveVideoOperation(input: ModelInputSummary, storedOperation?: string) {
     if (storedOperation && !["text_to_video", "image_to_video", "audio_to_video", "extend", "reference_to_video"].includes(storedOperation)) return storedOperation;
     return inferVideoOperation(input);
+}
+
+export function resolvedVideoRequirementOperation(requirements?: ModelRequirements) {
+    if (requirements?.videoOperationExplicit && requirements.videoOperation) return requirements.videoOperation;
+    return requirements?.input ? resolveVideoOperation(requirements.input, requirements.videoOperation) : requirements?.videoOperation;
 }
 
 function videoOperationLabel(operation: string) {

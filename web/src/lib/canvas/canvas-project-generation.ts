@@ -8,7 +8,7 @@ import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { isSeedanceVideoConfig } from "@/lib/seedance-video";
 import { modelCapabilityConfigFor, workflowFieldCurrentValue, workflowFieldHasStoredValue, workflowFieldKey, workflowFieldRandomKey, workflowFieldSubmissionValue, workflowOutputSizeValue, workflowVideoFieldsFromJson } from "@/lib/model-capabilities";
-import { modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, resolveVideoOperation, type ModelGenerationDefaults, type ModelRequirements } from "@/lib/model-selection";
+import { modelCompatibilityError, modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, resolveVideoOperation, type ModelGenerationDefaults, type ModelRequirements } from "@/lib/model-selection";
 import { imageMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { ensureMediaNodeMinimumSize } from "@/lib/canvas/canvas-node-size";
 import { interruptFileUpload } from "@/lib/canvas/canvas-file-upload";
@@ -462,8 +462,12 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     const baseRequirements = requirements?.capability
         ? { ...requirements, options: { ...liveOptions, ...(requirements.options || {}) } }
         : { capability: mode, options: liveOptions };
-    const model = workflowProvider === "model"
-        ? resolveCompatibleModel(config, preferredModel, imageSize ? { ...baseRequirements, imageSize } : baseRequirements) || preferredModel
+    const routingRequirements = imageSize ? { ...baseRequirements, imageSize } : baseRequirements;
+    // 视频保留已兼容的具体选择；不同计费单位的单价不能作为强制换模型的依据。
+    // 图片继续沿用分组路由，视频只有当前选择不兼容时才尝试组内替代。
+    const keepVideoSelection = workflowProvider === "model" && mode === "video" && !modelCompatibilityError(config, preferredModel, routingRequirements);
+    const model = workflowProvider === "model" && !keepVideoSelection
+        ? resolveCompatibleModel(config, preferredModel, routingRequirements) || preferredModel
         : preferredModel;
     const generationDefaults: Partial<ModelGenerationDefaults> = workflowProvider === "model"
         ? resolveModelGenerationDefaults(

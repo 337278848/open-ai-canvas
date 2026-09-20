@@ -5,6 +5,8 @@ import { App } from "antd";
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { buildGenerationConfig, isGenerationCanceled } from "@/lib/canvas/canvas-project-generation";
+import { buildCanvasVideoRequestConfig, canvasVideoMediaMetadata } from "@/lib/canvas/canvas-video-admission";
+import { videoCreationAdmission } from "@/lib/video-creation-admission";
 import { canvasGenerationPromptMetadata, canvasGenerationRequestFingerprint, runCanvasGenerationSubmissionOnce } from "@/lib/canvas/canvas-generation-submission";
 import { isGenerationTaskCapacityError } from "@/lib/canvas/canvas-generation-batch";
 import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture";
@@ -111,6 +113,8 @@ export function useCanvasGenerationExecutor({
                         return;
                     }
                     let generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode);
+                    const validateVideoRequest = mode === "video" && generationConfig.taskWorkflowProvider === "model";
+                    if (validateVideoRequest) generationConfig = buildCanvasVideoRequestConfig(effectiveConfig, sourceNode, generationConfig);
                     const hasLiveBatchChildren =
                         sourceNode?.type === CanvasNodeType.Image && (sourceNode.metadata?.batchChildIds || []).some((childId) => nodesRef.current.some((node) => node.id === childId && node.metadata?.batchRootId === sourceNode.id));
                     const hasStaleImageBatchState =
@@ -160,18 +164,25 @@ export function useCanvasGenerationExecutor({
                             promptOnly,
                         );
                         const requirements = generationModelRequirements(mode, baseContext, sourceNode, generationConfig, true);
-                        generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, requirements);
-                        const compatibilityError = usesWorkflowProvider ? "" : modelCompatibilityError(generationConfig, generationConfig.model, requirements);
+                        if (!validateVideoRequest) generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, requirements);
+                        const compatibilityError = usesWorkflowProvider ? "" : validateVideoRequest
+                            ? videoCreationAdmission(generationConfig, requirements).error
+                            : modelCompatibilityError(generationConfig, generationConfig.model, requirements);
                         if (compatibilityError) throw new Error(`当前模型无法支持这组输入和参数：${compatibilityError}`);
                         const referenceLimits = usesWorkflowProvider ? undefined : modelGroupReferenceLimits(effectiveConfig, generationConfig.model, mode, requirements);
                         rawGenerationContext = await hydrateNodeGenerationContext(baseContext, projectId, domainProjectId, mode, mode === "video" && Boolean(referenceLimits?.maxAudios), !promptOnly, referenceLimits);
                         const hydratedRequirements = generationModelRequirements(mode, rawGenerationContext, sourceNode, generationConfig);
-                        generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, hydratedRequirements);
-                        const hydratedCompatibilityError = usesWorkflowProvider ? "" : modelCompatibilityError(generationConfig, generationConfig.model, hydratedRequirements);
+                        if (!validateVideoRequest) generationConfig = buildGenerationConfig(effectiveConfig, sourceNode, mode, hydratedRequirements);
+                        const hydratedCompatibilityError = usesWorkflowProvider ? "" : validateVideoRequest
+                            ? videoCreationAdmission(generationConfig, hydratedRequirements).error
+                            : modelCompatibilityError(generationConfig, generationConfig.model, hydratedRequirements);
                         if (hydratedCompatibilityError) throw new Error(`当前模型无法支持这组输入和参数：${hydratedCompatibilityError}`);
                     } catch (error) {
                         const errorDetails = generationErrorMessage(error);
                         message.error(errorDetails);
+                        // A scheduled item must become terminal rather than be
+                        // returned to "waiting" and revalidated indefinitely.
+                        if (options?.waitForTaskCapacity) setNodes((current) => current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails } } : node));
                         return;
                     }
 
@@ -197,9 +208,12 @@ export function useCanvasGenerationExecutor({
                             return;
                         }
                     }
-                    const promptLengthError = mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
+                    const promptLengthError = validateVideoRequest
+                        ? videoCreationAdmission(generationConfig, { ...generationModelRequirements(mode, rawGenerationContext, sourceNode, generationConfig), prompt: effectivePrompt }).error
+                        : mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
                     if (promptLengthError) {
                         message.error(promptLengthError);
+                        if (options?.waitForTaskCapacity) setNodes((current) => current.map((node) => node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, errorDetails: promptLengthError } } : node));
                         return;
                     }
                     const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
@@ -395,7 +409,7 @@ export function useCanvasGenerationExecutor({
 
 function generationModelRequirements(
     mode: CanvasNodeGenerationMode,
-    input: Pick<Awaited<ReturnType<typeof hydrateNodeGenerationContext>>, "textCount" | "imageCount" | "videoCount" | "audioCount" | "characterReferences">,
+    input: Pick<Awaited<ReturnType<typeof hydrateNodeGenerationContext>>, "textCount" | "imageCount" | "videoCount" | "audioCount" | "characterReferences" | "prompt" | "referenceImages" | "referenceVideos" | "referenceAudios">,
     sourceNode: CanvasNodeData | undefined,
     config: ReturnType<typeof useEffectiveConfig>,
     includeCharacterMinimum = false,
@@ -410,6 +424,7 @@ function generationModelRequirements(
             characterCount: includeCharacterMinimum ? input.characterReferences.length : 0,
         },
         videoOperation: sourceNode?.metadata?.videoEditOperation,
+        ...(mode === "video" ? { prompt: input.prompt, media: canvasVideoMediaMetadata(input) } : {}),
         videoSeconds: config.videoSeconds,
         options: config.taskWorkflowProvider === "model" ? modelRequestOptions(config, mode) : undefined,
     };

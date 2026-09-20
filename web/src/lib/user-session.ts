@@ -149,7 +149,9 @@ export function systemChannelModelChannels(channels: PublicChannelCatalog[]): Mo
                     inputTokenPriceMicrocredits: inputPrice,
                     outputTokenPriceMicrocredits: outputPrice,
                     cachedTokenPriceMicrocredits: cachedPrice,
-                    capabilityConfig: (model.capabilityConfig as ModelCapabilityConfig | undefined) || defaultModelCapabilityConfig(),
+                    // Missing declarations are not verified model capabilities.
+                    // Legacy parameter controls can still use their local defaults.
+                    capabilityConfig: model.capabilityConfig as ModelCapabilityConfig | undefined,
                     channelModelId: model.id,
                     channelId: channel.id,
                     modelKey: model.modelKey,

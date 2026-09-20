@@ -1,15 +1,20 @@
 import { Button, Input, InputNumber, Segmented, Select, Slider } from "antd";
 import { Tooltip } from "@/components/ui/base/tooltip";
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { ChevronDown, Dice5, Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Sparkles, Video, Workflow as WorkflowIcon } from "lucide-react";
 
 import { Switch } from "@/components/ui/base/switch";
+import { ModelPicker } from "@/components/model-picker";
+import { ModelCapabilityHint } from "@/components/model-capability-hint";
+import { CanvasVideoSettingsPopover } from "./canvas-video-settings-popover";
 
 import { configuredModelMatchesCapability, defaultConfig, modelOptionName, normalizeRunningHubCapability, resolveModelChannel, useEffectiveConfig, type AiConfig, type RunningHubCapability, type RunningHubWorkflow, type RunningHubWorkflowKind } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { defaultModelCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, workflowFieldChoiceValues, workflowFieldCurrentValue, workflowFieldKey, workflowFieldNumberBounds, workflowFieldRandomKey, workflowFieldSubmissionValue, workflowFieldValueError, workflowImageCapabilityConfig, workflowOutputSizeValue, workflowParameterFields, workflowVideoCapabilityConfig, workflowVideoFieldsFromJson, type WorkflowVideoFieldLike } from "@/lib/model-capabilities";
 import { defaultImageParamsForModel, modelCompatibilityError, modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, type ModelRequirements } from "@/lib/model-selection";
+import { videoCreationAdmission, videoCreationConfig, videoCreationDefaultSelection, videoCreationNodePatch } from "@/lib/video-creation-admission";
 import { resolveCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import type { CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
@@ -66,6 +71,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const runtimeStatuses = usePluginStore((state) => state.runtimeStatuses);
     const theme = canvasThemes[useActiveTheme()];
     const mode = node.metadata?.generationMode === "video" || node.metadata?.generationMode === "audio" ? node.metadata.generationMode : "image";
+    const [resetVideoSpecs, setResetVideoSpecs] = useState(false);
+    useEffect(() => setResetVideoSpecs(false), [node.id, mode]);
     const simpleMode = workspaceMode === "simple";
     const resolvedProvider = resolveCanvasWorkflowProvider(node.metadata);
     const workflowProvider = resolvedProvider;
@@ -90,6 +97,13 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
         }, mode),
     };
     const config = buildNodeConfig(globalConfig, node, mode, requirements);
+    const videoAdmission = mode === "video" && workflowProvider === "model" ? videoCreationAdmission(config, {
+        ...requirements,
+        prompt: node.metadata?.composerContent ?? node.metadata?.prompt,
+    }, true) : undefined;
+    const videoSelectionRequirements = videoAdmission
+        ? resetVideoSpecs ? videoCreationDefaultSelection(videoAdmission.selectionRequirements) : videoAdmission.selectionRequirements
+        : undefined;
     const defaultWorkflowCapability = normalizeRunningHubCapability(globalConfig.runningHub.capability);
     const selectedRunningHubWorkflow = globalConfig.runningHub.workflows.find((item) => (
         item.workflowId.trim() === node.metadata?.runningHubWorkflowId?.trim()
@@ -142,10 +156,14 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount || inputSummary.characterCount);
     const hasComposerContent = Boolean((node.metadata?.composerContent ?? node.metadata?.prompt ?? "").trim());
     const workflowParameterError = firstWorkflowParameterError(dynamicWorkflowFields, node.metadata?.workflowParameters || {});
-    const capabilityError = workflowParameterError || (workflowProvider === "runninghub"
+    const capabilityError = videoAdmission?.error || workflowParameterError || (workflowProvider === "runninghub"
         ? (!workflowProviderPluginEnabled(runtimeStatuses, "runninghub") ? "RunningHub 工作流插件未启用" : !globalConfig.runningHub.enabled ? "请先在设置中启用 RunningHub" : !node.metadata?.runningHubWorkflowId ? `请选择${capabilityLabel(workflowCapability)}工作流或 App` : !selectedRunningHubWorkflow ? "当前画布引用的 RunningHub 条目已不存在，请重新选择" : selectedRunningHubCapability !== workflowCapability ? `当前条目用途为${capabilityLabel(selectedRunningHubCapability || "image")}，请切换画布模式或重新选择条目` : undefined)
         : undefined);
-    const canGenerate = (hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput)) && !capabilityError;
+    const canGenerate = (hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput)) && !capabilityError && !resetVideoSpecs;
+    const changeVideoModel = (model: string) => {
+        onConfigChange(node.id, videoCreationNodePatch(resetVideoSpecs ? videoCreationConfig(globalConfig, model) : config, model));
+        setResetVideoSpecs(false);
+    };
 
     return (
         <div className="canvas-config-node-panel thin-scrollbar flex h-full w-full cursor-move flex-col gap-3.5 overflow-y-auto px-4 pb-4 pt-8 text-sm" style={{ color: theme.node.text }} onWheel={(event) => event.stopPropagation()}>
@@ -280,6 +298,27 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 </div>
             )}
 
+            {videoAdmission ? (
+                <div className="cursor-default space-y-2" data-canvas-no-zoom onMouseDown={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                    {!simpleMode || resetVideoSpecs ? (
+                        <div className="flex min-w-0 flex-wrap gap-2">
+                            <ModelPicker config={config} value={config.model} capability="video" requirements={videoAdmission.requirements} selectionRequirements={videoSelectionRequirements} onChange={changeVideoModel} />
+                            {videoAdmission.assessment.status !== "unknown" ? <CanvasVideoSettingsPopover config={config} onConfigChange={(key, value) => { setResetVideoSpecs(false); onConfigChange(node.id, videoConfigPatch(key, value)); }} /> : null}
+                        </div>
+                    ) : null}
+                    <ModelCapabilityHint config={config} model={config.model} requirements={videoAdmission.selectionRequirements} />
+                    <div className="text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>当前请求：{config.videoSeconds} 秒 · {config.size || "模型默认画幅"} · {config.vquality || "模型默认分辨率"}</div>
+                    {videoAdmission.suggestedModel ? (
+                        <div className="text-[var(--fs-tiny)]">
+                            当前输入需改用 {modelOptionName(videoAdmission.suggestedModel)}，费用可能变化。
+                            <Button size="small" type="link" onClick={() => changeVideoModel(videoAdmission.suggestedModel)}>确认切换后查看费用</Button>
+                        </div>
+                    ) : null}
+                    <Button size="small" type="link" onClick={() => setResetVideoSpecs((current) => !current)}>{resetVideoSpecs ? "取消重新选模型" : "清除规格约束，重新选模型"}</Button>
+                    {resetVideoSpecs ? <div className="text-[var(--fs-tiny)]">请选择模型，将恢复新模型默认规格；已选素材不会移除，确认前不生成。</div> : null}
+                </div>
+            ) : null}
+
             {dynamicWorkflowFields.length ? <WorkflowParameterControls fields={dynamicWorkflowFields} node={node} theme={theme} onConfigChange={onConfigChange} /> : null}
 
             {capabilityError ? <div className="rounded-lg px-3 py-2 text-[var(--fs-tiny)]" style={{ background: theme.accent.danger + "18", color: theme.accent.danger }}>{capabilityError}</div> : null}
@@ -289,7 +328,11 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                 className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
                 disabled={isRunning || !canGenerate}
                 onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => onGenerate(node.id)}
+                onClick={() => {
+                    if (isRunning || !canGenerate) return;
+                    if (videoAdmission) flushSync(() => onConfigChange(node.id, videoCreationNodePatch(config)));
+                    onGenerate(node.id);
+                }}
             >
                 <span className="inline-flex items-center gap-1.5">
                         {isRunning ? (
@@ -506,11 +549,18 @@ function buildModelNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode
     const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
     const storedModel = node.metadata?.model;
     const preferredModel = storedModel && configuredModelMatchesCapability(globalConfig, storedModel, mode) ? storedModel : defaultModel && configuredModelMatchesCapability(globalConfig, defaultModel, mode) ? defaultModel : fallbackModel;
+    if (mode === "video") return { ...videoCreationConfig(globalConfig, storedModel || globalConfig.videoModel || preferredModel, {
+        size: node.metadata?.size,
+        videoSeconds: node.metadata?.seconds,
+        vquality: node.metadata?.vquality,
+        videoGenerateAudio: node.metadata?.generateAudio,
+        videoWatermark: node.metadata?.watermark,
+    }), taskWorkflowProvider: "model" };
     const model = resolveCompatibleModel(globalConfig, preferredModel, mode === "image" ? { ...requirements, imageSize: node.metadata?.size || globalConfig.size || defaultConfig.size } : requirements) || preferredModel;
     const generationDefaults = resolveModelGenerationDefaults(
         globalConfig,
         model,
-        mode === "image" ? "image" : mode === "video" ? "video" : undefined,
+        mode === "image" ? "image" : undefined,
         mode === "image"
             ? {
                   size: node.metadata?.size,
@@ -536,7 +586,6 @@ function buildModelNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode
             videoWatermark: globalConfig.videoWatermark || defaultConfig.videoWatermark,
         },
     );
-    const videoProfile = mode === "video" ? modelCapabilityConfigFor(globalConfig, model).video! : undefined;
     return {
         ...globalConfig,
         taskWorkflowProvider: "model",
@@ -546,8 +595,8 @@ function buildModelNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode
         transparentBackground: generationDefaults.transparentBackground || "false",
         videoSeconds: generationDefaults.videoSeconds || normalizeVideoDuration(globalConfig.videoSeconds || defaultConfig.videoSeconds),
         vquality: generationDefaults.vquality ?? normalizeVideoResolution(globalConfig.vquality || defaultConfig.vquality),
-        videoGenerateAudio: videoProfile?.generateAudio.supported ? generationDefaults.videoGenerateAudio || String(videoProfile.generateAudio.default) : "false",
-        videoWatermark: videoProfile?.watermark.supported ? generationDefaults.videoWatermark || String(videoProfile.watermark.default) : "false",
+        videoGenerateAudio: "false",
+        videoWatermark: "false",
         audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice || defaultConfig.audioVoice,
         audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat || defaultConfig.audioFormat,
         audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed || defaultConfig.audioSpeed,

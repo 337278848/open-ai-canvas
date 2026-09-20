@@ -23,6 +23,8 @@ import {
     supportsVideoReferenceAudio,
 } from "@/lib/canvas/canvas-project-generation";
 import { isCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
+import { buildCanvasVideoRequestConfig, canvasVideoMediaMetadata } from "@/lib/canvas/canvas-video-admission";
+import { videoCreationAdmission } from "@/lib/video-creation-admission";
 import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture";
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import { generationFailureMetadata, unchangedModeratedPrompt } from "@/lib/generation-error";
@@ -85,7 +87,10 @@ export function useCanvasGenerationRetry({
             const savedImageMetadata = node.type === CanvasNodeType.Image ? { ...batchRoot?.metadata, ...node.metadata } : undefined;
             const hasSavedImageMetadata = Boolean(savedImageMetadata?.generationType);
             const generationSourceNode = node.type === CanvasNodeType.Config && isCanvasWorkflowProvider(node.metadata) || node.metadata?.workflowProvider === "model" ? node : sourceNode;
-            const sourceGenerationConfig = buildGenerationConfig(effectiveConfig, generationSourceNode, retryMode);
+            const legacyConfig = buildGenerationConfig(effectiveConfig, generationSourceNode, retryMode);
+            const validateVideoRequest = retryMode === "video" && legacyConfig.taskWorkflowProvider === "model";
+            const videoRequestNode = { ...node, metadata: { ...generationSourceNode.metadata, ...node.metadata } };
+            const sourceGenerationConfig = validateVideoRequest ? buildCanvasVideoRequestConfig(effectiveConfig, videoRequestNode, legacyConfig) : legacyConfig;
             let generationConfig =
                 hasSavedImageMetadata && savedImageMetadata
                     ? {
@@ -218,6 +223,30 @@ export function useCanvasGenerationRetry({
                           audioCount: context?.referenceAudios.length || 0,
                       }
                     : undefined;
+
+            if (validateVideoRequest) {
+                const admission = videoCreationAdmission(generationConfig, {
+                    capability: "video",
+                    videoOperation: node.metadata?.videoEditOperation,
+                    prompt: mediaPrompt,
+                    input: {
+                        textCount: mediaPrompt ? 1 : 0,
+                        imageCount: videoReferenceImages.length,
+                        videoCount: context?.referenceVideos.length || 0,
+                        audioCount: context?.referenceAudios.length || 0,
+                        characterCount: 0,
+                    },
+                    media: canvasVideoMediaMetadata({
+                        referenceImages: videoReferenceImages,
+                        referenceVideos: context?.referenceVideos,
+                        referenceAudios: context?.referenceAudios,
+                    }),
+                });
+                if (admission.error) {
+                    message.error(admission.error);
+                    return;
+                }
+            }
 
             setRunningNodeId(node.id);
             setNodes((current) => current.map((item) => (item.id === node.id ? { ...item, metadata: { ...item.metadata, status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined } } : item)));

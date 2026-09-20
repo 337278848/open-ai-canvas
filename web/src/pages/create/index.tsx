@@ -11,7 +11,8 @@ import { creationResultAssetIds } from "@/lib/canvas/canvas-asset-handoff";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { continueCreationConversationOnCanvas } from "@/services/creation-canvas-conversation";
 import { useExternalAssetSources } from "@/hooks/use-external-asset-sources";
-import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, videoDurationAllowed, videoDurationOptions } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, type VideoCapabilityConfig } from "@/lib/model-capabilities";
+import { assessModelApplicability } from "@/lib/model-applicability";
 import { inferVideoOperation, resolveCompatibleModel, mergedImageCapabilityConfig, type ModelRequirements } from "@/lib/model-selection";
 import type { BackendGenerationResult } from "@/services/api/generation-task";
 import type { Skill } from "@/services/api/skills";
@@ -38,6 +39,64 @@ import { createCreationSubmitGate } from "./creation-submit-gate";
 const AssetLibraryPickerModal = lazy(() => import("@/components/assets/asset-library-picker-modal").then((module) => ({ default: module.AssetLibraryPickerModal })));
 const loadCreationRuntime = () => import("./creation-runtime");
 type CreationRuntime = Awaited<ReturnType<typeof loadCreationRuntime>>;
+
+export type CreationVideoSettings = Pick<CreationSettings, "ratio" | "seconds" | "videoQuality"> & {
+    videoGenerateAudio: boolean;
+    videoWatermark: boolean;
+};
+type CreationSavedSettings = CreationSettings & Partial<Pick<CreationVideoSettings, "videoGenerateAudio" | "videoWatermark">>;
+
+export function resolveCreationVideoSettings(profile: VideoCapabilityConfig, explicit: Partial<CreationVideoSettings>, preferences?: Partial<CreationVideoSettings>): CreationVideoSettings {
+    // 旧偏好只用于初始化；本轮显式需求即使不兼容也必须原样保留。
+    const defaults = normalizeVideoValue(profile, {
+        seconds: preferences?.seconds ?? String(profile.duration.default),
+        ratio: preferences?.ratio,
+        resolution: preferences?.videoQuality,
+    });
+    return {
+        ratio: explicit.ratio ?? defaults.ratio,
+        seconds: explicit.seconds ?? defaults.seconds,
+        videoQuality: explicit.videoQuality ?? defaults.resolution.replace(/p$/i, ""),
+        videoGenerateAudio: explicit.videoGenerateAudio ?? (profile.generateAudio.supported && profile.generateAudio.default),
+        videoWatermark: explicit.videoWatermark ?? (profile.watermark.supported && profile.watermark.default),
+    };
+}
+
+export function buildCreationVideoRequirements(prompt: string, attachments: CreationAttachment[], settings: CreationVideoSettings): ModelRequirements {
+    const { referenceImages, referenceVideos, referenceAudios } = splitCreationAttachments(attachments);
+    return {
+        capability: "video",
+        prompt,
+        input: { textCount: prompt.trim() ? 1 : 0, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length, characterCount: 0 },
+        media: attachments.flatMap((attachment) => {
+            const kind = creationAttachmentKind(attachment);
+            if (kind === "file") return [];
+            return [{ kind, bytes: attachment.bytes, durationSeconds: "durationMs" in attachment && typeof attachment.durationMs === "number" ? attachment.durationMs / 1000 : undefined }];
+        }),
+        videoSeconds: settings.seconds,
+        options: {
+            size: settings.ratio,
+            videoSeconds: Number(settings.seconds),
+            vquality: settings.videoQuality,
+            videoGenerateAudio: settings.videoGenerateAudio,
+            videoWatermark: settings.videoWatermark,
+        },
+    };
+}
+
+export function creationVideoSelectionRequirements(requirements: ModelRequirements, explicit: Partial<CreationVideoSettings>): ModelRequirements {
+    return {
+        ...requirements,
+        videoSeconds: explicit.seconds,
+        options: {
+            ...(explicit.ratio !== undefined ? { size: explicit.ratio } : {}),
+            ...(explicit.seconds !== undefined ? { videoSeconds: Number(explicit.seconds) } : {}),
+            ...(explicit.videoQuality !== undefined ? { vquality: explicit.videoQuality } : {}),
+            ...(explicit.videoGenerateAudio !== undefined ? { videoGenerateAudio: explicit.videoGenerateAudio } : {}),
+            ...(explicit.videoWatermark !== undefined ? { videoWatermark: explicit.videoWatermark } : {}),
+        },
+    };
+}
 
 const TEXT_STREAMING_PREF_KEY = "creation.composer.text-streaming";
 const TEXT_THINKING_PREF_KEY = "creation.composer.text-thinking";
@@ -92,10 +151,10 @@ export default function CreatePage() {
     const [draftReferences, setDraftReferences] = useState<CreationReference[]>([]);
     const [addedSkills, setAddedSkills] = useState<Skill[]>([]);
     const addedSkillsRequestedRef = useRef(false);
-    const [ratio, setRatio] = useState("16:9");
-    const [seconds, setSeconds] = useState("6");
+    const [imageRatio, setRatio] = useState("16:9");
+    const [explicitVideoSettings, setExplicitVideoSettings] = useState<Partial<CreationVideoSettings>>({});
+    const initialVideoModelRef = useRef(config.videoModel);
     const [quality, setQuality] = useState("auto");
-    const [videoQuality, setVideoQuality] = useState(config.vquality || "720");
     const [count, setCount] = useState(String(Math.max(1, Math.min(4, Number(config.count) || 1))));
     const [textStreaming, setTextStreaming] = useState(() => readComposerPref(TEXT_STREAMING_PREF_KEY, true));
     const [textThinking, setTextThinking] = useState(() => readComposerPref(TEXT_THINKING_PREF_KEY, false));
@@ -128,7 +187,15 @@ export default function CreatePage() {
     );
     const preferredModel = mode === "text" ? config.textModel : mode === "image" ? config.imageModel : config.videoModel;
     const hasPrompt = Boolean(prompt.trim());
-    const modelRequirements = useMemo<ModelRequirements>(() => ({
+    const videoProfile = useMemo(() => modelCapabilityConfigFor(config, config.videoModel).video!, [config]);
+    const videoPreferences = composerPreferencesInitialized && config.videoModel === initialVideoModelRef.current ? initialComposerPreferences.video : undefined;
+    const videoSettings = useMemo(() => resolveCreationVideoSettings(videoProfile, explicitVideoSettings, videoPreferences), [videoProfile, explicitVideoSettings, videoPreferences]);
+    const { seconds, videoQuality } = videoSettings;
+    const ratio = mode === "video" ? videoSettings.ratio : imageRatio;
+    const mentionReferences = useMemo(() => buildCreationMentionReferences(addedSkills, attachments, draftReferences), [addedSkills, attachments, draftReferences]);
+    const modelRequirements = useMemo<ModelRequirements>(() => mode === "video"
+        ? buildCreationVideoRequirements(expandCreationPrompt(prompt, selectedCreationReferences(prompt, mentionReferences), attachments), attachments, videoSettings)
+        : ({
         capability: mode,
         input: {
             textCount: hasPrompt ? 1 : 0,
@@ -137,18 +204,20 @@ export default function CreatePage() {
             audioCount: attachments.filter((attachment) => creationAttachmentKind(attachment) === "audio").length,
             characterCount: 0,
         },
-        videoSeconds: mode === "video" ? seconds : undefined,
         imageSize: mode === "image" ? ratio : undefined,
 		options: mode === "image"
 			? { size: ratio, quality, count: Number(count), transparentBackground: config.transparentBackground === "true" }
-			: mode === "video"
-				? { size: ratio, videoSeconds: Number(seconds), vquality: videoQuality, videoGenerateAudio: config.videoGenerateAudio === "true", videoWatermark: config.videoWatermark === "true" }
-				: {},
-	}), [attachments, config.transparentBackground, config.videoGenerateAudio, config.videoWatermark, count, hasPrompt, mode, quality, ratio, seconds, videoQuality]);
-    const selectedModel = resolveCompatibleModel(config, preferredModel, modelRequirements) || preferredModel;
+			: {},
+	}), [attachments, config.transparentBackground, count, hasPrompt, mentionReferences, mode, prompt, quality, ratio, videoSettings]);
+    const selectionRequirements = useMemo(() => mode === "video" ? creationVideoSelectionRequirements(modelRequirements, explicitVideoSettings) : undefined, [mode, modelRequirements, explicitVideoSettings]);
+    const selectedModel = mode === "video" ? preferredModel : resolveCompatibleModel(config, preferredModel, modelRequirements) || preferredModel;
+    const videoApplicability = useMemo(() => mode === "video" ? assessModelApplicability(config, selectedModel, modelRequirements) : undefined, [mode, config, selectedModel, modelRequirements]);
+    const generationBlockedReason = mode === "video" && attachments.some((attachment) => creationAttachmentKind(attachment) === "file")
+        ? "视频创作不支持文档参考，请手动移除文档或切回文本创作"
+        : videoApplicability && videoApplicability.status !== "ready" ? videoApplicability.reason || "当前模型不适用于此任务，请调整需求或选择其他模型" : undefined;
     const imageProfile = useMemo(() => modelCapabilityConfigFor(config, selectedModel).image!, [config, selectedModel]);
-    const videoProfile = useMemo(() => modelCapabilityConfigFor(config, selectedModel).video!, [config, selectedModel]);
-    const maxReferences = mode === "video" ? videoProfile.operations.includes("image_to_video") ? videoProfile.references.maxImages : 0 : mode === "image" ? imageProfile.references.maxImages : 6;
+    // 视频素材先加入草稿，再按各媒体类型评估模型；不以当前模型裁剪用户输入。
+    const maxReferences = mode === "video" ? Number.POSITIVE_INFINITY : mode === "image" ? imageProfile.references.maxImages : 6;
     const referenceImageSize = useMemo(() => {
         const imageAttachments = attachments.filter(isImageAttachment);
         if (imageAttachments.length !== 1) return undefined;
@@ -156,7 +225,6 @@ export default function CreatePage() {
         if (typeof width !== "number" || typeof height !== "number" || width <= 0 || height <= 0) return undefined;
         return { width, height };
     }, [attachments]);
-    const mentionReferences = useMemo(() => buildCreationMentionReferences(addedSkills, attachments, draftReferences), [addedSkills, attachments, draftReferences]);
     const isEmpty = !activeConversation?.messages.length;
 
     // 空首页从顶部开始；有消息的对话由跟随消息逻辑管理滚动。
@@ -187,11 +255,6 @@ export default function CreatePage() {
             if (saved.image.quality) setQuality(saved.image.quality);
             if (saved.image.count) setCount(saved.image.count);
         }
-        if (nextMode === "video" && saved.video) {
-            if (saved.video.ratio) setRatio(saved.video.ratio);
-            if (saved.video.seconds) setSeconds(saved.video.seconds);
-            if (saved.video.videoQuality) setVideoQuality(saved.video.videoQuality);
-        }
         setComposerPreferencesInitialized(true);
     }, [composerPreferencesHydrated, composerPreferencesInitialized]);
 
@@ -208,22 +271,6 @@ export default function CreatePage() {
         setQuality(normalized.quality);
         setCount(normalized.count);
     }, [composerPreferencesHydrated, composerPreferencesInitialized, mode, selectedModel, imageProfile]);
-
-    useEffect(() => {
-        if (!composerPreferencesHydrated || !composerPreferencesInitialized || mode !== "video") return;
-        const saved = useCreationPreferencesStore.getState().preferences.video;
-        // 优先恢复用户上次选择；只有当前模型不支持该值时，normalizeVideoValue 才回退到模型默认值。
-        const normalized = normalizeVideoValue(videoProfile, {
-            seconds: saved?.seconds || String(videoProfile.duration.default),
-            ratio: saved?.ratio || videoProfile.defaultRatio,
-            resolution: saved?.videoQuality || videoProfile.defaultResolution,
-        });
-        setSeconds(normalized.seconds);
-        setRatio(normalized.ratio);
-        setVideoQuality(normalized.resolution.replace(/p$/i, ""));
-        const maxReferences = videoProfile.operations.includes("image_to_video") ? videoProfile.references.maxImages : 0;
-        if (attachments.length > maxReferences) setAttachments((current) => current.slice(0, maxReferences));
-    }, [composerPreferencesHydrated, composerPreferencesInitialized, mode, selectedModel, videoProfile]);
 
     useEffect(() => {
         const reconciled = reconcileCreationAttachmentLimit(attachments, mentionReferences, maxReferences);
@@ -353,18 +400,19 @@ export default function CreatePage() {
         rememberMode(next);
         const nextModels = selectableModelsByCapability(config, next);
         const current = next === "text" ? config.textModel : next === "image" ? config.imageModel : config.videoModel;
-        if (!nextModels.includes(current) && nextModels[0]) {
+        if (next !== "video" && !nextModels.includes(current) && nextModels[0]) {
             updateConfig(next === "text" ? "textModel" : next === "image" ? "imageModel" : "videoModel", nextModels[0]);
         }
     };
 
     const setComposerRatio = (value: string) => {
-        setRatio(value);
+        if (mode === "video") setExplicitVideoSettings((current) => ({ ...current, ratio: value }));
+        else setRatio(value);
         if (mode === "image") rememberImageSettings({ ratio: value });
         if (mode === "video") rememberVideoSettings({ ratio: value });
     };
     const setComposerSeconds = (value: string) => {
-        setSeconds(value);
+        setExplicitVideoSettings((current) => ({ ...current, seconds: value }));
         if (mode === "video") rememberVideoSettings({ seconds: value });
     };
     const setComposerQuality = (value: string) => {
@@ -372,7 +420,7 @@ export default function CreatePage() {
         if (mode === "image") rememberImageSettings({ quality: value });
     };
     const setComposerVideoQuality = (value: string) => {
-        setVideoQuality(value);
+        setExplicitVideoSettings((current) => ({ ...current, videoQuality: value }));
         if (mode === "video") rememberVideoSettings({ videoQuality: value });
     };
     const setComposerCount = (value: string) => {
@@ -474,6 +522,7 @@ export default function CreatePage() {
         setPrompt("");
         setAttachments([]);
         setDraftReferences([]);
+        setExplicitVideoSettings({});
         window.requestAnimationFrame(() => composerFocusRef.current?.focus());
     };
 
@@ -535,7 +584,7 @@ export default function CreatePage() {
         }
         const releaseSubmitGate = () => submitGateRef.current.release();
         const text = prompt.trim();
-        if (!text || busy || !activeConversation) {
+        if (!text || busy || referenceReplacementBusy || !activeConversation) {
             releaseRetryLock();
             releaseSubmitGate();
             return;
@@ -546,19 +595,19 @@ export default function CreatePage() {
             releaseSubmitGate();
             return;
         }
-        if (mode === "video" && !videoDurationAllowed(videoProfile, Number(seconds))) {
-            toast.error("当前模型不支持所选视频时长，请重新选择");
+        if (generationBlockedReason) {
+            toast.error(generationBlockedReason);
             releaseRetryLock();
             releaseSubmitGate();
             return;
         }
-        if (attachments.length > maxReferences) {
+        if (mode !== "video" && attachments.length > maxReferences) {
             toast.warning("参考内容正在按当前模型能力调整，请稍后重试");
             releaseRetryLock();
             releaseSubmitGate();
             return;
         }
-        const settings = { ratio, seconds, quality, videoQuality, count };
+        const settings: CreationSavedSettings = { ratio, seconds, quality, videoQuality, count, ...(mode === "video" ? { videoGenerateAudio: videoSettings.videoGenerateAudio, videoWatermark: videoSettings.videoWatermark } : {}) };
         const references = selectedCreationReferences(text, mentionReferences);
         // 后端对图片和视频使用不同的参考字段；这里先拆分，避免媒体类型在写入任务时被误判。
         const { referenceImages, referenceVideos, referenceAudios } = splitCreationAttachments(attachments);
@@ -594,6 +643,15 @@ export default function CreatePage() {
             return;
         }
         const expandedPrompt = skillExecution.prompt;
+        if (mode === "video") {
+            const applicability = assessModelApplicability(config, selectedModel, { ...modelRequirements, prompt: expandedPrompt });
+            if (applicability.status !== "ready") {
+                toast.error(applicability.reason || "完整提示词与当前模型能力不兼容");
+                releaseRetryLock();
+                releaseSubmitGate();
+                return;
+            }
+        }
         const referenceMetadata = skillExecution.metadata;
         followLatestMessageRef.current = true;
         const userMessage = newMessage("user", text, { mode, model: selectedModel, attachments, references, settings });
@@ -623,12 +681,12 @@ export default function CreatePage() {
         setPrompt("");
         setAttachments([]);
         setDraftReferences([]);
+        setExplicitVideoSettings({});
         setBusy(true);
         const controller = new AbortController();
         const requestLifecycle = runtime.beginGenerationConsumer(controller.signal);
         abortRef.current = controller;
         const normalizedImage = mode === "image" ? normalizeImageValue(imageProfile, { size: ratio, quality, count }) : undefined;
-        const normalizedVideo = mode === "video" ? normalizeVideoValue(videoProfile, { seconds, ratio, resolution: videoQuality }) : undefined;
         const requestConfig = {
             ...config,
             model: selectedModel,
@@ -638,7 +696,7 @@ export default function CreatePage() {
             ...(mode === "image"
                 ? { size: normalizedImage?.size || ratio, quality: normalizedImage?.quality || quality, count: normalizedImage?.count || count, videoSeconds: config.videoSeconds }
                 : mode === "video"
-                  ? { size: normalizedVideo?.ratio ?? ratio, videoSeconds: normalizedVideo?.seconds || seconds, vquality: (normalizedVideo?.resolution ?? videoQuality).replace(/p$/i, "") }
+                  ? { size: ratio, videoSeconds: seconds, vquality: videoQuality, videoGenerateAudio: String(videoSettings.videoGenerateAudio), videoWatermark: String(videoSettings.videoWatermark) }
                   : {}),
         };
         try {
@@ -763,6 +821,7 @@ export default function CreatePage() {
         setPrompt("");
         setAttachments([]);
         setDraftReferences([]);
+        setExplicitVideoSettings({});
         setHistoryOpen(false);
     };
 
@@ -808,6 +867,7 @@ export default function CreatePage() {
         setPrompt("");
         setAttachments([]);
         setDraftReferences([]);
+        setExplicitVideoSettings({});
         setHistoryOpen(false);
     };
 
@@ -837,6 +897,7 @@ export default function CreatePage() {
                         setPrompt("");
                         setAttachments([]);
                         setDraftReferences([]);
+                        setExplicitVideoSettings({});
                     }
                     toast.success("历史对话已删除，素材仍保留");
                 } catch (error) {
@@ -858,17 +919,23 @@ export default function CreatePage() {
 
     const restoreMessageDraft = (item: CreationMessage) => {
         const nextMode = item.mode || "text";
-        const nextSettings = item.settings;
+        const nextSettings = item.settings as CreationSavedSettings | undefined;
         selectMode(nextMode);
         setPrompt(item.content);
         setAttachments(item.attachments ? [...item.attachments] : []);
         setDraftReferences(item.references ? [...item.references] : []);
         if (item.model) updateConfig(nextMode === "text" ? "textModel" : nextMode === "image" ? "imageModel" : "videoModel", item.model);
+        // 重试/同款是对历史任务的明确选择，不应再次当成可回退的旧偏好。
+        setExplicitVideoSettings(nextMode === "video" && nextSettings ? {
+            ratio: nextSettings.ratio,
+            seconds: nextSettings.seconds,
+            videoQuality: nextSettings.videoQuality,
+            ...(typeof nextSettings.videoGenerateAudio === "boolean" ? { videoGenerateAudio: nextSettings.videoGenerateAudio } : {}),
+            ...(typeof nextSettings.videoWatermark === "boolean" ? { videoWatermark: nextSettings.videoWatermark } : {}),
+        } : {});
         if (!nextSettings) return;
-        setRatio(nextSettings.ratio);
-        setSeconds(nextSettings.seconds);
+        if (nextMode !== "video") setRatio(nextSettings.ratio);
         setQuality(nextSettings.quality);
-        setVideoQuality(nextSettings.videoQuality);
         setCount(nextSettings.count);
         if (nextMode === "image") rememberImageSettings({ ratio: nextSettings.ratio, quality: nextSettings.quality, count: nextSettings.count });
         if (nextMode === "video") rememberVideoSettings({ ratio: nextSettings.ratio, seconds: nextSettings.seconds, videoQuality: nextSettings.videoQuality });
@@ -955,10 +1022,19 @@ export default function CreatePage() {
         onModeChange: selectMode,
         model: selectedModel,
         modelRequirements,
+        selectionRequirements,
+        generationBlockedReason,
+        onResetVideoSettings: () => {
+            initialVideoModelRef.current = "";
+            setExplicitVideoSettings({});
+        },
         imageProfile,
         videoProfile,
         config,
-        onModelChange: (value: string) => updateConfig(mode === "text" ? "textModel" : mode === "image" ? "imageModel" : "videoModel", value),
+        onModelChange: (value: string) => {
+            if (mode === "video") initialVideoModelRef.current = "";
+            updateConfig(mode === "text" ? "textModel" : mode === "image" ? "imageModel" : "videoModel", value);
+        },
         ratio,
         setRatio: setComposerRatio,
         seconds,
@@ -967,6 +1043,10 @@ export default function CreatePage() {
         setQuality: setComposerQuality,
         videoQuality,
         setVideoQuality: setComposerVideoQuality,
+        videoGenerateAudio: videoSettings.videoGenerateAudio,
+        setVideoGenerateAudio: (value: boolean) => setExplicitVideoSettings((current) => ({ ...current, videoGenerateAudio: value })),
+        videoWatermark: videoSettings.videoWatermark,
+        setVideoWatermark: (value: boolean) => setExplicitVideoSettings((current) => ({ ...current, videoWatermark: value })),
         count,
         setCount: setComposerCount,
         textStreaming,

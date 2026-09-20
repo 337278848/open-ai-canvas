@@ -24,7 +24,8 @@ import { findAvailableGenerationGroupPosition, imageGenerationChildPosition, ima
 import { canvasGenerationPromptMetadata } from "@/lib/canvas/canvas-generation-submission";
 import { cancelIncompleteImageBatch } from "@/lib/canvas/canvas-image-batch-retry";
 import { buildAngleLabel, buildAnglePrompt, createCanvasNode } from "@/lib/canvas/canvas-project-domain";
-import { validateVideoSegmentBatch } from "@/lib/canvas/canvas-video-regeneration";
+import { videoCreationNodePatch } from "@/lib/video-creation-admission";
+import { buildCanvasVideoSegmentRequest } from "@/lib/canvas/canvas-video-regeneration";
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import {
     buildGenerationConfig,
@@ -384,14 +385,10 @@ export function useCanvasMediaTools({
             return;
         }
         const createsGenerationNodes = params.action === "create-generation-nodes";
-        const generationConfig = createsGenerationNodes ? buildGenerationConfig(effectiveConfig, node, "video") : null;
-        const selectedConfig = generationConfig ? { ...generationConfig, model: params.model || generationConfig.model } : null;
-        if (selectedConfig) {
-            const batchError = validateVideoSegmentBatch(selectedConfig, segments, params.operation);
-            if (batchError) {
-                message.warning(batchError);
-                return;
-            }
+        const generationRequest = createsGenerationNodes ? buildCanvasVideoSegmentRequest(effectiveConfig, params.model || "", segments, params.prompt || "", params.operation, params.generationSettings) : undefined;
+        if (generationRequest?.error) {
+            message.warning(generationRequest.error);
+            return;
         }
         const progress = startUploadStatus("截取视频片段", "加载 FFmpeg", segments.length * 4);
         try {
@@ -400,7 +397,7 @@ export function useCanvasMediaTools({
             const spec = NODE_DEFAULT_SIZE[CanvasNodeType.Video];
             const baseX = node.position.x + node.width + 96;
             const baseY = node.position.y;
-            const effectivePrompt = (params.prompt || "保持画面主体与镜头，重新生成这一段视频").trim();
+            const effectivePrompt = generationRequest?.prompt || "";
             for (let index = 0; index < segments.length; index += 1) {
                 const segment = segments[index];
                 try {
@@ -428,7 +425,7 @@ export function useCanvasMediaTools({
                         height: size.height,
                         metadata: { ...videoMetadata(uploaded), prompt: `从「${sourceNode?.title || node.title || "视频"}」截取的片段 ${index + 1}`, status: NODE_STATUS_SUCCESS },
                     };
-                    const targetNode: CanvasNodeData | undefined = selectedConfig && generationConfig
+                    const targetNode: CanvasNodeData | undefined = generationRequest
                         ? {
                             id: nanoid(),
                             type: CanvasNodeType.Video,
@@ -436,7 +433,7 @@ export function useCanvasMediaTools({
                             position: { x: segmentNode.position.x + size.width + 96, y: segmentNode.position.y + (size.height - spec.height) / 2 },
                             width: spec.width,
                             height: spec.height,
-                            metadata: { prompt: effectivePrompt, status: "idle", generationMode: "video", model: selectedConfig.model, videoEditOperation: params.operation, seconds: generationConfig.videoSeconds, size: generationConfig.size },
+                            metadata: { prompt: effectivePrompt, status: "idle", generationMode: "video", ...videoCreationNodePatch(generationRequest.config), videoEditOperation: generationRequest.operation },
                         }
                         : undefined;
                     prepared.push({ segmentNode, targetNode });
@@ -481,11 +478,9 @@ export function useCanvasMediaTools({
     const handleSegmentConfirm = useCallback(async (node: CanvasNodeData, params: CanvasVideoSegmentParams) => {
         if (segmentRunningRef.current || !node.metadata?.content) return;
         if (params.mode === "video" && params.action === "create-generation-nodes") {
-            const generationConfig = buildGenerationConfig(effectiveConfig, node, "video");
-            const selectedConfig = { ...generationConfig, model: params.model || generationConfig.model };
-            const batchError = validateVideoSegmentBatch(selectedConfig, params.segments || [], params.operation);
-            if (batchError) {
-                message.warning(batchError);
+            const request = buildCanvasVideoSegmentRequest(effectiveConfig, params.model || "", params.segments || [], params.prompt || "", params.operation, params.generationSettings);
+            if (request.error) {
+                message.warning(request.error);
                 return;
             }
         }

@@ -6,7 +6,7 @@ import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { grokImagePromptLimitError } from "@/lib/grok-image-prompt-limit";
 import { resolveGenerationWorkflowExecution, type GenerationWorkflowExecution } from "@/lib/generation-workflow-execution";
 import { isArkPlanBaseUrl } from "@/lib/seedance-video";
-import { resolveVideoOperation } from "@/lib/model-selection";
+import { resolveModelVideoBooleanOptions, resolveVideoOperation } from "@/lib/model-selection";
 import { logicalModelIDForConfig, modelOptionName, resolveModelChannel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -510,12 +510,7 @@ function gatedVideoBooleanOptions(config: AiConfig, mode: BackendGenerationMode)
         videoWatermark: config.videoWatermark,
     };
     if (mode !== "video") return requested;
-    const profile = modelCapabilityConfigFor(config, config.model).video;
-    if (!profile) return requested;
-    return {
-        videoGenerateAudio: profile.generateAudio?.supported ? requested.videoGenerateAudio : "false",
-        videoWatermark: profile.watermark?.supported ? requested.videoWatermark : "false",
-    };
+    return resolveModelVideoBooleanOptions(config, config.model, requested);
 }
 
 export function parseBackendGenerationResult(task: GenerationTask): BackendGenerationResult {

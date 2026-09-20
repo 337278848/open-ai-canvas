@@ -1,9 +1,11 @@
 import { Button, Image as AntImage, InputNumber, Modal, Popover } from "antd";
 import { Tooltip } from "@/components/ui/base/tooltip";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { ArrowLeftRight, ArrowUp, AtSign, Boxes, Camera, ChevronDown, FileText, GripVertical, ImageIcon, ImagePlus, Link2, LoaderCircle, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, WandSparkles, X } from "lucide-react";
 
 import { ModelPicker } from "@/components/model-picker";
+import { ModelCapabilityHint } from "@/components/model-capability-hint";
 import { defaultConfig, modelOptionName, resolveModelChannel, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { resolveCanvasGenerationModel } from "@/lib/canvas/canvas-project-generation";
 import { clampPromptEditorModalSize, PROMPT_EDITOR_VIEWPORT_MARGIN } from "@/lib/canvas/canvas-prompt-editor-size";
@@ -12,6 +14,7 @@ import { canvasThemes } from "@/lib/canvas-theme";
 import { modelQuoteDescription, modelQuoteRequest } from "@/lib/model-pricing";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, defaultImageParamsForModel, type ModelRequirements } from "@/lib/model-selection";
+import { videoCreationAdmission, videoCreationConfig, videoCreationDefaultSelection, videoCreationNodePatch } from "@/lib/video-creation-admission";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -93,11 +96,13 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
     const [paramsExpanded, setParamsExpanded] = useState(false); // #98 决策2：B区参数区折叠状态（手风琴）
     const [promptOptimizerOpen, setPromptOptimizerOpen] = useState(false);
     const [autoLinkEnabled, setAutoLinkEnabled] = useState(true);
+    const [resetVideoSpecs, setResetVideoSpecs] = useState(false);
     const resolvedMentionReferences = useResolvedCanvasResourceReferences(mentionReferences, { projectId });
     const normalizedSavedPrompt = useMemo(() => normalizeCanvasNodeMentionTokens(savedPrompt, mentionReferences), [mentionReferences, savedPrompt]);
     const activeReferences = resolvedMentionReferences.filter((item) => item.active && item.kind !== "skill");
     const requirements: ModelRequirements = {
         capability: mode,
+        ...(mode === "video" ? { prompt } : {}),
         input: {
             textCount: (prompt.trim() ? 1 : 0) + activeReferences.filter((item) => item.kind === "text").length,
             imageCount: activeReferences.filter((item) => item.kind === "image").length,
@@ -123,7 +128,11 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         }, mode),
     };
     const config = buildNodeConfig(globalConfig, node, mode, requirements);
-    const resolvedRequirements: ModelRequirements = {
+    const videoAdmission = mode === "video" ? videoCreationAdmission(config, requirements, true) : undefined;
+    const videoSelectionRequirements = videoAdmission
+        ? resetVideoSpecs ? videoCreationDefaultSelection(videoAdmission.selectionRequirements) : videoAdmission.selectionRequirements
+        : undefined;
+    const resolvedRequirements: ModelRequirements = videoAdmission?.requirements ?? {
         ...requirements,
         options: modelRequestOptions(config, mode),
         videoSeconds: mode === "video" ? config.videoSeconds : undefined,
@@ -144,10 +153,11 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         config,
         requirements: resolvedRequirements,
     });
-    const quoteRequest = modelQuoteRequest(config, config.model, mode, resolvedRequirements);
+    const quoteRequest = videoAdmission?.error ? undefined : modelQuoteRequest(config, config.model, mode, resolvedRequirements);
     const quoteRequestKey = JSON.stringify(quoteRequest || null);
-    const [routeQuote, setRouteQuote] = useState<LogicalModelQuote | null>(null);
-    const credits = routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : configuredCredits;
+    const [quotedRoute, setQuotedRoute] = useState<{ key: string; quote: LogicalModelQuote } | null>(null);
+    const routeQuote = quotedRoute?.key === quoteRequestKey ? quotedRoute.quote : null;
+    const credits = videoAdmission?.error ? null : routeQuote ? routeQuote.amountMicrocredits / 1_000_000 : configuredCredits;
     const activeReferenceCount = activeReferences.length;
     const videoFrameOptions = resolvedMentionReferences.filter((item) => item.active && item.kind === "image").map((item) => ({ nodeId: item.nodeId, label: item.label, title: item.title, previewUrl: item.previewUrl }));
     const hasVideoPromptTools = mode === "video" && !simpleMode && videoFrameOptions.length > 0;
@@ -175,7 +185,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         if (!rect?.width || !rect.height) return { width: PROMPT_EDITOR_MODAL_DEFAULT_WIDTH, height: PROMPT_EDITOR_MODAL_DEFAULT_HEIGHT };
         return { width: Math.round(rect.width), height: Math.round(rect.height) };
     };
-    const isSubmitDisabled = !isRunning && !prompt.trim();
+    const isSubmitDisabled = !prompt.trim() || Boolean(videoAdmission?.error) || resetVideoSpecs;
     const canExpandPrompt = mode === "image" || mode === "video";
     const canOptimizePrompt = Boolean(promptOptimizerProvider) && canExpandPrompt;
     const isPortraitTexture = mode === "image" && Boolean(node.metadata?.portraitTexture);
@@ -188,6 +198,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
     }, [node.id, normalizedSavedPrompt, onPromptChange, savedPrompt]);
 
     useEffect(() => {
+        setResetVideoSpecs(false);
         setExpandedPromptOpen(false);
         setExpandedPresetOpen(false);
         setExpandedModalSize(null);
@@ -210,15 +221,17 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
 
     useEffect(() => {
         if (!creditsEnabled || !quoteRequest) {
-            setRouteQuote(null);
+            setQuotedRoute(null);
             return;
         }
         const controller = new AbortController();
-        setRouteQuote(null);
+        setQuotedRoute(null);
         quoteModel(quoteRequest, controller.signal)
-            .then(({ quote }) => setRouteQuote(quote))
+            .then(({ quote }) => {
+                if (!controller.signal.aborted) setQuotedRoute({ key: quoteRequestKey, quote });
+            })
             .catch(() => {
-                if (!controller.signal.aborted) setRouteQuote(null);
+                if (!controller.signal.aborted) setQuotedRoute(null);
             });
         return () => controller.abort();
         // quoteRequestKey captures the full normalized request without retriggering on object identity.
@@ -255,7 +268,8 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
 
     const submit = () => {
         const text = prompt.trim();
-        if (!text || isRunning) return false;
+        if (!text || isRunning || videoAdmission?.error || resetVideoSpecs) return false;
+        if (mode === "video") flushSync(() => onConfigChange(node.id, videoCreationNodePatch(config)));
         onGenerate(node.id, mode, text);
         return true;
     };
@@ -367,6 +381,27 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
         );
     };
 
+    const changeVideoModel = (model: string) => {
+        onConfigChange(node.id, videoCreationNodePatch(resetVideoSpecs ? videoCreationConfig(globalConfig, model) : config, model));
+        setResetVideoSpecs(false);
+    };
+
+    const renderVideoCapabilityHint = () => mode === "video" ? (
+        <div className="space-y-1 px-2 pb-1 text-[var(--fs-tiny)]" aria-live="polite">
+            <ModelCapabilityHint config={config} model={config.model} requirements={videoAdmission?.selectionRequirements} />
+            <div style={{ color: theme.node.muted }}>当前请求：{config.videoSeconds} 秒 · {config.size || "模型默认画幅"} · {config.vquality || "模型默认分辨率"}</div>
+            {videoAdmission?.suggestedModel ? (
+                <div>
+                    <span>当前输入需改用 {modelOptionName(videoAdmission.suggestedModel)}，费用可能变化。</span>
+                    <Button size="small" type="link" onClick={() => changeVideoModel(videoAdmission.suggestedModel)}>确认切换后查看费用</Button>
+                </div>
+            ) : null}
+            <Button size="small" type="link" onClick={() => setResetVideoSpecs((current) => !current)}>{resetVideoSpecs ? "取消重新选模型" : "清除规格约束，重新选模型"}</Button>
+            {resetVideoSpecs ? <div>请选择模型，将恢复新模型默认规格；已选素材不会移除，确认前不生成。</div> : null}
+            {resetVideoSpecs && simpleMode ? <ModelPicker config={config} value={config.model} capability="video" requirements={resolvedRequirements} selectionRequirements={videoSelectionRequirements} onChange={changeVideoModel} /> : null}
+        </div>
+    ) : null;
+
     const renderComposerControls = (expanded: boolean) =>
         simpleMode ? (
             <div className="canvas-node-composer-footer">
@@ -391,9 +426,10 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                         fullWidth
                         config={config}
                         value={config.model}
-                        onChange={(model) => onConfigChange(node.id, mode === "image" ? { model, ...defaultImageParamsForModel(config, model) } : { model })}
+                        onChange={(model) => mode === "video" ? changeVideoModel(model) : onConfigChange(node.id, mode === "image" ? { model, ...defaultImageParamsForModel(config, model) } : { model })}
                         capability={mode}
                         requirements={resolvedRequirements}
+                        selectionRequirements={videoSelectionRequirements}
                         onMissingConfig={() => navigateToSettings({ continueCreation: true })}
                         showSelectedPrice={false}
                         showOptionPrices={creditsEnabled}
@@ -440,11 +476,14 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                                 onOpenChange={expanded ? undefined : onImageSettingsOpenChange}
                             />
                         </>
-                    ) : mode === "video" ? (
+                    ) : mode === "video" && videoAdmission?.assessment.status !== "unknown" ? (
                         <CanvasVideoSettingsPopover
                             config={config}
                             buttonClassName="canvas-node-composer-settings-trigger [&>span]:min-w-0 [&_.lucide]:!size-3"
-                            onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))}
+                            onConfigChange={(key, value) => {
+                                setResetVideoSpecs(false);
+                                onConfigChange(node.id, videoConfigPatch(key, value));
+                            }}
                         />
                     ) : mode === "audio" ? (
                         <CanvasAudioSettingsPopover
@@ -551,6 +590,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
             ) : null}
 
             {renderComposerControls(false)}
+            {renderVideoCapabilityHint()}
 
             <Modal
                 className="canvas-prompt-editor-modal"
@@ -580,6 +620,7 @@ export function CanvasNodePromptPanel({ projectId, node, isRunning, onPromptChan
                             </div>
                         ) : null}
                         <div className="shrink-0">{renderComposerControls(true)}</div>
+                        {renderVideoCapabilityHint()}
                     </div>
                     <PromptModalResizeHandle size={expandedModalSize} measure={measureExpandedModalSize} onResize={setExpandedModalSize} accent={theme.node.muted} />
                 </div>
@@ -1037,11 +1078,18 @@ export function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mo
     const defaultModel = mode === "image" ? globalConfig.imageModel : mode === "video" ? globalConfig.videoModel : mode === "audio" ? globalConfig.audioModel : globalConfig.textModel;
     const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
     const preferredModel = resolveCanvasGenerationModel(globalConfig, node.metadata?.model, mode) || resolveCanvasGenerationModel(globalConfig, defaultModel, mode) || fallbackModel;
+    if (mode === "video") return videoCreationConfig(globalConfig, node.metadata?.model || globalConfig.videoModel || preferredModel, {
+        size: node.metadata?.size,
+        videoSeconds: node.metadata?.seconds,
+        vquality: node.metadata?.vquality,
+        videoGenerateAudio: node.metadata?.generateAudio,
+        videoWatermark: node.metadata?.watermark,
+    });
     const model = resolveCompatibleModel(globalConfig, preferredModel, mode === "image" ? { ...requirements, imageSize: node.metadata?.size || globalConfig.size || defaultConfig.size } : requirements) || preferredModel;
     const defaults = resolveModelGenerationDefaults(
         globalConfig,
         model,
-        mode === "image" ? "image" : mode === "video" ? "video" : undefined,
+        mode === "image" ? "image" : undefined,
         mode === "image"
             ? {
                   size: node.metadata?.size,

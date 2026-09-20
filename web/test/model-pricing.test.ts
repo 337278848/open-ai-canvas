@@ -236,6 +236,21 @@ describe("model request pricing", () => {
         });
     });
 
+    test("quote preserves explicit execution mode while pricing categories still follow actual media", () => {
+        const config = systemConfig({ tiers: [
+            { selector: { operation: "image_to_video" }, billingMode: "per_second", unitPriceMicrocredits: 30_000 },
+        ] });
+        const requirements: ModelRequirements = {
+            ...textVideoRequirements,
+            input: { ...textVideoRequirements.input!, imageCount: 1 },
+            videoOperation: "text_to_video",
+            videoOperationExplicit: true,
+        };
+        expect(modelQuoteRequest(config, config.model, "video", requirements)?.intent.operation).toBe("text_to_video");
+        expect(priceTiersForCurrentSelection(config.channels[0].modelCosts![0].logicalPriceTiers!, "video", config, requirements)).toHaveLength(1);
+        expect(modelQuoteRequest(config, config.model, "video", { ...requirements, videoOperationExplicit: false })?.intent.operation).toBe("image_to_video");
+    });
+
     test("matches video audio, resolution and duration from actual request overrides", () => {
         const config = systemConfig({ tiers: [
             { selector: {}, billingMode: "token", unitPriceMicrocredits: 0, outputTokenPriceMicrocredits: 1_000_000 },

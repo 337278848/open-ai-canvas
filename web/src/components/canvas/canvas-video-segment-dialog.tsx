@@ -4,11 +4,10 @@ import { AudioLines, Check, ListVideo, Plus, Scissors, SkipBack, SkipForward, Tr
 import { nanoid } from "nanoid";
 
 import { ModelPicker } from "@/components/model-picker";
+import { ModelCapabilityHint } from "@/components/model-capability-hint";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { buildTimelineImportSegments, type CanvasTimelineSegmentItem } from "@/lib/canvas/canvas-video-timeline-segments";
-import { listVideoReferenceModels } from "@/lib/canvas/canvas-video-regeneration";
-import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
-import { modelRequestOptions, resolveCompatibleModel, type ModelRequirements } from "@/lib/model-selection";
+import { buildCanvasVideoSegmentRequest, listVideoReferenceModels, type SegmentGenerationSettings } from "@/lib/canvas/canvas-video-regeneration";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { resolveMediaUrl } from "@/services/file-storage";
@@ -29,6 +28,7 @@ export type CanvasVideoSegmentParams = {
     segments?: CanvasVideoSegmentItem[];
     model?: string;
     operation?: CanvasVideoEditOperation;
+    generationSettings?: SegmentGenerationSettings;
 };
 
 type CanvasVideoSegmentDialogProps = {
@@ -58,7 +58,7 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
     const [prompt, setPrompt] = useState("");
     const [segments, setSegments] = useState<CanvasVideoSegmentItem[]>([]);
     const [model, setModel] = useState("");
-    const [operation, setOperation] = useState<CanvasVideoEditOperation>("extend");
+    const [operation, setOperation] = useState<CanvasVideoEditOperation>();
     const [videoAction, setVideoAction] = useState<"extract" | "create-generation-nodes">("extract");
     const eligibleModels = useMemo(() => listVideoReferenceModels(config), [config]);
 
@@ -76,10 +76,8 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
         setVideoAction("extract");
         segmentsSeededRef.current = false;
         const defaultModel = config.videoModel || config.model || "";
-        const initialModel = eligibleModels.includes(defaultModel) ? defaultModel : eligibleModels[0] || defaultModel;
-        setModel(initialModel);
-        const profile = initialModel ? modelCapabilityConfigFor(config, initialModel).video : undefined;
-        setOperation(profile?.operations.includes("extend") ? "extend" : (profile?.operations[0] as CanvasVideoEditOperation | undefined) || "extend");
+        setModel(defaultModel);
+        setOperation(undefined);
         const storageKey = node.metadata?.storageKey || "";
         const fallback = node.metadata?.content || "";
         const applyUrl = (url: string) => {
@@ -101,7 +99,8 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
         return () => {
             cancelled = true;
         };
-    }, [config, eligibleModels, node, open]);
+    // 目录/全局偏好刷新只触发重新评估，不能清空已经选好的片段和模型。
+    }, [node.id, node.metadata?.storageKey, node.metadata?.content, mode, open]);
 
     // 视频模式等待时长元数据就绪后，默认放入一个完整时长的片段。
     useEffect(() => {
@@ -114,31 +113,12 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
     const createsGenerationNodes = videoAction === "create-generation-nodes";
     const durationSec = durationMs > 0 ? durationMs / 1000 : 0;
     const hasTimelineVideoClips = Boolean(timeline?.clips.some((clip) => clip.kind === "video"));
-    const hasPrompt = Boolean(prompt.trim());
-    const modelRequirements = useMemo<ModelRequirements>(
-        () => ({
-            capability: "video",
-            input: { textCount: createsGenerationNodes && hasPrompt ? 1 : 0, imageCount: 0, videoCount: createsGenerationNodes ? 1 : 0, audioCount: 0, characterCount: 0 },
-            videoOperation: operation,
-            videoSeconds: config.videoSeconds,
-			options: modelRequestOptions(config, "video"),
-        }),
-        [config.videoSeconds, createsGenerationNodes, hasPrompt, operation],
-    );
-    const resolvedModel = resolveCompatibleModel(config, model, modelRequirements) || model;
-    const videoProfile = useMemo(() => (resolvedModel ? modelCapabilityConfigFor(config, resolvedModel).video : undefined), [config, resolvedModel]);
+    const generationRequest = useMemo(() => buildCanvasVideoSegmentRequest(config, model, segments, prompt, operation), [config, model, segments, prompt, operation]);
     const defaultModel = config.videoModel || config.model || "";
     const defaultModelSupported = eligibleModels.includes(defaultModel);
     const hasEligibleModels = eligibleModels.length > 0;
-    const firstEligibleModel = eligibleModels[0] || "";
 
-    // 切换模型后保持所选模式仍然有效，优先回退到“视频续写”。
-    useEffect(() => {
-        if (!videoProfile?.operations.length || videoProfile.operations.includes(operation)) return;
-        setOperation(videoProfile.operations.includes("extend") ? "extend" : (videoProfile.operations[0] as CanvasVideoEditOperation));
-    }, [operation, videoProfile]);
-
-    const operationOptions = (videoProfile?.operations || []).map((value) => {
+    const operationOptions = generationRequest.operations.map((value) => {
         const operation = value as CanvasVideoEditOperation;
         return { value: operation, label: videoOperationLabel(operation) };
     });
@@ -183,8 +163,9 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
 
     const handleConfirm = () => {
         if (isVideoMode) {
-            if (createsGenerationNodes && !model) {
-                message.warning("请选择视频模型");
+            const request = createsGenerationNodes ? buildCanvasVideoSegmentRequest(config, model, segments, prompt, operation, generationRequest.generationSettings) : undefined;
+            if (request?.error) {
+                message.warning(request.error);
                 return;
             }
             if (!segments.length) {
@@ -203,9 +184,10 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
                 startMs: 0,
                 endMs: 0,
                 segments: segments.map(({ id, startMs, endMs, sourceNodeId, sourceStorageKey, sourceUrl }) => ({ id, startMs, endMs, sourceNodeId, sourceStorageKey, sourceUrl })),
-                model: createsGenerationNodes ? resolvedModel : undefined,
-                operation: createsGenerationNodes ? operation : undefined,
-                prompt: createsGenerationNodes ? prompt.trim() : undefined,
+                model: request?.config.model,
+                operation: request?.operation,
+                prompt: request?.prompt,
+                generationSettings: request?.generationSettings,
             });
             return;
         }
@@ -261,11 +243,11 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
 
                 {isVideoMode ? (
                     <div className="space-y-2.5">
-                        {createsGenerationNodes && !defaultModelSupported ? (
+                        {createsGenerationNodes && model === defaultModel && !defaultModelSupported ? (
                             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs" style={{ background: theme.accent.primarySoft + "1a", borderColor: theme.accent.primarySoft, color: theme.node.muted }}>
                                 <span className="min-w-0 flex-1">
                                     {hasEligibleModels
-                                        ? `当前默认模型${defaultModel ? `「${modelDisplayName(config, defaultModel)}」` : ""}不支持参考视频，已自动切换到「${modelDisplayName(config, firstEligibleModel)}」。`
+                                        ? `当前默认模型${defaultModel ? `「${modelDisplayName(config, defaultModel)}」` : ""}不支持参考视频，请手动选择适用模型。`
                                         : "当前配置中没有支持参考视频的视频模型，请先到设置里配置 Seedance / Agent Plan / NewAPI 渠道。"}
                                 </span>
                                 {!hasEligibleModels ? (
@@ -351,13 +333,17 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
                                 <div className="grid gap-3 md:grid-cols-2">
                                     <label className="block min-w-0">
                                         <div className="mb-1.5 text-sm font-medium">生成节点模型</div>
-                                        <ModelPicker config={config} value={resolvedModel} onChange={setModel} capability="video" requirements={modelRequirements} fullWidth onMissingConfig={() => message.warning("请先配置支持参考视频的视频模型")} />
+                                        <ModelPicker config={config} value={model} onChange={setModel} capability="video" requirements={generationRequest.requirements} selectionRequirements={generationRequest.selectionRequirements} fullWidth onMissingConfig={() => message.warning("请先配置支持参考视频的视频模型")} />
                                     </label>
                                     <label className="block min-w-0">
                                         <div className="mb-1.5 text-sm font-medium">生成模式</div>
-                                        <Select className="w-full" size="small" value={operation} options={operationOptions} placeholder="选择生成模式" onChange={(value) => setOperation(value as CanvasVideoEditOperation)} />
+                                        <Select className="w-full" size="small" value={generationRequest.operation} options={operationOptions} placeholder="选择生成模式" onChange={(value) => setOperation(value as CanvasVideoEditOperation)} />
+                                        {operation ? <button type="button" className="mt-1 text-xs underline" onClick={() => setOperation(undefined)}>使用模型默认模式</button> : null}
                                     </label>
                                 </div>
+                                <ModelCapabilityHint config={config} model={model} requirements={generationRequest.requirements} />
+                                <div className="text-xs opacity-60">每个片段单独创建一个生成节点，输出时长、画幅、清晰度及声音/水印使用所选模型默认值，不继承全局或原视频规格。创建后仍可在节点上调整。</div>
+                                {generationRequest.error ? <div role="alert" className="text-xs" style={{ color: theme.node.muted }}>{generationRequest.error}</div> : null}
 
                                 <label className="block">
                                     <div className="mb-1.5 text-sm font-medium">生成提示词</div>
@@ -421,7 +407,7 @@ export function CanvasVideoSegmentDialog({ node, nodes, connections, open, mode,
 
                 <div className="flex items-center justify-end gap-2">
                     <Button onClick={onClose}>取消</Button>
-                    <Button type="primary" icon={<Check className="size-4" />} disabled={isVideoMode ? !segments.length : !durationSec} onClick={handleConfirm}>
+                    <Button type="primary" icon={<Check className="size-4" />} disabled={isVideoMode ? !segments.length || (createsGenerationNodes && Boolean(generationRequest.error)) : !durationSec} onClick={handleConfirm}>
                         {isVideoMode ? (createsGenerationNodes ? `截取 ${segments.length} 段并创建生成节点` : `截取 ${segments.length} 段`) : "提取音频"}
                     </Button>
                 </div>

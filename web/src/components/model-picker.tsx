@@ -12,6 +12,7 @@ import { modelDisplayName, modelIcon, modelOptionName, resolveModelChannel, sele
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { ModelLogo } from "@/components/model-logo";
+import { VideoModelOptions } from "@/components/video-model-options";
 import { quoteModel, type LogicalModelQuote } from "@/services/api/logical-models";
 
 type ModelPickerProps = {
@@ -28,6 +29,8 @@ type ModelPickerProps = {
     showOptionPrices?: boolean;
     variant?: "default" | "creation";
     requirements?: ModelRequirements;
+    /** Explicit user constraints for discovery; requirements remains the full request for quoting. */
+    selectionRequirements?: ModelRequirements;
     showConfiguredModelName?: boolean;
 };
 
@@ -45,6 +48,7 @@ export function ModelPicker({
     showOptionPrices = showSelectedPrice,
     variant = "creation",
     requirements,
+    selectionRequirements: suppliedSelectionRequirements,
     showConfiguredModelName = false,
 }: ModelPickerProps) {
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
@@ -61,9 +65,10 @@ export function ModelPicker({
     const options = useMemo(() => Array.from(new Set(selectableModelsByCapability(config, capability).filter(Boolean))), [capability, config]);
     const optionGroups = useMemo(() => groupModelsForPicker(config, options), [config, options]);
     const storedCurrent = value?.trim() || "";
-    // 参数档位会在选中模型后由调用方归一到其能力配置，不能因为旧模型留下的参数而禁止切换。
-    const selectionRequirements = requirements ? { ...requirements, videoSeconds: undefined, imageSize: undefined, options: undefined } : undefined;
-    const resolvedCurrent = isDirectSystemModel(config, storedCurrent) ? storedCurrent : resolveCompatibleModel(config, storedCurrent, selectionRequirements) || storedCurrent;
+    // Video discovery preserves explicit intent. Other capabilities retain their
+    // existing model-switch defaults until their composers opt into constraints.
+    const selectionRequirements = suppliedSelectionRequirements ?? (capability === "video" ? requirements : requirements ? { ...requirements, videoSeconds: undefined, imageSize: undefined, options: undefined } : undefined);
+    const resolvedCurrent = capability === "video" || isDirectSystemModel(config, storedCurrent) ? storedCurrent : resolveCompatibleModel(config, storedCurrent, selectionRequirements) || storedCurrent;
     // 旧画布可能保存过已下架或前端历史内置模型；它们不能重新进入当前可选目录。
     const current = options.includes(resolvedCurrent) ? resolvedCurrent : "";
     const currentPrice = modelMenuPrice(config, current, capability, false, requirements);
@@ -146,6 +151,7 @@ export function ModelPicker({
             triggerRef.current?.focus();
             return;
         }
+        if (event.target instanceof HTMLInputElement && !["ArrowDown", "ArrowUp"].includes(event.key)) return;
         if (event.key === "ArrowLeft" && activeGroupKey !== null) {
             event.preventDefault();
             setActiveGroupKey(null);
@@ -166,7 +172,7 @@ export function ModelPicker({
             data-canvas-no-zoom
             className={cn(
                 "canvas-model-picker-menu creation-model-picker-menu max-w-[calc(100vw-24px)]",
-                activeGroupKey === null ? "is-brand-list" : "is-model-list",
+                capability === "video" ? "is-video-list" : activeGroupKey === null ? "is-brand-list" : "is-model-list",
             )}
             style={
                 {
@@ -181,7 +187,18 @@ export function ModelPicker({
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
         >
-            {optionGroups.length ? (
+            {capability === "video" && options.length ? <VideoModelOptions
+                config={config}
+                models={options}
+                current={current}
+                requirements={selectionRequirements}
+                showPrices={showOptionPrices && creditsEnabled}
+                onSelect={(model) => {
+                    onChange(model);
+                    setOpen(false);
+                    window.requestAnimationFrame(() => triggerRef.current?.focus());
+                }}
+            /> : optionGroups.length ? (
                 activeGroupKey === null ? (
                     <div className="canvas-model-picker-brands" aria-label="选择产品模型">
                         {optionGroups.map((group) => {
