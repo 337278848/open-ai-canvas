@@ -72,6 +72,15 @@ export function videoCreationDefaultSelection(requirements: VideoCreationRequire
 export function videoCreationNodePatch(config: AiConfig, model = config.model) {
     return {
         model,
+        ...videoCreationOptionsPatch(config),
+    };
+}
+
+// Submission synchronizes displayed specifications without changing the
+// canonical model selection. Only an explicit picker action may switch a
+// logical selection to a concrete channel model.
+export function videoCreationOptionsPatch(config: AiConfig) {
+    return {
         size: config.size,
         seconds: config.videoSeconds,
         vquality: config.vquality,

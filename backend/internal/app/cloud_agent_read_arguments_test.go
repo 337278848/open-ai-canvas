@@ -143,7 +143,7 @@ func TestCloudAgentCanvasReadArgumentRepairContinuesRun(t *testing.T) {
 				t.Fatalf("lost strict schema after checkpoint: %#v", result)
 			}
 			properties, _ := schema["properties"].(map[string]any)
-			if len(properties) != 4 || properties["offset"] == nil || properties["nodeIds"] == nil || properties["storyboardOffset"] == nil || properties["maxItems"] == nil {
+			if len(properties) != 5 || properties["offset"] == nil || properties["nodeIds"] == nil || properties["storyboardOffset"] == nil || properties["connectionOffset"] == nil || properties["maxItems"] == nil {
 				t.Fatalf("wrong repair schema: %#v", properties)
 			}
 		} else if result["error"] != nil || result["snapshotHash"] == nil || !strings.Contains(last["content"].(string), "saved content") {

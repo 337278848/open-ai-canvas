@@ -35,7 +35,7 @@ export const creationFeaturedWorks: CreationInspiration[] = [
     {
         title: "温暖室内对话",
         description: "生活化场景与柔和叙事氛围",
-        image: "/welcome/wing-it/barn.webp",
+        image: "/short-drama-styles/real-life.jpg",
         mode: "text",
         prompt: "请帮我写一场发生在暖色灯光客厅里的母女对话戏：女儿准备离开家乡，母亲表面平静但一直在整理旧物，用动作和潜台词推进情绪。",
     },

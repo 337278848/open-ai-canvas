@@ -113,8 +113,8 @@ func TestMigrateSchemaV16UpgradesExistingDatabase(t *testing.T) {
 	}
 }
 
-func TestMigrateSchemaV28AddsUpstreamRelayFields(t *testing.T) {
-	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-resource-upstream-relay-v28?mode=memory&cache=shared"})
+func TestMigrateSchemaV30AddsUpstreamRelayFields(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-resource-upstream-relay-v30?mode=memory&cache=shared"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,19 +127,75 @@ func TestMigrateSchemaV28AddsUpstreamRelayFields(t *testing.T) {
 	if err := db.Migrator().DropColumn(&model.Resource{}, "RelayExpiresAt"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Where("version = ?", 28).Delete(&schemaMigration{}).Error; err != nil {
+	if err := db.Where("version = ?", 30).Delete(&schemaMigration{}).Error; err != nil {
 		t.Fatal(err)
 	}
 
 	if err := MigrateSchema(db); err != nil {
-		t.Fatalf("upgrade to v28: %v", err)
+		t.Fatalf("reconcile at v30: %v", err)
 	}
 	if !db.Migrator().HasColumn(&model.Resource{}, "relay_url") || !db.Migrator().HasColumn(&model.Resource{}, "relay_expires_at") {
-		t.Fatal("v28 migration did not restore upstream relay fields")
+		t.Fatal("v30 migration did not restore upstream relay fields")
 	}
 	status, err := ReadSchemaStatus(db)
-	if err != nil || !status.Ready || status.Current != 28 {
+	if err != nil || !status.Ready || status.Current != CurrentSchemaVersion {
 		t.Fatalf("unexpected upgraded schema status: %+v, %v", status, err)
+	}
+}
+
+func TestMigrateSchemaReconcilesLocalRelayAtV28(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-local-relay-v28?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	var original schemaMigration
+	if err := db.First(&original, "version = ?", 28).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&schemaMigration{}).Where("version = ?", 28).Updates(map[string]any{
+		"name":     "resource_upstream_relay",
+		"checksum": resourceUpstreamRelayChecksum,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("version >= ?", 29).Delete(&schemaMigration{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []any{&model.CloudAgentEventRecord{}, &model.CloudAgentMessageRecord{}, &model.CloudAgentResourceLease{}} {
+		if err := db.Migrator().DropTable(table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, field := range []string{"RelayURL", "RelayExpiresAt"} {
+		if err := db.Migrator().DropColumn(&model.Resource{}, field); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("upgrade from local relay v28: %v", err)
+	}
+	for _, table := range []any{&model.CloudAgentEventRecord{}, &model.CloudAgentMessageRecord{}, &model.CloudAgentResourceLease{}} {
+		if !db.Migrator().HasTable(table) {
+			t.Fatalf("local v28 reconciliation did not restore %T", table)
+		}
+	}
+	if !db.Migrator().HasColumn(&model.Resource{}, "relay_url") || !db.Migrator().HasColumn(&model.Resource{}, "relay_expires_at") {
+		t.Fatal("local v28 reconciliation did not restore relay fields")
+	}
+	var preserved schemaMigration
+	if err := db.First(&preserved, "version = ?", 28).Error; err != nil {
+		t.Fatal(err)
+	}
+	if preserved.Name != "resource_upstream_relay" || preserved.Checksum != resourceUpstreamRelayChecksum || !preserved.AppliedAt.Equal(original.AppliedAt) {
+		t.Fatalf("local v28 history was rewritten: %#v", preserved)
+	}
+	status, err := ReadSchemaStatus(db)
+	if err != nil || !status.Ready || status.Current != CurrentSchemaVersion {
+		t.Fatalf("unexpected reconciled schema status: %+v, %v", status, err)
 	}
 }
 
@@ -180,7 +236,7 @@ func TestMigrateSchemaSupportsLegacyRelayAtV16(t *testing.T) {
 		t.Fatal("legacy v16 upgrade did not restore upstream relay fields")
 	}
 	status, err := ReadSchemaStatus(db)
-	if err != nil || !status.Ready || status.Current != 28 {
+	if err != nil || !status.Ready || status.Current != CurrentSchemaVersion {
 		t.Fatalf("unexpected legacy-upgraded schema status: %+v, %v", status, err)
 	}
 }

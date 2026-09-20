@@ -9,7 +9,8 @@ test("Agent 对话和设置复用创作页模型选择器，并且只展示文�
     expect(panel).toContain('capability="text"');
     expect(panel).toContain('variant="creation"');
     expect(panel).toContain('popoverClassName="agent-model-picker-popover"');
-    expect(panel).toContain('selectableModelsByCapability(config, "text")');
+    expect(panel).toContain('channels: config.channels.filter((channel) => channel.scope === "system")');
+    expect(panel).toContain('selectableModelsByCapability(agentModelConfig, "text")');
     expect(panel).toContain('placeholder="选择文本模型"');
 
     expect(settings).toContain('capability="text"');

@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 28
+const CurrentSchemaVersion int64 = 30
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -24,6 +24,7 @@ const logicalModelActiveCodeChecksum = "sha256:logical-model-active-code-v8-2026
 const creationRuntimeChecksum = "sha256:creation-runtime-v10-20260909"
 const resourceUpstreamRelayChecksum = "sha256:resource-upstream-relay-v28-20260919"
 const legacyResourceUpstreamRelayChecksum = "sha256:resource-upstream-relay-v16-20260915"
+const resourceUpstreamRelayReconciliationChecksum = "sha256:resource-upstream-relay-v28-reconciliation-v30-20260920"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -95,12 +96,24 @@ var schemaMigrations = []migration{
 	{version: 25, name: "video_token_formula_snapshot", checksum: "sha256:video-token-formula-snapshot-v25", apply: migrateVideoTokenFormulaSnapshot},
 	{version: 26, name: "channel_model_description", checksum: "sha256:channel-model-description-v26", apply: migrateChannelModelDescription},
 	{version: 27, name: "channel_credit_cost", checksum: "sha256:channel-credit-cost-v27", apply: migrateChannelCreditCost},
-	{version: 28, name: "resource_upstream_relay", checksum: resourceUpstreamRelayChecksum, apply: migrateSchemaV28},
+	{version: 28, name: "agent_execution_journal", checksum: "sha256:agent-execution-journal-v28", apply: migrateAgentExecutionJournal},
+	{version: 29, name: "agent_resource_leases", checksum: "sha256:agent-resource-leases-v29-20260919", apply: migrateAgentResourceLeases},
+	{version: 30, name: "resource_upstream_relay_v28_reconciliation", checksum: resourceUpstreamRelayReconciliationChecksum, apply: migrateSchemaV30Reconciliation},
 }
 
-// migrateSchemaV28 为资源增加上游图床中继字段：本地存储且部署没有自备公网地址时，
-// 参考素材经第三方临时图床换取公网地址，缓存结果有固定存活期，可安全重建。
-func migrateSchemaV28(tx *gorm.DB) error {
+func migrateAgentExecutionJournal(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.CloudAgentExecution{}, &model.CloudAgentEventRecord{}, &model.CloudAgentMessageRecord{}, &model.Task{}, &model.BillingOrder{})
+}
+
+func migrateAgentResourceLeases(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.CloudAgentResourceLease{})
+}
+
+// migrateResourceUpstreamRelay adds the local upstream-media relay cache.
+// It is intentionally idempotent because the same physical schema was shipped
+// under a conflicting local v28 (and an older local v16) before upstream used
+// v28 for the Agent execution journal.
+func migrateResourceUpstreamRelay(tx *gorm.DB) error {
 	if !tx.Migrator().HasTable(&model.Resource{}) {
 		return fmt.Errorf("资源表不存在")
 	}
@@ -116,6 +129,20 @@ func migrateSchemaV28(tx *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+// v30 is the convergence point for both historical v28 lineages. Official
+// databases already have the Agent journal; local databases already have the
+// relay columns. Re-running all three idempotent schema operations makes both
+// lineages physically complete without rewriting historical migration records.
+func migrateSchemaV30Reconciliation(tx *gorm.DB) error {
+	if err := migrateAgentExecutionJournal(tx); err != nil {
+		return err
+	}
+	if err := migrateAgentResourceLeases(tx); err != nil {
+		return err
+	}
+	return migrateResourceUpstreamRelay(tx)
 }
 
 func migrateChannelCreditCost(tx *gorm.DB) error {
@@ -226,15 +253,13 @@ func migrateChannelPresentation(tx *gorm.DB) error {
 
 func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
 	plan := append([]migration(nil), schemaMigrations...)
+
 	var applied schemaMigration
 	err := db.First(&applied, "version = ?", 6).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return plan, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, fmt.Errorf("读取数据库迁移 6：%w", err)
 	}
-	if applied.Name == "asset_library_folders" {
+	if err == nil && applied.Name == "asset_library_folders" {
 		legacy := migration{version: 6, name: "asset_library_folders", checksum: assetLibraryFoldersChecksum, apply: migrateSchemaV7}
 		if err := validateMigrationRecord(applied, legacy); err != nil {
 			return nil, err
@@ -251,30 +276,47 @@ func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
 
 	var legacyRelay schemaMigration
 	err = db.First(&legacyRelay, "version = ?", 16).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return plan, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, fmt.Errorf("读取数据库迁移 16：%w", err)
 	}
-	if legacyRelay.Name != "resource_upstream_relay" {
-		return plan, nil
+	if err == nil && legacyRelay.Name == "resource_upstream_relay" {
+		legacy := migration{
+			version:  16,
+			name:     "resource_upstream_relay",
+			checksum: legacyResourceUpstreamRelayChecksum,
+			apply:    func(*gorm.DB) error { return nil },
+		}
+		if err := validateMigrationRecord(legacyRelay, legacy); err != nil {
+			return nil, err
+		}
+		for index, item := range plan {
+			if item.version == 16 {
+				plan[index] = legacy
+				break
+			}
+		}
 	}
-	legacy := migration{
-		version:  16,
-		name:     "resource_upstream_relay",
-		checksum: legacyResourceUpstreamRelayChecksum,
-		// The old local migration already added the relay columns. The new
-		// v28 migration remains idempotent and repairs them if necessary.
-		apply: func(*gorm.DB) error { return nil },
+
+	var v28 schemaMigration
+	err = db.First(&v28, "version = ?", 28).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("读取数据库迁移 28：%w", err)
 	}
-	if err := validateMigrationRecord(legacyRelay, legacy); err != nil {
-		return nil, err
-	}
-	for index, item := range plan {
-		if item.version == 16 {
-			plan[index] = legacy
-			break
+	if err == nil && v28.Name == "resource_upstream_relay" {
+		localV28 := migration{
+			version:  28,
+			name:     "resource_upstream_relay",
+			checksum: resourceUpstreamRelayChecksum,
+			apply:    func(*gorm.DB) error { return nil },
+		}
+		if err := validateMigrationRecord(v28, localV28); err != nil {
+			return nil, err
+		}
+		for index, item := range plan {
+			if item.version == 28 {
+				plan[index] = localV28
+				break
+			}
 		}
 	}
 	return plan, nil

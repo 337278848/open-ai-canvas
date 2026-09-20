@@ -51,10 +51,9 @@ describe("all canvas video entrypoints validate the original request", () => {
     });
 
     test("no fallback can mask an unavailable saved model", () => {
-        const { config, node, input } = fixture();
+        const { config, node } = fixture();
         node.metadata!.model = "deleted::video";
-        const request = buildCanvasVideoRequestConfig(config, node, buildGenerationConfig(config, node, "video"));
-        expect(videoCreationAdmission(request, { input }).error).not.toBe("");
+        expect(() => buildGenerationConfig(config, node, "video")).toThrow("不可用");
     });
 
     test("valid saved specs and selected identity survive actual task serialization", async () => {
