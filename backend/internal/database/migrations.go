@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 30
+const CurrentSchemaVersion int64 = 32
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -25,6 +25,7 @@ const creationRuntimeChecksum = "sha256:creation-runtime-v10-20260909"
 const resourceUpstreamRelayChecksum = "sha256:resource-upstream-relay-v28-20260919"
 const legacyResourceUpstreamRelayChecksum = "sha256:resource-upstream-relay-v16-20260915"
 const resourceUpstreamRelayReconciliationChecksum = "sha256:resource-upstream-relay-v28-reconciliation-v30-20260920"
+const toolSchemaReconciliationChecksum = "sha256:tool-schema-reconciliation-v32-20260920"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -98,7 +99,9 @@ var schemaMigrations = []migration{
 	{version: 27, name: "channel_credit_cost", checksum: "sha256:channel-credit-cost-v27", apply: migrateChannelCreditCost},
 	{version: 28, name: "agent_execution_journal", checksum: "sha256:agent-execution-journal-v28", apply: migrateAgentExecutionJournal},
 	{version: 29, name: "agent_resource_leases", checksum: "sha256:agent-resource-leases-v29-20260919", apply: migrateAgentResourceLeases},
-	{version: 30, name: "resource_upstream_relay_v28_reconciliation", checksum: resourceUpstreamRelayReconciliationChecksum, apply: migrateSchemaV30Reconciliation},
+	{version: 30, name: "builtin_tools", checksum: "sha256:builtin-tools-v30", apply: migrateBuiltinTools},
+	{version: 31, name: "tool_favorites", checksum: "sha256:tool-favorites-v31", apply: migrateToolFavorites},
+	{version: 32, name: "tool_schema_reconciliation", checksum: toolSchemaReconciliationChecksum, apply: migrateToolSchemaReconciliation},
 }
 
 func migrateAgentExecutionJournal(tx *gorm.DB) error {
@@ -143,6 +146,35 @@ func migrateSchemaV30Reconciliation(tx *gorm.DB) error {
 		return err
 	}
 	return migrateResourceUpstreamRelay(tx)
+}
+
+func migrateBuiltinTools(tx *gorm.DB) error {
+	if err := migrateResourceUpstreamRelay(tx); err != nil {
+		return err
+	}
+	return tx.AutoMigrate(&model.Tool{})
+}
+
+func migrateToolFavorites(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.ToolFavorite{})
+}
+
+// v32 makes both the official tools lineage and the historical local relay
+// lineages physically complete. It is deliberately idempotent.
+func migrateToolSchemaReconciliation(tx *gorm.DB) error {
+	if err := migrateAgentExecutionJournal(tx); err != nil {
+		return err
+	}
+	if err := migrateAgentResourceLeases(tx); err != nil {
+		return err
+	}
+	if err := migrateResourceUpstreamRelay(tx); err != nil {
+		return err
+	}
+	if err := migrateBuiltinTools(tx); err != nil {
+		return err
+	}
+	return migrateToolFavorites(tx)
 }
 
 func migrateChannelCreditCost(tx *gorm.DB) error {
@@ -316,6 +348,31 @@ func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
 			if item.version == 28 {
 				plan[index] = localV28
 				break
+			}
+		}
+	}
+
+	var v30 schemaMigration
+	err = db.First(&v30, "version = ?", 30).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("读取数据库迁移 30：%w", err)
+	}
+	if err == nil && v30.Name == "resource_upstream_relay_v28_reconciliation" {
+		localV30 := migration{
+			version:  30,
+			name:     "resource_upstream_relay_v28_reconciliation",
+			checksum: resourceUpstreamRelayReconciliationChecksum,
+			apply:    func(*gorm.DB) error { return nil },
+		}
+		if err := validateMigrationRecord(v30, localV30); err != nil {
+			return nil, err
+		}
+		for index, item := range plan {
+			switch item.version {
+			case 30:
+				plan[index] = localV30
+			case 31:
+				plan[index] = migration{version: 31, name: "builtin_tools", checksum: "sha256:builtin-tools-v30", apply: migrateBuiltinTools}
 			}
 		}
 	}

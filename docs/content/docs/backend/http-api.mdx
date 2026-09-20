@@ -243,3 +243,17 @@ CSV 使用中文表头、UTF-8 BOM、CRLF；金额按整数分精确转换为两
 模型错误把已有字符串码放进 `reason`（如 `model_capability_not_supported`），`code` 仍为 400。
 
 常量：后端 `service/error_codes.go`，前端 `web/src/services/api/error-codes.ts`。
+
+## 画布工具 API
+
+以下接口均要求登录，使用标准业务信封：
+
+| 方法 | 路径 | 行为 |
+| --- | --- | --- |
+| GET | `/api/tools` | 分页列表；`scope=public/favorites/custom`，默认 public；可按 `type=style/motion/nine_grid/effect`、tag、search 筛选。page 从 1 开始，pageSize 默认 20、最大 80；返回 tools、totalCount、page、pageSize、hasMore |
+| GET | `/api/tools/:id` | 可见且启用的工具详情，包含 prompt 和 extraInfo；列表不含这两个大字段 |
+| POST | `/api/tools` | 新建自己的工具；type、label、prompt 必填，visibility 默认 private；预览仅支持本人已上传完成的资源，公开工具暂不接受私人预览 |
+| POST / DELETE | `/api/tools/:id/favorite` | 幂等收藏 / 取消收藏，仅允许操作可见且启用工具 |
+| DELETE | `/api/tools/:id` | 仅删除自己的用户工具，不能删除内置或他人工具 |
+
+生成提示词工具引用格式为 `@[tool:type:ID:label:icon]`，label 使用 URI 编码。名称和图标只用于展示，不作为授权依据。服务端在任务入队及执行前检查用户可见性、启用状态、工具类型和生成模式；无效、越权、嵌套工具或数据库错误必须失败，不能把未解析 token 发送给模型。风格和九宫格仅用于图片，运镜和特效仅用于视频。入队校验不冻结工具快照：排队期间删除工具将导致执行失败。
