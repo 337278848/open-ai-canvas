@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 
 import { AppModal } from "@/components/ui/product/app-modal/app-modal";
 import { aceternityMotion } from "@/lib/aceternity-motion";
+import { publicReleaseNotes } from "@/lib/public-release-notes";
 
 export function AppChangelogDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
     const reducedMotion = useReducedMotion();
@@ -57,7 +58,7 @@ export function AppChangelogDialog({ open, onClose }: { open: boolean; onClose: 
                         code: ({ children }) => <code className="app-changelog-code">{children}</code>,
                     }}
                 >
-                    {__APP_CHANGELOG__}
+                    {publicReleaseNotes(__APP_CHANGELOG__)}
                 </ReactMarkdown>
             </div>
         </AppModal>

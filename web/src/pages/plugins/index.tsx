@@ -294,7 +294,7 @@ export default function PluginsPage() {
                                 prefix={<Search className="size-4 text-foreground/38" aria-hidden="true" />}
                                 value={search}
                                 allowClear
-                                placeholder="搜索插件名称、描述或作者"
+                                placeholder="搜索插件名称或描述"
                                 onChange={(event) => setSearch(event.target.value)}
                             />
                             <Select
@@ -312,11 +312,11 @@ export default function PluginsPage() {
                                 className="plugins-filter"
                                 value={trustFilter}
                                 options={[
-                                    { value: "all", label: "全部来源" },
-                                    { value: "trusted", label: "可信插件" },
+                                    { value: "all", label: "全部插件" },
+                                    { value: "trusted", label: "已验证插件" },
                                 ]}
                                 onChange={(value) => setTrustFilter(value as "all" | "trusted")}
-                                aria-label="按来源筛选"
+                                aria-label="按验证状态筛选"
                             />
                         </CollectionToolbar>
 
@@ -374,7 +374,7 @@ export default function PluginsPage() {
                                                                                 <span className="plugin-version">v{plugin.manifest.version}</span>
                                                                             </div>
                                                                             <div className="plugin-card-labels">
-                                                                                <span className={`plugin-source-label${sourceLabel === "系统插件" ? " is-system" : ""}`}>{sourceLabel}</span>
+                                                                                <span className={`plugin-source-label${sourceLabel === "平台能力" ? " is-system" : ""}`}>{sourceLabel}</span>
                                                                                 {trusted ? (
                                                                                     <span className="plugin-trust-label">
                                                                                         <ShieldCheck className="size-3.5" />
@@ -502,7 +502,7 @@ export default function PluginsPage() {
                                                 可信插件
                                             </span>
                                         ) : (
-                                            <span className="plugin-category-label">第三方插件</span>
+                                            <span className="plugin-category-label">扩展能力</span>
                                         )}
                                     </div>
 
@@ -615,10 +615,10 @@ function toRegisteredPlugin(plugin: BackendPlugin): RegisteredPlugin {
 }
 
 function pluginSourceLabel(plugin: RegisteredPlugin, state?: PluginState) {
-    if (plugin.source === "uploaded") return "自定义插件";
-    if (plugin.source === "system") return "系统插件";
-    if (state?.canToggle || isOfficialApplicationPluginId(plugin.manifest.id)) return "官方插件";
-    return "系统插件";
+    if (plugin.source === "uploaded") return "扩展能力";
+    if (plugin.source === "system") return "平台能力";
+    if (state?.canToggle || isOfficialApplicationPluginId(plugin.manifest.id)) return "平台能力";
+    return "平台能力";
 }
 
 function contributionKindsFor(manifest: PluginManifest | PluginManifestV2): string[] {

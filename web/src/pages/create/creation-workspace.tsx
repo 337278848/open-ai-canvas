@@ -48,7 +48,7 @@ import { conversationTimestamp, isImageAttachment, isVideoAttachment } from "./c
 import { conversationTimeFormatter, countOptions, historyDayFormatter, messageTimeFormatter, modeLabels, qualityOptions, ratioOptions, resolutionOptions, shotScriptLabels, type CreationConversation, type CreationMessage, type CreationShotRailEntry, type CreationStatus } from "./creation-types";
 import "./creation-product.css";
 import "./creation-scrollbars.css";
-import { creationFeaturedWorks, inspirationSource } from "./creation-inspirations";
+import { creationFeaturedWorks } from "./creation-inspirations";
 
 const CanvasPromptOptimizerDrawer = lazy(() => import("@/components/canvas/canvas-prompt-optimizer-drawer").then((module) => ({ default: module.CanvasPromptOptimizerDrawer })));
 
@@ -859,10 +859,10 @@ export function CreationFeaturedWorks({ onStartPrompt }: { onStartPrompt: (mode:
         <div className="creation-featured-layout">
                 {filtered.slice(0, limit).map((item, index) => <button key={item.title} type="button" className={`product-collection-card creation-featured-card ${index === 0 ? "is-featured-hero" : ""}`} onClick={() => onStartPrompt(item.mode, item.prompt)}>
                     <span className="creation-featured-media"><img src={item.image} alt="" loading="lazy" /><span className="creation-inspiration-overlay"><ArrowUp />使用这个创意</span></span>
-                    <span className="creation-featured-copy"><strong>{item.title}</strong><span>{item.description}</span><em><Sparkles />{item.source ? "开源改编 · CC0" : "原创提示词"} · {modeLabels[item.mode]}</em></span>
+                    <span className="creation-featured-copy"><strong>{item.title}</strong><span>{item.description}</span><em><Sparkles />{item.adapted ? "精选模板" : "原创提示词"} · {modeLabels[item.mode]}</em></span>
                 </button>)}
         </div>
-        <footer className="creation-inspiration-footer">{limit < filtered.length ? <Button onClick={() => setLimit((count) => count + 12)}>展开更多灵感<ChevronDown /></Button> : <span>已展示全部 {filtered.length} 个创意</span>}<details><summary>模板与封面来源</summary><p>{inspirationSource.notice}</p><a href={inspirationSource.repository} target="_blank" rel="noreferrer">awesome-chatgpt-prompts · CC0</a></details></footer>
+        <footer className="creation-inspiration-footer">{limit < filtered.length ? <Button onClick={() => setLimit((count) => count + 12)}>展开更多灵感<ChevronDown /></Button> : <span>已展示全部 {filtered.length} 个创意</span>}<details><summary>模板说明</summary><p>部分模板经过公开许可内容整理，其余为平台编写；封面仅用于演示，不代表实际生成结果。</p></details></footer>
     </section>;
 }
 

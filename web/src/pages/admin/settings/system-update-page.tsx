@@ -1,8 +1,9 @@
 import { App, Button, Input, Skeleton } from "antd";
-import { AlertTriangle, Archive, BadgeCheck, Circle, ExternalLink, History, RefreshCw, RotateCcw, ServerCog, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Archive, BadgeCheck, Circle, History, RefreshCw, RotateCcw, ServerCog, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { checkSystemUpdate, getSystemUpdateStatus, rollbackSystemUpdate, startSystemUpdate, type SystemUpdateStatus, type UpdatePhase } from "@/services/api/system-update";
+import { publicReleaseNotes } from "@/lib/public-release-notes";
 import { AdminPageFrame } from "../components/admin-shell";
 import { AdminStatusBadge, SettingsSectionCard } from "../components/admin-ui";
 
@@ -154,7 +155,7 @@ export default function SystemUpdatePage() {
     return (
         <AdminPageFrame
             title="系统更新"
-            description="检查 GitHub Release，并在完成备份、迁移和健康验证后切换版本。"
+            description="检查发布版本，并在完成备份、迁移和健康验证后切换版本。"
             scroll
             actions={
                 <Button icon={<RefreshCw className="size-4" />} loading={checking} disabled={operationActive || !status?.supported} onClick={() => void requestCheck()}>
@@ -178,7 +179,7 @@ export default function SystemUpdatePage() {
                         layout="stacked"
                         icon={<ServerCog className="size-4" />}
                         title="可用版本"
-                        description={status?.updateAvailable ? `当前运行 ${status.currentVersion}，可更新到 ${status.latestRelease?.version}。` : "检查 GitHub Release 与当前运行的镜像标签。"}
+                        description={status?.updateAvailable ? `当前运行 ${status.currentVersion}，可更新到 ${status.latestRelease?.version}。` : "检查发布版本与当前运行版本。"}
                         status={<PhaseBadge phase={status?.operation.phase ?? "idle"} />}
                         footer={
                             <>
@@ -213,12 +214,11 @@ export default function SystemUpdatePage() {
                             <dl className="admin-system-update-facts">
                                 <dt>部署方式</dt><dd>{status?.deployment || "未知"}</dd>
                                 <dt>发布时间</dt><dd>{formatDate(status?.latestRelease?.publishedAt)}</dd>
-                                <dt>代码仓库</dt><dd>{status?.repository || "ddcat-ai/open-ai-canvas"}</dd>
                             </dl>
                             {status?.latestRelease ? (
                                 <div className="admin-system-update-notes">
-                                    <div className="flex items-center justify-between gap-3"><h3>更新日志</h3><a href={status.latestRelease.url} target="_blank" rel="noreferrer">查看 Release <ExternalLink className="size-3" /></a></div>
-                                    <pre>{status.latestRelease.body || "本版本未填写更新日志。"}</pre>
+                                    <div className="flex items-center justify-between gap-3"><h3>更新日志</h3></div>
+                                    <pre>{publicReleaseNotes(status.latestRelease.body) || "本版本未填写更新日志。"}</pre>
                                 </div>
                             ) : null}
                         </div>

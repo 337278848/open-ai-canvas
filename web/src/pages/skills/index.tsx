@@ -176,7 +176,7 @@ export default function SkillsPage() {
             message.success(result.skill.versionId === skill.versionId ? "已是最新版本" : "已同步最新版本");
             reload();
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "GitHub 技能同步失败");
+            message.error(error instanceof Error ? error.message : "远程技能同步失败");
         } finally {
             setMutatingID("");
         }

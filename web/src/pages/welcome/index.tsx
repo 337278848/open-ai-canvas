@@ -7,12 +7,10 @@ import { IconButton } from "@/components/ui/base/buttons";
 import { getAntThemeConfig } from "@/lib/app-theme";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 
-import { WelcomeContributorsCard } from "./contributors-card";
 import { chapters, getWelcomeLook, showcases, welcomeLooks, type WelcomeLook } from "./story";
 import "./welcome.css";
 
 const StoryReel = lazy(() => import("./story-reel"));
-const github = "https://github.com/ddcat-ai/open-ai-canvas";
 
 export default function WelcomePage() {
     const [look, setLook] = useState(getWelcomeLook);
@@ -106,8 +104,7 @@ function WelcomeExperience({ look, brandName, onLookChange }: { look: WelcomeLoo
                 </a>
                 <nav className={menu ? "welcome-nav is-open" : "welcome-nav"} aria-label="首页导航">
                     <a href="#workbench" onClick={() => setMenu(false)}>工作台</a>
-                    <a href="#contributors" onClick={() => setMenu(false)}>贡献者</a>
-                    <a href={github} target="_blank" rel="noreferrer">GitHub<ArrowUpRight size={13} /></a>
+                    <a href="/create" onClick={() => setMenu(false)}>开始创作</a>
                 </nav>
                 <Button className="welcome-header-cta" type="primary" href="/create" icon={<ArrowUpRight size={16} />} iconPlacement="end">开始创作</Button>
                 <IconButton className="welcome-icon mobile-menu" variant="ghost" size="lg" icon={menu ? X : Menu} aria-label={menu ? "关闭菜单" : "打开菜单"} aria-expanded={menu} onClick={() => setMenu(!menu)} />
@@ -144,10 +141,9 @@ function WelcomeExperience({ look, brandName, onLookChange }: { look: WelcomeLoo
                     <div className="welcome-workbench-caption"><p>{active.detail}</p></div>
                 </section>
 
-                <section className="welcome-ending"><h2>你的故事，<br />现在开始。</h2>
-                <WelcomeContributorsCard /></section>
+                <section className="welcome-ending"><h2>你的故事，<br />现在开始。</h2></section>
             </main>
-            <footer className="welcome-footer"><a href="/welcome">{brandName}</a><span>开源 AI 影视创作工作台</span><a href={`${github}/blob/main/LICENSE`} target="_blank" rel="noreferrer">Open Source · MIT License<ArrowUpRight size={12} /></a></footer>
+            <footer className="welcome-footer"><a href="/welcome">{brandName}</a><span>AI 影视创作工作台</span><a href="/create">开始创作<ArrowUpRight size={12} /></a></footer>
             {look.credit && <div className="welcome-media-credit"><a href={`/welcome/credits.html#${look.id}`} target="_blank" rel="noreferrer">{look.credit} · 署名与许可<ArrowUpRight size={12} /></a></div>}
             {playing && look.video && <FilmDialog look={look} onClose={() => setPlaying(false)} videoRef={videoRef} />}
         </div>

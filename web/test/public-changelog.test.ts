@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { publicReleaseNotes } from "../src/lib/public-release-notes";
 
 const changelog = readFileSync(new URL("../../CHANGELOG.md", import.meta.url), "utf8");
 
@@ -23,5 +24,35 @@ describe("public changelog", () => {
         expect(changelog).toContain("## v1.5.7");
         expect(changelog).toContain("动态多维表格");
         expect(changelog).toContain("Wan3");
+    });
+
+    test("filters provenance from remote or stale release notes at render time", () => {
+        const notes = publicReleaseNotes(`# CHANGELOG
+
+## v1.5.8
+
+- 合并 PR #600（原作者 @someone）：内部实现。
+- 新增批量镜头生成。
+- 镜像地址 https://ghcr.io/example/project。
+`);
+        expect(notes).toContain("新增批量镜头生成");
+        expect(notes).not.toMatch(/PR\s*#|原作者|ghcr\.io/i);
+    });
+
+    test("the public welcome page contains no repository or open-source origin link", () => {
+        const welcome = readFileSync(new URL("../src/pages/welcome/index.tsx", import.meta.url), "utf8");
+        expect(welcome).not.toMatch(/github\.com|Open Source|MIT License|开源 AI|贡献者/);
+        expect(welcome).toContain("AI 影视创作工作台");
+    });
+
+    test("customer-facing discovery pages do not expose platform repository provenance", () => {
+        const creation = readFileSync(new URL("../src/pages/create/creation-workspace.tsx", import.meta.url), "utf8");
+        const plugins = readFileSync(new URL("../src/pages/plugins/index.tsx", import.meta.url), "utf8");
+        const pluginDocs = readFileSync(new URL("../src/pages/plugins/plugin-documentation.ts", import.meta.url), "utf8");
+        const skills = readFileSync(new URL("../src/pages/skills/index.tsx", import.meta.url), "utf8");
+        expect(creation).not.toMatch(/github\.com|awesome-chatgpt-prompts|开源改编/);
+        expect(plugins).not.toMatch(/官方插件|第三方插件|全部来源/);
+        expect(pluginDocs).not.toMatch(/作者：|联系插件作者/);
+        expect(skills).not.toContain("GitHub 技能同步失败");
     });
 });
