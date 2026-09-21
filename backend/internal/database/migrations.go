@@ -11,7 +11,7 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 32
+const CurrentSchemaVersion int64 = 33
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -26,6 +26,8 @@ const resourceUpstreamRelayChecksum = "sha256:resource-upstream-relay-v28-202609
 const legacyResourceUpstreamRelayChecksum = "sha256:resource-upstream-relay-v16-20260915"
 const resourceUpstreamRelayReconciliationChecksum = "sha256:resource-upstream-relay-v28-reconciliation-v30-20260920"
 const toolSchemaReconciliationChecksum = "sha256:tool-schema-reconciliation-v32-20260920"
+const channelModelTagsChecksum = "sha256:channel-model-tags-v33-20260921"
+const legacyChannelModelTagsChecksum = "sha256:channel-model-tags-v32"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -102,6 +104,7 @@ var schemaMigrations = []migration{
 	{version: 30, name: "builtin_tools", checksum: "sha256:builtin-tools-v30", apply: migrateBuiltinTools},
 	{version: 31, name: "tool_favorites", checksum: "sha256:tool-favorites-v31", apply: migrateToolFavorites},
 	{version: 32, name: "tool_schema_reconciliation", checksum: toolSchemaReconciliationChecksum, apply: migrateToolSchemaReconciliation},
+	{version: 33, name: "channel_model_tags", checksum: channelModelTagsChecksum, apply: migrateChannelModelTags},
 }
 
 func migrateAgentExecutionJournal(tx *gorm.DB) error {
@@ -175,6 +178,13 @@ func migrateToolSchemaReconciliation(tx *gorm.DB) error {
 		return err
 	}
 	return migrateToolFavorites(tx)
+}
+
+func migrateChannelModelTags(tx *gorm.DB) error {
+	if tx.Migrator().HasColumn(&model.ChannelModel{}, "Tags") {
+		return nil
+	}
+	return tx.Migrator().AddColumn(&model.ChannelModel{}, "Tags")
 }
 
 func migrateChannelCreditCost(tx *gorm.DB) error {
@@ -373,6 +383,33 @@ func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
 				plan[index] = localV30
 			case 31:
 				plan[index] = migration{version: 31, name: "builtin_tools", checksum: "sha256:builtin-tools-v30", apply: migrateBuiltinTools}
+			}
+		}
+	}
+
+	// Upstream v1.5.7 used migration 32 for model tags, while the local
+	// branch used the same version for tool-schema reconciliation. Accept that
+	// historical upstream record and run the idempotent tags migration again
+	// under v33 so both physical schemas converge without rewriting history.
+	var v32 schemaMigration
+	err = db.First(&v32, "version = ?", 32).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, fmt.Errorf("读取数据库迁移 32：%w", err)
+	}
+	if err == nil && v32.Name == "channel_model_tags" {
+		legacyTags := migration{
+			version:  32,
+			name:     "channel_model_tags",
+			checksum: legacyChannelModelTagsChecksum,
+			apply:    func(*gorm.DB) error { return nil },
+		}
+		if err := validateMigrationRecord(v32, legacyTags); err != nil {
+			return nil, err
+		}
+		for index, item := range plan {
+			if item.version == 32 {
+				plan[index] = legacyTags
+				break
 			}
 		}
 	}

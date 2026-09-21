@@ -11,6 +11,16 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestCurrentSchemaVersionMatchesMigrationPlan(t *testing.T) {
+	if len(schemaMigrations) == 0 {
+		t.Fatal("migration plan is empty")
+	}
+	latest := schemaMigrations[len(schemaMigrations)-1].version
+	if CurrentSchemaVersion != latest {
+		t.Fatalf("supported schema version %d does not match latest migration %d", CurrentSchemaVersion, latest)
+	}
+}
+
 func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-version?mode=memory&cache=shared"})
 	if err != nil {
@@ -751,6 +761,45 @@ func TestMigrateSchemaV31AddsToolUserActions(t *testing.T) {
 	}
 	if !db.Migrator().HasTable(&model.ToolFavorite{}) {
 		t.Fatal("migration v31 did not create tool_favorites table")
+	}
+}
+
+func TestMigrateSchemaAcceptsUpstreamTagsAtV32(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-upstream-tags-v32?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&schemaMigration{}).Where("version = ?", 32).Updates(map[string]any{
+		"name":     "channel_model_tags",
+		"checksum": legacyChannelModelTagsChecksum,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("version = ?", 33).Delete(&schemaMigration{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("upstream v32 database should upgrade to local v33: %v", err)
+	}
+	var tagsMigration schemaMigration
+	if err := db.First(&tagsMigration, "version = ?", 32).Error; err != nil {
+		t.Fatal(err)
+	}
+	if tagsMigration.Name != "channel_model_tags" || tagsMigration.Checksum != legacyChannelModelTagsChecksum {
+		t.Fatalf("upstream v32 migration history was rewritten: %#v", tagsMigration)
+	}
+	var localMigration schemaMigration
+	if err := db.First(&localMigration, "version = ?", 33).Error; err != nil {
+		t.Fatal(err)
+	}
+	if localMigration.Name != "channel_model_tags" || localMigration.Checksum != channelModelTagsChecksum {
+		t.Fatalf("local v33 tags migration was not recorded: %#v", localMigration)
+	}
+	if !db.Migrator().HasColumn(&model.ChannelModel{}, "tags") {
+		t.Fatal("channel model tags column missing after compatibility upgrade")
 	}
 }
 

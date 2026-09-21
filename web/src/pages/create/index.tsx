@@ -35,6 +35,7 @@ import { attachCreationTaskContexts, completedCreationGenerationTask, conversati
 import { CreationComposer, CreationEmptySuggest, CreationFeaturedWorks, CreationHistoryDrawer, CreationMessageView, CreationModeTabs, CreationWorkspaceToolbar, creationAssetCategoryLabels } from "./creation-workspace";
 import { CreationAgentEntry } from "./creation-agent-entry";
 import { createCreationSubmitGate } from "./creation-submit-gate";
+import { creationVideoConfig } from "./creation-generation-config";
 
 const AssetLibraryPickerModal = lazy(() => import("@/components/assets/asset-library-picker-modal").then((module) => ({ default: module.AssetLibraryPickerModal })));
 const loadCreationRuntime = () => import("./creation-runtime");
@@ -187,9 +188,9 @@ export default function CreatePage() {
     );
     const preferredModel = mode === "text" ? config.textModel : mode === "image" ? config.imageModel : config.videoModel;
     const hasPrompt = Boolean(prompt.trim());
-    const videoProfile = useMemo(() => modelCapabilityConfigFor(config, config.videoModel).video!, [config]);
+    const defaultVideoProfile = useMemo(() => modelCapabilityConfigFor(config, config.videoModel).video!, [config]);
     const videoPreferences = composerPreferencesInitialized && config.videoModel === initialVideoModelRef.current ? initialComposerPreferences.video : undefined;
-    const videoSettings = useMemo(() => resolveCreationVideoSettings(videoProfile, explicitVideoSettings, videoPreferences), [videoProfile, explicitVideoSettings, videoPreferences]);
+    const videoSettings = useMemo(() => resolveCreationVideoSettings(defaultVideoProfile, explicitVideoSettings, videoPreferences), [defaultVideoProfile, explicitVideoSettings, videoPreferences]);
     const { seconds, videoQuality } = videoSettings;
     const ratio = mode === "video" ? videoSettings.ratio : imageRatio;
     const mentionReferences = useMemo(() => buildCreationMentionReferences(addedSkills, attachments, draftReferences), [addedSkills, attachments, draftReferences]);
@@ -215,7 +216,11 @@ export default function CreatePage() {
     const generationBlockedReason = mode === "video" && attachments.some((attachment) => creationAttachmentKind(attachment) === "file")
         ? "视频创作不支持文档参考，请手动移除文档或切回文本创作"
         : videoApplicability && videoApplicability.status !== "ready" ? videoApplicability.reason || "当前模型不适用于此任务，请调整需求或选择其他模型" : undefined;
+    const generationConfig = useMemo(() => mode === "video"
+        ? creationVideoConfig(config, selectedModel, { ratio, seconds, videoQuality })
+        : config, [config, mode, ratio, seconds, selectedModel, videoQuality]);
     const imageProfile = useMemo(() => modelCapabilityConfigFor(config, selectedModel).image!, [config, selectedModel]);
+    const videoProfile = useMemo(() => modelCapabilityConfigFor(config, selectedModel).video!, [config, selectedModel]);
     // 视频素材先加入草稿，再按各媒体类型评估模型；不以当前模型裁剪用户输入。
     const maxReferences = mode === "video" ? Number.POSITIVE_INFINITY : mode === "image" ? imageProfile.references.maxImages : 6;
     const referenceImageSize = useMemo(() => {
@@ -688,7 +693,7 @@ export default function CreatePage() {
         abortRef.current = controller;
         const normalizedImage = mode === "image" ? normalizeImageValue(imageProfile, { size: ratio, quality, count }) : undefined;
         const requestConfig = {
-            ...config,
+            ...generationConfig,
             model: selectedModel,
             imageModel: selectedModel,
             videoModel: selectedModel,
@@ -1030,7 +1035,7 @@ export default function CreatePage() {
         },
         imageProfile,
         videoProfile,
-        config,
+        config: generationConfig,
         onModelChange: (value: string) => {
             if (mode === "video") initialVideoModelRef.current = "";
             updateConfig(mode === "text" ? "textModel" : mode === "image" ? "imageModel" : "videoModel", value);
