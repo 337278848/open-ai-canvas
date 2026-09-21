@@ -30,21 +30,23 @@ describe("in-context video model boundaries", () => {
         config.channels[0].scope = "user";
         config.channels[0].modelCosts!.forEach((cost) => { cost.displayName = "同一系列"; });
         const html = renderToStaticMarkup(<ModelPicker config={config} value="video::fixed-price" capability="video" requirements={requirements} showSelectedPrice onChange={() => {}} />);
-        expect(html).toContain("每次消耗 0.2 积分");
-        expect(html).not.toContain("每秒消耗 0.08 积分");
+        expect(html).toContain("0.2/次");
+        expect(html).not.toContain("0.08/秒");
     });
 
     test("default list hides incompatible and unknown models, and sorts by total rather than unit price", () => {
         const { config, requirements } = fixture();
         const html = renderToStaticMarkup(<VideoModelOptions config={config} models={config.videoModels} current="video::per-second" requirements={requirements} showPrices onSelect={() => {}} />);
         expect(html).toContain("查看全部");
-        expect(html).toContain("可直接使用");
+        expect(html).toContain("推荐");
         expect(html).not.toContain("1080-only");
         expect(html).not.toContain("missing-capabilities");
         expect(html.indexOf("fixed-price")).toBeLessThan(html.indexOf("per-second"));
         expect(html).toContain("0.8");
         expect(html).toContain("0.2");
-        expect(html).toContain("积分/本次");
+        expect(html).toContain("积分");
+        expect(html).not.toContain("按本次预计总价从低到高排列");
+        expect(html).not.toContain("固定时长与清晰度可同规格比价");
     });
 
     test("no compatible model keeps an explanatory escape instead of an empty menu", () => {

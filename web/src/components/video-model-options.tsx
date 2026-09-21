@@ -38,23 +38,25 @@ export function VideoModelOptions({ config, models, current, requirements, showP
         <div className="video-model-filter">
             <label><Search aria-hidden="true" /><input aria-label="搜索视频模型或渠道" placeholder="搜索模型或渠道" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
             <button type="button" aria-pressed={!showAll} onClick={() => setShowAll((value) => !value)}>
-                {showAll ? `仅看适用（${readyCount}）` : `查看全部（${items.length}）`}
+                {showAll ? `仅看适用 ${readyCount}` : `查看全部 ${items.length}`}
             </button>
         </div>
-        <p className="video-model-filter-note">
-            {readyCount} 个模型适用 · {showPrices ? "按本次预计总价从低到高排列；按量或未知价格不参与低价比较。" : "根据当前素材与生成要求筛选。"}未指定规格按各模型默认值预估，固定时长与清晰度可同规格比价。切换不会自动生成。
-        </p>
+        <div className="video-model-filter-meta" role="status">
+            <span>{readyCount} 个可用</span>
+            <span aria-hidden="true">·</span>
+            <span>{showPrices ? "按预计费用排序" : "按适用性筛选"}</span>
+        </div>
         <div className="video-model-results">
             {!visible.length ? <div className="video-model-empty" role="status">
                 <strong>{query ? "没有匹配的模型" : "没有满足当前全部条件的模型"}</strong>
-                <span>素材与规格已保留。可调整条件，或查看全部模型及不适用原因。</span>
+                <span>素材与规格已保留，可查看全部模型。</span>
                 {!showAll ? <button type="button" onClick={() => setShowAll(true)}>查看全部模型及原因</button> : null}
             </div> : null}
             {sections.map((section) => {
                 const rows = visible.filter((item) => item.assessment.status === section.status)
                     .sort((a, b) => (showPrices ? (a.assessment.estimatedCredits ?? Infinity) - (b.assessment.estimatedCredits ?? Infinity) : 0) || a.name.localeCompare(b.name, "zh-CN"));
                 return rows.length ? <section key={section.status} className="video-model-section" aria-label={section.label}>
-                    <h3>{section.label} · {rows.length}</h3>
+                    <h3>{showAll || section.status !== "ready" ? `${section.label} · ${rows.length}` : `推荐 · ${rows.length}`}</h3>
                     {rows.map(({ model, name, channel, assessment }) => {
                         const selectable = assessment.status === "ready" || assessment.status === "needs_input";
                         const selected = model === current;
@@ -64,18 +66,18 @@ export function VideoModelOptions({ config, models, current, requirements, showP
                             aria-selected={selected} aria-disabled={!selectable} disabled={!selectable}
                             onClick={() => { if (selectable) onSelect(model); }}
                         >
-                            <span className="video-model-option-head">
-                                <ModelLogo icon={modelIcon(config, model)} size={20} />
-                                <strong>{name}</strong>
+                                <span className="video-model-option-head">
+                                    <ModelLogo icon={modelIcon(config, model)} size={20} />
+                                <strong title={name}>{name}</strong>
                                 {selected ? <Check aria-label="当前选中" /> : null}
                                 {showPrices ? <span className="video-model-estimate">
-                                    {assessment.estimatedCredits === undefined ? "费用待报价" : `预计 ${assessment.estimatedCredits.toLocaleString("zh-CN", { maximumFractionDigits: 6 })} 积分/本次`}
+                                    {assessment.estimatedCredits === undefined ? "待报价" : `${assessment.estimatedCredits.toLocaleString("zh-CN", { maximumFractionDigits: 6 })} 积分`}
                                 </span> : null}
                             </span>
                             <span className="video-model-channel">{channel}</span>
-                            <span className="video-model-summary">{assessment.summary.slice(0, 5).join(" · ")}</span>
-                            {assessment.reason ? <span className="video-model-reason">{assessment.reason}</span> : null}
-                            {assessment.status === "needs_input" ? <span className="video-model-reason">可先选此模型，再补充素材；补齐前不能生成。</span> : null}
+                            <span className="video-model-summary">{assessment.summary.slice(0, 3).join(" · ")}</span>
+                            {showAll && assessment.reason ? <span className="video-model-reason">{assessment.reason}</span> : null}
+                            {showAll && assessment.status === "needs_input" ? <span className="video-model-reason">补充素材后可生成</span> : null}
                         </button>;
                     })}
                 </section> : null;
