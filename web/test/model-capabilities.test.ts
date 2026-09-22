@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 // Bun 直接执行 TypeScript 测试时需要保留扩展名；生产 tsconfig 不包含 test/。
-import { DEFAULT_VIDEO_PROMPT_MAX_CHARS, defaultModelCapabilityConfig, normalizeVideoValue } from "../src/lib/model-capabilities.ts";
+import { DEFAULT_VIDEO_PROMPT_MAX_CHARS, defaultModelCapabilityConfig, modelCapabilityConfigFor, normalizeVideoValue } from "../src/lib/model-capabilities.ts";
 
 test("text multimodal capability is not guessed from a model name", () => {
     for (const model of ["gpt-4o", "gemini-2.5-pro", "doubao-seed"]) {
@@ -20,6 +20,62 @@ test("switching to MiniMax H3 replaces an unsupported 720p value with 768P", () 
         ratio: "16:9",
         resolution: "768P",
     });
+});
+
+test("LXMone H3 workflow applies limits per model instead of narrowing every H3 SKU", () => {
+    const h3a = defaultModelCapabilityConfig("lxmone-h3-workflow", "minimax-h3-a").video!;
+    const h3e = defaultModelCapabilityConfig("lxmone-h3-workflow", "minimax-h3-e").video!;
+    const h3b = defaultModelCapabilityConfig("lxmone-h3-workflow", "minimax-h3-b").video!;
+
+    assert.equal(h3a.duration.max, 12);
+    assert.equal(h3e.references.maxImages, 1);
+    assert.equal(h3b.duration.max, 15);
+    assert.equal(h3b.references.maxImages, 9);
+});
+
+test("persisted legacy LXMone H3 capability is capped after frontend merge", () => {
+    const profile = modelCapabilityConfigFor(
+        {
+            channels: [
+                {
+                    id: "gravity",
+                    models: ["minimax-h3-a"],
+                    modelCosts: [
+                        {
+                            model: "minimax-h3-a",
+                            protocol: "lxmone-h3-workflow",
+                            capabilityConfig: {
+                                version: 1,
+                                video: {
+                                    ...defaultModelCapabilityConfig("lxmone-h3-workflow", "minimax-h3-a").video!,
+                                    duration: { selection: "range", min: 1, max: 15, step: 1, default: 15 },
+                                },
+                            },
+                        },
+                    ],
+                },
+            ],
+        },
+        "gravity::minimax-h3-a",
+    ).video!;
+    assert.equal(profile.duration.max, 12);
+    assert.equal(profile.duration.default, 12);
+});
+
+test("LXMone H3 limits survive a models/ prefixed channel selection", () => {
+    const profile = modelCapabilityConfigFor(
+        {
+            channels: [
+                {
+                    id: "gravity",
+                    models: ["minimax-h3-a"],
+                    modelCosts: [{ model: "minimax-h3-a", protocol: "lxmone-h3-workflow" }],
+                },
+            ],
+        },
+        "gravity::models/minimax-h3-a",
+    ).video!;
+    assert.equal(profile.duration.max, 12);
 });
 
 // 视频提示词由「输入框文本 + 连线内容 + 技能上下文」合成，技能上下文预算为 32000，

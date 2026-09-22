@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -976,7 +977,12 @@ func (s *Service) EnrichAPICallLog(log *model.ApiCallLog, responseBody []byte) {
 	if log == nil {
 		return
 	}
-	if log.ProviderRequestID == "" {
+	// A create endpoint is usually a collection path (for example
+	// /v1/videos/generations). It does not identify the task, so never infer a
+	// provider ID from that path. Only poll/download requests may recover an
+	// ID from their concrete /.../{taskID} path when the response omits it.
+	requestKind := strings.ToLower(strings.TrimSpace(log.RequestKind))
+	if log.ProviderRequestID == "" && (requestKind == "poll" || requestKind == "download") {
 		log.ProviderRequestID = providerRequestIDFromPath(log.Path)
 	}
 	payloads := providerResponsePayloads(responseBody)
@@ -1174,18 +1180,30 @@ func decodeProviderResponsePayload(data []byte) (map[string]any, bool) {
 }
 
 func providerRequestIDFromPath(path string) string {
+	if parsed, err := url.Parse(strings.TrimSpace(path)); err == nil && parsed.Path != "" {
+		path = parsed.Path
+	}
 	parts := strings.Split(strings.Trim(strings.TrimSpace(path), "/"), "/")
 	for index := len(parts) - 1; index >= 0; index-- {
 		part := strings.TrimSpace(parts[index])
-		if part == "" || part == "content" || part == "download" {
+		if part == "" || strings.EqualFold(part, "content") || strings.EqualFold(part, "download") {
 			continue
 		}
-		if index > 0 && (parts[index-1] == "videos" || parts[index-1] == "tasks") {
+		if index > 0 && providerRequestIDCollectionSegment(parts[index-1]) && !providerRequestIDCollectionSegment(part) {
 			return part
 		}
 		break
 	}
 	return ""
+}
+
+func providerRequestIDCollectionSegment(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "audio", "generations", "images", "tasks", "video", "videos":
+		return true
+	default:
+		return false
+	}
 }
 
 func firstInt64(values map[string]any, keys ...string) int64 {

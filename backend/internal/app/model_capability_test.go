@@ -154,6 +154,58 @@ func TestDefaultMiniMaxVideoCapabilitySupportsReferenceGeneration(t *testing.T) 
 	}
 }
 
+func TestLXMoneH3WorkflowUsesModelSpecificLimits(t *testing.T) {
+	h3a := DefaultModelCapabilityConfigForModel("lxmone-h3-workflow", "minimax-h3-a").Video
+	if h3a.Duration.Max != 12 {
+		t.Fatalf("H3-A duration max = %d, want 12", h3a.Duration.Max)
+	}
+	prefixedH3A := DefaultModelCapabilityConfigForModel("lxmone-h3-workflow", "models/minimax-h3-a").Video
+	if prefixedH3A.Duration.Max != 12 {
+		t.Fatalf("prefixed H3-A duration max = %d, want 12", prefixedH3A.Duration.Max)
+	}
+
+	h3e := DefaultModelCapabilityConfigForModel("lxmone-h3-workflow", "minimax-h3-e").Video
+	if h3e.References.MaxImages != 1 {
+		t.Fatalf("H3-E max images = %d, want 1", h3e.References.MaxImages)
+	}
+
+	h3b := DefaultModelCapabilityConfigForModel("lxmone-h3-workflow", "minimax-h3-b").Video
+	if h3b.Duration.Max != 15 || h3b.References.MaxImages != 9 {
+		t.Fatalf("H3-B was narrowed unexpectedly: duration=%#v references=%#v", h3b.Duration, h3b.References)
+	}
+}
+
+func TestNormalizeLXMoneH3WorkflowRepairsLegacyLimits(t *testing.T) {
+	legacy := DefaultModelCapabilityConfigForModel("newapi", "legacy-video")
+
+	normalizedA, err := NormalizeModelCapabilityConfigForModel("video", "lxmone-h3-workflow", "minimax-h3-a", legacy)
+	if err != nil {
+		t.Fatalf("normalize H3-A: %v", err)
+	}
+	if normalizedA.Video.Duration.Max != 12 {
+		t.Fatalf("normalized H3-A duration max = %d, want 12", normalizedA.Video.Duration.Max)
+	}
+	inputA := canvasGenerationInput{Config: providerConfig{InterfaceType: "lxmone-h3-workflow", Model: "minimax-h3-a", VideoSeconds: "13", Size: "16:9", VQuality: "720p"}}
+	if err := validateVideoTask(normalizedA.Video, inputA); err == nil {
+		t.Fatal("H3-A accepted a 13-second request")
+	}
+
+	normalizedE, err := NormalizeModelCapabilityConfigForModel("video", "lxmone-h3-workflow", "minimax-h3-e", legacy)
+	if err != nil {
+		t.Fatalf("normalize H3-E: %v", err)
+	}
+	inputE := canvasGenerationInput{
+		Config: providerConfig{InterfaceType: "lxmone-h3-workflow", Model: "minimax-h3-e", VideoSeconds: "6", Size: "16:9", VQuality: "720p"},
+		ReferenceImages: []providerMedia{
+			{URL: "https://example.com/one.png"},
+			{URL: "https://example.com/two.png"},
+		},
+	}
+	if err := validateVideoTask(normalizedE.Video, inputE); err == nil {
+		t.Fatal("H3-E accepted two reference images")
+	}
+}
+
 func TestAgnesVideo25CapabilityUsesOfficialLimits(t *testing.T) {
 	standard := DefaultModelCapabilityConfigForModel("agnes-video", "agnes-video-2.5").Video
 	if standard.Duration.Min != 4 || standard.Duration.Max != 12 || standard.Duration.Default != 5 {

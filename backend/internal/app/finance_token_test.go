@@ -105,6 +105,64 @@ func TestEnrichAPICallLogPrefersNewAPIChannel2NestedTaskID(t *testing.T) {
 	}
 }
 
+func TestEnrichAPICallLogDoesNotInferCollectionPathAsProviderID(t *testing.T) {
+	for _, path := range []string{
+		"/v1/videos/generations",
+		"/v1/video/generations",
+		"/v1/images/generations",
+	} {
+		t.Run(path, func(t *testing.T) {
+			log := &model.ApiCallLog{
+				Capability:  "video",
+				RequestKind: "create",
+				Path:        path,
+				Status:      model.ApiCallStatusFailed,
+				StatusCode:  400,
+			}
+			(&Service{}).EnrichAPICallLog(log, []byte(`{"error":{"message":"invalid request"}}`))
+			if log.ProviderRequestID != "" {
+				t.Fatalf("ProviderRequestID = %q, want empty for collection create path", log.ProviderRequestID)
+			}
+		})
+	}
+}
+
+func TestProviderRequestIDFromPathOnlyUsesConcreteTaskPath(t *testing.T) {
+	tests := map[string]string{
+		"/v1/videos/generations":                    "",
+		"/v1/videos/generations/provider-task-1":    "provider-task-1",
+		"/api/v3/contents/generations/tasks/task-1": "task-1",
+		"/v1/videos/provider-task-2/content":        "provider-task-2",
+	}
+	for path, want := range tests {
+		if got := providerRequestIDFromPath(path); got != want {
+			t.Errorf("providerRequestIDFromPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestEnrichAPICallLogUsesConcretePathOnlyForPollOrDownload(t *testing.T) {
+	poll := &model.ApiCallLog{
+		Capability:  "video",
+		RequestKind: "poll",
+		Path:        "/v1/videos/provider-task-1/content",
+		Status:      model.ApiCallStatusFailed,
+		StatusCode:  404,
+	}
+	(&Service{}).EnrichAPICallLog(poll, []byte(`{"error":{"message":"not found"}}`))
+	if poll.ProviderRequestID != "provider-task-1" {
+		t.Fatalf("poll ProviderRequestID = %q, want concrete task ID", poll.ProviderRequestID)
+	}
+
+	create := *poll
+	create.RequestKind = "create"
+	create.ProviderRequestID = ""
+	(&Service{}).EnrichAPICallLog(&create, []byte(`{"error":{"message":"not found"}}`))
+	if create.ProviderRequestID != "" {
+		t.Fatalf("create ProviderRequestID = %q, want empty", create.ProviderRequestID)
+	}
+}
+
 func TestEnrichAPICallLogKeepsUserFacingAndUpstreamFailureDetails(t *testing.T) {
 	log := &model.ApiCallLog{
 		Status:     model.ApiCallStatusFailed,

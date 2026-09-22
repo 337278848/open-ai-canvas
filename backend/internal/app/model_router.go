@@ -1252,6 +1252,8 @@ func (s *Service) blockLogicalRouteForFailure(attempt *model.RouteAttempt, taskE
 		key, duration = "channel:"+attempt.ChannelID, 10*time.Minute
 	} else if attempt.FailureCode == "upstream_404" {
 		key, duration = "channel-model:"+attempt.ChannelModelID, 10*time.Minute
+	} else if attempt.FailureCode == "upstream_405" {
+		key, duration = "channel-model:"+attempt.ChannelModelID, 10*time.Minute
 	} else if attempt.FailureCode == "upstream_429" {
 		key, duration = "channel:"+attempt.ChannelID, 30*time.Second
 		var upstream providerHTTPError
@@ -1415,7 +1417,7 @@ func safeRouteRejection(err error) bool {
 	var upstream providerHTTPError
 	if errors.As(err, &upstream) {
 		switch upstream.StatusCode {
-		case 401, 403, 404, 429:
+		case 401, 403, 404, 405, 429:
 			return true
 		}
 	}

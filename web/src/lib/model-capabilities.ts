@@ -383,7 +383,36 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.defaultResolution = "720P";
         video.operations.push("reference_to_video", "audio_to_video");
     }
+    applyModelSpecificVideoCapability(video, protocol, model);
     return { version: 1, text, image: defaultImageCapabilityConfig(protocol, model), video };
+}
+
+function applyModelSpecificVideoCapability(profile: VideoCapabilityConfig, protocol?: ModelProtocol, model = "") {
+    if (protocol !== "lxmone-h3-workflow") return profile;
+    const normalizedModel = model.trim().toLowerCase().replace(/^models\//, "");
+    if (normalizedModel === "minimax-h3-a") {
+        if (profile.duration.selection === "range") {
+            const max = Math.min(profile.duration.max ?? 15, 12);
+            profile.duration = {
+                ...profile.duration,
+                max,
+                default: Math.min(profile.duration.default, max),
+            };
+        } else if (profile.duration.selection === "enum") {
+            const values = (profile.duration.values || []).filter((value) => value <= 12);
+            profile.duration = {
+                ...profile.duration,
+                values,
+                default: values.includes(profile.duration.default) ? profile.duration.default : values[values.length - 1] ?? profile.duration.default,
+            };
+        }
+    } else if (normalizedModel === "minimax-h3-e") {
+        profile.references = {
+            ...profile.references,
+            maxImages: Math.min(profile.references.maxImages, 1),
+        };
+    }
+    return profile;
 }
 
 export function pluginWorkflowCapabilityConfig(protocol: ModelProtocol, workflow: ModelProtocolWorkflow): ModelCapabilityConfig | undefined {
@@ -406,13 +435,21 @@ export function modelCapabilityConfigFor(config: { channels: Array<{ id: string;
     const separator = model.indexOf("::");
     const channelId = separator >= 0 ? model.slice(0, separator) : "";
     const modelName = separator >= 0 ? model.slice(separator + 2) : model;
-    const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.includes(modelName));
-    const cost = channel?.modelCosts?.find((item) => item.model === modelName);
-    const fallback = defaultModelCapabilityConfig(cost?.protocol, modelName);
+    const normalizedModelName = modelName.trim().replace(/^models\//i, "");
+    const sameModel = (candidate: string) => candidate === modelName || candidate === normalizedModelName || candidate.trim().replace(/^models\//i, "") === normalizedModelName;
+    const channel = config.channels.find((item) => item.id === channelId) || config.channels.find((item) => item.models.some((candidate) => sameModel(candidate)));
+    const cost = channel?.modelCosts?.find((item) => sameModel(item.model));
+    const fallback = defaultModelCapabilityConfig(cost?.protocol, normalizedModelName);
     if (!cost?.capabilityConfig) return fallback;
     const capabilityConfig = normalizeModelCapabilityConfig(cost.capabilityConfig);
     const text = capabilityConfig.text ? { ...fallback.text!, ...capabilityConfig.text, references: { ...fallback.text!.references, ...capabilityConfig.text.references } } : fallback.text;
-    const video = capabilityConfig.video ? { ...fallback.video!, ...capabilityConfig.video, references: { ...fallback.video!.references, ...capabilityConfig.video.references } } : fallback.video;
+    const video = capabilityConfig.video
+        ? applyModelSpecificVideoCapability(
+              { ...fallback.video!, ...capabilityConfig.video, references: { ...fallback.video!.references, ...capabilityConfig.video.references } },
+              cost?.protocol,
+              normalizedModelName,
+          )
+        : fallback.video;
     const configuredImage = capabilityConfig.image;
     const image = configuredImage
         ? (() => {

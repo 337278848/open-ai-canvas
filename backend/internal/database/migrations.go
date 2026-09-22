@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 33
+const CurrentSchemaVersion int64 = 36
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -28,6 +31,9 @@ const resourceUpstreamRelayReconciliationChecksum = "sha256:resource-upstream-re
 const toolSchemaReconciliationChecksum = "sha256:tool-schema-reconciliation-v32-20260920"
 const channelModelTagsChecksum = "sha256:channel-model-tags-v33-20260921"
 const legacyChannelModelTagsChecksum = "sha256:channel-model-tags-v32"
+const lxmoneH3CapabilityChecksum = "sha256:lxmone-h3-capability-v34-20260922"
+const providerRequestIDReconciliationChecksum = "sha256:provider-request-id-reconciliation-v35-20260922"
+const reconciliationFollowupChecksum = "sha256:capability-provider-reconciliation-followup-v36-20260922"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -105,6 +111,9 @@ var schemaMigrations = []migration{
 	{version: 31, name: "tool_favorites", checksum: "sha256:tool-favorites-v31", apply: migrateToolFavorites},
 	{version: 32, name: "tool_schema_reconciliation", checksum: toolSchemaReconciliationChecksum, apply: migrateToolSchemaReconciliation},
 	{version: 33, name: "channel_model_tags", checksum: channelModelTagsChecksum, apply: migrateChannelModelTags},
+	{version: 34, name: "lxmone_h3_capability_limits", checksum: lxmoneH3CapabilityChecksum, apply: migrateLXMoneH3CapabilityLimits},
+	{version: 35, name: "provider_request_id_reconciliation", checksum: providerRequestIDReconciliationChecksum, apply: migrateFabricatedProviderRequestIDs},
+	{version: 36, name: "capability_provider_reconciliation_followup", checksum: reconciliationFollowupChecksum, apply: migrateCapabilityProviderReconciliationFollowup},
 }
 
 func migrateAgentExecutionJournal(tx *gorm.DB) error {
@@ -185,6 +194,351 @@ func migrateChannelModelTags(tx *gorm.DB) error {
 		return nil
 	}
 	return tx.Migrator().AddColumn(&model.ChannelModel{}, "Tags")
+}
+
+func migrateLXMoneH3CapabilityLimits(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.ChannelModel{}) {
+		return nil
+	}
+	var items []model.ChannelModel
+	if err := tx.Where("capability = ? AND protocol = ?", "video", "lxmone-h3-workflow").Find(&items).Error; err != nil {
+		return fmt.Errorf("读取 LXMone H3 渠道模型：%w", err)
+	}
+	for _, item := range items {
+		modelName := strings.ToLower(strings.TrimSpace(item.ProviderModelKey))
+		if modelName == "" {
+			modelName = strings.ToLower(strings.TrimSpace(item.ModelKey))
+		}
+		modelName = strings.TrimPrefix(modelName, "models/")
+		updated, changed := migrateLXMoneH3CapabilityJSON(item.CapabilityConfigJSON, modelName)
+		if !changed {
+			continue
+		}
+		if err := tx.Model(&model.ChannelModel{}).Where("id = ?", item.ID).Updates(map[string]any{
+			"capability_config_json": updated,
+			"capability_version":     gorm.Expr("capability_version + ?", 1),
+		}).Error; err != nil {
+			return fmt.Errorf("回填 LXMone H3 模型能力 %s：%w", item.ID, err)
+		}
+	}
+	return nil
+}
+
+func migrateLXMoneH3CapabilityJSON(raw string, modelName string) (string, bool) {
+	if strings.TrimSpace(raw) == "" || (modelName != "minimax-h3-a" && modelName != "minimax-h3-e") {
+		return raw, false
+	}
+	var root map[string]any
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		// 损坏的能力配置由现有读路径隔离；迁移不能因为一条坏记录阻断整个数据库升级。
+		return raw, false
+	}
+	video, ok := root["video"].(map[string]any)
+	if !ok {
+		return raw, false
+	}
+	changed := false
+	if modelName == "minimax-h3-a" {
+		if duration, ok := video["duration"].(map[string]any); ok {
+			switch strings.ToLower(strings.TrimSpace(fmt.Sprint(duration["selection"]))) {
+			case "range":
+				limit := 12
+				if maximum, ok := migrationJSONInt(duration["max"]); ok {
+					if maximum > limit {
+						duration["max"] = limit
+						maximum = limit
+						changed = true
+					}
+					if defaultValue, ok := migrationJSONInt(duration["default"]); ok && defaultValue > maximum {
+						duration["default"] = maximum
+						changed = true
+					}
+				} else if defaultValue, ok := migrationJSONInt(duration["default"]); ok && defaultValue > limit {
+					duration["default"] = limit
+					changed = true
+				}
+			case "enum":
+				if values, ok := duration["values"].([]any); ok {
+					filtered := make([]any, 0, len(values))
+					for _, value := range values {
+						seconds, valid := migrationJSONInt(value)
+						if valid && seconds <= 12 {
+							filtered = append(filtered, value)
+						}
+					}
+					if len(filtered) != len(values) {
+						duration["values"] = filtered
+						changed = true
+					}
+					if len(filtered) > 0 {
+						defaultValue, _ := migrationJSONInt(duration["default"])
+						found := false
+						for _, value := range filtered {
+							if seconds, valid := migrationJSONInt(value); valid && seconds == defaultValue {
+								found = true
+								break
+							}
+						}
+						if !found {
+							duration["default"] = filtered[len(filtered)-1]
+							changed = true
+						}
+					}
+				}
+			}
+		}
+	} else if references, ok := video["references"].(map[string]any); ok {
+		if maximum, ok := migrationJSONInt(references["maxImages"]); ok && maximum > 1 {
+			references["maxImages"] = 1
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	encoded, err := json.Marshal(root)
+	if err != nil {
+		return raw, false
+	}
+	return string(encoded), true
+}
+
+func migrationJSONInt(value any) (int, bool) {
+	switch value := value.(type) {
+	case int:
+		return value, true
+	case int64:
+		return int(value), true
+	case float64:
+		return int(value), value == float64(int(value))
+	case json.Number:
+		parsed, err := value.Int64()
+		return int(parsed), err == nil
+	default:
+		return 0, false
+	}
+}
+
+// migrateFabricatedProviderRequestIDs repairs records written by the old
+// collection-path fallback. A collection endpoint such as
+// /v1/videos/generations is not a provider task ID. Repair every create log,
+// not only failed logs: a successful HTTP response can still lack a task ID
+// and later fail in the response parser after the log has already been saved.
+func migrateFabricatedProviderRequestIDs(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.ApiCallLog{}) {
+		return nil
+	}
+	var logs []model.ApiCallLog
+	// The old fallback could only manufacture the literal segment
+	// "generations". Restrict the migration query to that sentinel so startup
+	// does not load every historical successful create log into memory.
+	if err := tx.Where("request_kind = ? AND provider_request_id = ?", "create", "generations").Find(&logs).Error; err != nil {
+		return fmt.Errorf("读取待修复 Provider ID 日志：%w", err)
+	}
+	for _, item := range logs {
+		fabricatedID := fabricatedProviderRequestIDFromPath(item.Path)
+		if fabricatedID == "" || strings.TrimSpace(item.ProviderRequestID) != fabricatedID {
+			continue
+		}
+		replacement := migrationProviderResponseID(item.ResponseBody)
+		if replacement == fabricatedID {
+			continue
+		}
+		if err := tx.Model(&model.ApiCallLog{}).Where("id = ? AND provider_request_id = ?", item.ID, fabricatedID).Update("provider_request_id", replacement).Error; err != nil {
+			return fmt.Errorf("清理 API 调用日志 Provider ID %s：%w", item.ID, err)
+		}
+		if err := reconcileFabricatedProviderRequestID(tx, item, fabricatedID, replacement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateCapabilityProviderReconciliationFollowup is intentionally idempotent.
+// v34/v35 may already have been applied by an earlier build, so the follow-up
+// re-runs both data repairs for databases that recorded those versions before
+// the edge-case fixes landed.
+func migrateCapabilityProviderReconciliationFollowup(tx *gorm.DB) error {
+	if err := migrateLXMoneH3CapabilityLimits(tx); err != nil {
+		return err
+	}
+	return migrateFabricatedProviderRequestIDs(tx)
+}
+
+func fabricatedProviderRequestIDFromPath(path string) string {
+	if parsed, err := url.Parse(strings.TrimSpace(path)); err == nil && parsed.Path != "" {
+		path = parsed.Path
+	}
+	parts := strings.Split(strings.Trim(strings.TrimSpace(path), "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	last := strings.ToLower(strings.TrimSpace(parts[len(parts)-1]))
+	parent := strings.ToLower(strings.TrimSpace(parts[len(parts)-2]))
+	if last == "generations" && (parent == "video" || parent == "videos" || parent == "images") {
+		return "generations"
+	}
+	return ""
+}
+
+func migrationProviderResponseID(raw string) string {
+	if payload, ok := migrationDecodeJSON([]byte(raw)); ok {
+		if value := migrationProviderResponseIDValue(payload); value != "" {
+			return value
+		}
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+		if payload, ok := migrationDecodeJSON([]byte(line)); ok {
+			if value := migrationProviderResponseIDValue(payload); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func migrationDecodeJSON(raw []byte) (any, bool) {
+	if !json.Valid(raw) {
+		return nil, false
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	var payload any
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, false
+	}
+	return payload, true
+}
+
+func migrationProviderResponseIDValue(value any) string {
+	// Search task-specific fields across the whole response before generic
+	// wrapper/correlation fields. A response may contain both
+	// {"id":"request-wrapper","data":{"task_id":"actual-task"}}.
+	if candidate := migrationProviderResponseIDByKeys(value, "task_id", "taskId"); candidate != "" {
+		return candidate
+	}
+	return migrationProviderResponseIDByKeys(value, "id", "request_id", "name")
+}
+
+func migrationProviderResponseIDByKeys(value any, keys ...string) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range keys {
+			if candidate, ok := typed[key].(string); ok && strings.TrimSpace(candidate) != "" {
+				return strings.TrimSpace(candidate)
+			}
+		}
+		for _, key := range []string{"data", "task", "response", "result", "output"} {
+			if nested, ok := typed[key]; ok {
+				if candidate := migrationProviderResponseIDByKeys(nested, keys...); candidate != "" {
+					return candidate
+				}
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if candidate := migrationProviderResponseIDByKeys(nested, keys...); candidate != "" {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+func reconcileFabricatedProviderRequestID(tx *gorm.DB, item model.ApiCallLog, fabricatedID string, replacement string) error {
+	taskTargetID := strings.TrimSpace(replacement)
+	if item.TaskID != "" && tx.Migrator().HasTable(&model.Task{}) {
+		var task model.Task
+		if err := tx.First(&task, "id = ?", item.TaskID).Error; err == nil && strings.TrimSpace(task.ProviderRequestID) == fabricatedID {
+			if taskTargetID == "" {
+				taskTargetID = migrationOtherProviderRequestIDForTask(tx, item, fabricatedID)
+			}
+			updates := map[string]any{"provider_request_id": taskTargetID, "updated_at": time.Now()}
+			if taskTargetID == "" {
+				updates["poll_stage"] = ""
+				updates["next_poll_at"] = nil
+			}
+			if err := tx.Model(&model.Task{}).Where("id = ? AND provider_request_id = ?", item.TaskID, fabricatedID).Updates(updates).Error; err != nil {
+				return fmt.Errorf("清理任务 Provider ID %s：%w", item.TaskID, err)
+			}
+		} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("读取任务 Provider ID %s：%w", item.TaskID, err)
+		}
+	}
+	billingTargetID := strings.TrimSpace(replacement)
+	if item.BillingOrderID != "" && tx.Migrator().HasTable(&model.BillingOrder{}) {
+		if billingTargetID == "" {
+			billingTargetID = migrationOtherProviderRequestIDForBilling(tx, item, fabricatedID)
+		}
+		if err := tx.Model(&model.BillingOrder{}).Where("id = ? AND provider_request_id = ?", item.BillingOrderID, fabricatedID).Update("provider_request_id", billingTargetID).Error; err != nil {
+			return fmt.Errorf("清理账单 Provider ID %s：%w", item.BillingOrderID, err)
+		}
+	}
+	if item.TaskID != "" && tx.Migrator().HasTable(&model.RouteAttempt{}) {
+		attemptTargetID := taskTargetID
+		if attemptTargetID == "" {
+			attemptTargetID = billingTargetID
+		}
+		attemptUpdates := map[string]any{"provider_request_id": attemptTargetID}
+		if attemptTargetID == "" {
+			attemptUpdates["dispatch_state"] = "submission_unknown"
+		} else {
+			attemptUpdates["dispatch_state"] = "accepted"
+		}
+		attemptQuery := tx.Model(&model.RouteAttempt{}).Where("task_id = ? AND provider_request_id = ?", item.TaskID, fabricatedID)
+		if attemptTargetID == "" {
+			// A synchronous request may have completed successfully without
+			// returning a task ID. Do not rewrite an already successful route
+			// attempt to submission_unknown just because its old ID was fake.
+			if err := attemptQuery.Where("status <> ?", "succeeded").Updates(attemptUpdates).Error; err != nil {
+				return fmt.Errorf("清理路由尝试 Provider ID %s：%w", item.TaskID, err)
+			}
+			if err := tx.Model(&model.RouteAttempt{}).Where("task_id = ? AND provider_request_id = ? AND status = ?", item.TaskID, fabricatedID, "succeeded").Update("provider_request_id", "").Error; err != nil {
+				return fmt.Errorf("清理已成功路由尝试 Provider ID %s：%w", item.TaskID, err)
+			}
+		} else if err := attemptQuery.Updates(attemptUpdates).Error; err != nil {
+			return fmt.Errorf("清理路由尝试 Provider ID %s：%w", item.TaskID, err)
+		}
+	}
+	return nil
+}
+
+func migrationOtherProviderRequestIDForTask(tx *gorm.DB, item model.ApiCallLog, fabricatedID string) string {
+	var candidate model.ApiCallLog
+	query := tx.Session(&gorm.Session{Logger: tx.Logger.LogMode(logger.Silent)}).Where("task_id = ? AND id <> ? AND request_kind IN ? AND provider_request_id <> ? AND provider_request_id <> ?", item.TaskID, item.ID, []string{"poll", "download"}, "", fabricatedID)
+	if item.ChannelID != "" {
+		query = query.Where("channel_id = ?", item.ChannelID)
+	}
+	if item.Model != "" {
+		query = query.Where("model = ?", item.Model)
+	}
+	if err := query.Order("created_at DESC").First(&candidate).Error; err != nil {
+		return ""
+	}
+	return strings.TrimSpace(candidate.ProviderRequestID)
+}
+
+func migrationOtherProviderRequestIDForBilling(tx *gorm.DB, item model.ApiCallLog, fabricatedID string) string {
+	var candidate model.ApiCallLog
+	query := tx.Session(&gorm.Session{Logger: tx.Logger.LogMode(logger.Silent)}).Where("billing_order_id = ? AND id <> ? AND request_kind IN ? AND provider_request_id <> ? AND provider_request_id <> ?", item.BillingOrderID, item.ID, []string{"poll", "download"}, "", fabricatedID)
+	if item.ChannelID != "" {
+		query = query.Where("channel_id = ?", item.ChannelID)
+	}
+	if item.Model != "" {
+		query = query.Where("model = ?", item.Model)
+	}
+	if err := query.Order("created_at DESC").First(&candidate).Error; err != nil {
+		return ""
+	}
+	return strings.TrimSpace(candidate.ProviderRequestID)
 }
 
 func migrateChannelCreditCost(tx *gorm.DB) error {

@@ -2,10 +2,32 @@ package app
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
+	"time"
 
 	"infinite-canvas/backend/internal/model"
 )
+
+func TestSafeRouteRejectionTreatsMethodNotAllowedAsNoJob(t *testing.T) {
+	if !safeRouteRejection(providerHTTPError{StatusCode: http.StatusMethodNotAllowed}) {
+		t.Fatal("HTTP 405 should be classified as a rejection before task creation")
+	}
+	if safeRouteRejection(providerHTTPError{StatusCode: http.StatusServiceUnavailable}) {
+		t.Fatal("HTTP 503 must remain submission_unknown")
+	}
+}
+
+func TestMethodNotAllowedTemporarilyBlocksTheBrokenChannelModel(t *testing.T) {
+	svc := &Service{routeHealthBlocked: make(map[string]time.Time)}
+	svc.blockLogicalRouteForFailure(
+		&model.RouteAttempt{FailureCode: "upstream_405", ChannelModelID: "channel-model-1"},
+		providerHTTPError{StatusCode: http.StatusMethodNotAllowed},
+	)
+	if until := svc.routeHealthBlocked["channel-model:channel-model-1"]; !until.After(time.Now()) {
+		t.Fatalf("HTTP 405 did not block the channel model: %v", until)
+	}
+}
 
 func TestImagePriceTiersMatchResolutionAndActualReferences(t *testing.T) {
 	channelModel := model.ChannelModel{}

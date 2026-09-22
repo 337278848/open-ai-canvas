@@ -274,9 +274,8 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Resolutions = []string{"768P", "2K"}
 		video.DefaultResolution = "768P"
 		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
-	case model.ChannelInterfaceAgnesVideo:
-		video = applyModelSpecificVideoCapability(video, protocol, modelName)
 	}
+	video = applyModelSpecificVideoCapability(video, protocol, modelName)
 	return &ModelCapabilityConfig{Version: 1, Text: text, Image: DefaultImageCapabilityConfig(protocol, modelName), Video: video}
 }
 
@@ -365,42 +364,100 @@ func NormalizeModelCapabilityConfigForModel(capability string, protocol string, 
 }
 
 func applyModelSpecificVideoCapability(profile *VideoCapabilityConfig, protocol string, modelName string) *VideoCapabilityConfig {
-	if profile == nil || model.ChannelInterfaceType(strings.TrimSpace(protocol)) != model.ChannelInterfaceAgnesVideo {
+	if profile == nil {
 		return profile
 	}
-	normalizedModel := strings.ToLower(strings.TrimSpace(modelName))
-	if normalizedModel != "agnes-video-2.5" && normalizedModel != "agnes-video-2.5-flash" {
+	normalizedProtocol := strings.ToLower(strings.TrimSpace(protocol))
+	normalizedModel := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(modelName)), "models/")
+	switch normalizedProtocol {
+	case string(model.ChannelInterfaceAgnesVideo):
+		if normalizedModel != "agnes-video-2.5" && normalizedModel != "agnes-video-2.5-flash" {
+			return profile
+		}
+		value := *profile
+		value.References = profile.References
+		flash := normalizedModel == "agnes-video-2.5-flash"
+		value.References.MaxImages = 9
+		value.References.MaxVideos = 3
+		value.References.MaxAudios = 3
+		value.References.MaxVideoBytes = 200 * 1024 * 1024
+		value.References.MaxVideoDuration = 15
+		value.References.MaxAudioBytes = 15 * 1024 * 1024
+		value.References.MaxAudioDuration = 15
+		if flash {
+			value.References.MaxImages = 5
+			value.References.MaxVideos = 0
+			value.References.MaxVideoBytes = 0
+			value.References.MaxVideoDuration = 0
+		}
+		value.Duration = VideoDurationConfig{Selection: "range", Min: 4, Max: 12, Step: 1, Default: 5}
+		value.Ratios = []string{"21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
+		value.DefaultRatio = "16:9"
+		value.Resolutions = []string{"720P", "960P", "2K"}
+		if flash {
+			value.Resolutions = []string{"720P"}
+		}
+		value.DefaultResolution = "720P"
+		value.GenerateAudio = VideoBooleanConfig{Supported: false, Default: false}
+		value.Watermark = VideoBooleanConfig{Supported: false, Default: false}
+		value.Operations = []string{"text_to_video", "image_to_video", "reference_to_video", "audio_to_video"}
+		value.DefaultOperation = "text_to_video"
+		return &value
+	case "lxmone-h3-workflow":
+		return applyLXMoneH3WorkflowVideoCapability(profile, normalizedModel)
+	default:
 		return profile
 	}
-	value := *profile
-	value.References = profile.References
-	flash := normalizedModel == "agnes-video-2.5-flash"
-	value.References.MaxImages = 9
-	value.References.MaxVideos = 3
-	value.References.MaxAudios = 3
-	value.References.MaxVideoBytes = 200 * 1024 * 1024
-	value.References.MaxVideoDuration = 15
-	value.References.MaxAudioBytes = 15 * 1024 * 1024
-	value.References.MaxAudioDuration = 15
-	if flash {
-		value.References.MaxImages = 5
-		value.References.MaxVideos = 0
-		value.References.MaxVideoBytes = 0
-		value.References.MaxVideoDuration = 0
+}
+
+// applyLXMoneH3WorkflowVideoCapability caps only the model-specific upstream
+// limits that are confirmed by the provider responses. Other H3 variants keep
+// the shared workflow defaults until their own upstream contract is verified.
+func applyLXMoneH3WorkflowVideoCapability(profile *VideoCapabilityConfig, modelName string) *VideoCapabilityConfig {
+	switch modelName {
+	case "minimax-h3-a":
+		value := *profile
+		value.Duration = capVideoDuration(value.Duration, 12)
+		return &value
+	case "minimax-h3-e":
+		if profile.References.MaxImages <= 1 {
+			return profile
+		}
+		value := *profile
+		value.References = profile.References
+		value.References.MaxImages = 1
+		return &value
+	default:
+		return profile
 	}
-	value.Duration = VideoDurationConfig{Selection: "range", Min: 4, Max: 12, Step: 1, Default: 5}
-	value.Ratios = []string{"21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
-	value.DefaultRatio = "16:9"
-	value.Resolutions = []string{"720P", "960P", "2K"}
-	if flash {
-		value.Resolutions = []string{"720P"}
+}
+
+// capVideoDuration applies a confirmed hard upper bound without widening a
+// stricter administrator configuration. Invalid legacy enum data is reduced to
+// the supported subset and is allowed to fail normal capability validation if
+// no valid value remains.
+func capVideoDuration(value VideoDurationConfig, maximum int) VideoDurationConfig {
+	switch value.Selection {
+	case "range":
+		if value.Max > maximum {
+			value.Max = maximum
+		}
+		if value.Default > value.Max {
+			value.Default = value.Max
+		}
+	case "enum":
+		filtered := make([]int, 0, len(value.Values))
+		for _, candidate := range value.Values {
+			if candidate <= maximum {
+				filtered = append(filtered, candidate)
+			}
+		}
+		value.Values = filtered
+		if !containsInt(filtered, value.Default) && len(filtered) > 0 {
+			value.Default = filtered[len(filtered)-1]
+		}
 	}
-	value.DefaultResolution = "720P"
-	value.GenerateAudio = VideoBooleanConfig{Supported: false, Default: false}
-	value.Watermark = VideoBooleanConfig{Supported: false, Default: false}
-	value.Operations = []string{"text_to_video", "image_to_video", "reference_to_video", "audio_to_video"}
-	value.DefaultOperation = "text_to_video"
-	return &value
+	return value
 }
 
 // CapabilitySpecFromModelCapabilityConfig 将渠道模型的真实供应能力投影为路由能力规格。
