@@ -8,6 +8,12 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
 COMPOSE_FILE="docker-compose.deploy.yml"
 BUILD_COMPOSE_FILE="docker-compose.build.yml"
+# 源码构建路径实际使用的镜像名（与 docker-compose.build.yml 保持一致）。
+# deploy.yml 对这两个变量使用 ${VAR:?} 强制校验，因此 .env 里必须有值才能解析。
+SOURCE_BUILD_BACKEND_IMAGE="open-ai-canvas-backend:server"
+SOURCE_BUILD_WEB_IMAGE="open-ai-canvas-web:server"
+# 后端镜像构建期要下载 Go 模块；默认的 proxy.golang.org 在部分网络下不可达，统一走 goproxy.cn。
+SOURCE_BUILD_GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 
 step() {
     printf '\n==> %s\n' "$1"
@@ -84,6 +90,14 @@ prepare_environment() {
     if [[ -f .env ]]; then
         grep -Eq '^POSTGRES_PASSWORD=.+$' .env || fail "现有 .env 缺少 POSTGRES_PASSWORD"
         grep -Eq '^DATABASE_URL=.+$' .env || fail "现有 .env 缺少 DATABASE_URL"
+        # deploy.yml 对镜像变量使用 ${VAR:?} 强制校验，缺失时 compose 连解析都过不去。
+        # 源码构建路径由 build.yml 覆盖成固定本地镜像名，这里补齐同名变量即可解析。
+        if ! grep -Eq '^CANVAS_BACKEND_IMAGE=.+$' .env; then
+            printf 'CANVAS_BACKEND_IMAGE=%s\n' "$SOURCE_BUILD_BACKEND_IMAGE" >>.env
+        fi
+        if ! grep -Eq '^CANVAS_WEB_IMAGE=.+$' .env; then
+            printf 'CANVAS_WEB_IMAGE=%s\n' "$SOURCE_BUILD_WEB_IMAGE" >>.env
+        fi
         local configured_http_port
         configured_http_port="$(sed -n 's/^CANVAS_HTTP_PORT=//p' .env | tail -n 1)"
         if [[ -n "$configured_http_port" ]]; then
@@ -108,6 +122,11 @@ CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
 CANVAS_CORS_ORIGINS=
+# 源码构建：deploy.yml 要求这两个变量存在，实际镜像由 docker-compose.build.yml 提供。
+CANVAS_BACKEND_IMAGE=${SOURCE_BUILD_BACKEND_IMAGE}
+CANVAS_WEB_IMAGE=${SOURCE_BUILD_WEB_IMAGE}
+# 构建期 Go 模块代理；境外默认值在部分网络下会卡住 go mod download。
+GOPROXY=${SOURCE_BUILD_GOPROXY}
 EOF
 }
 
