@@ -1,7 +1,7 @@
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import { isVolcengineArkVideoProtocol } from "@/lib/model-protocols";
 import { boolConfig, buildSeedancePromptText, isArkPlanBaseUrl, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceVideoReferenceError, SEEDANCE_REFERENCE_LIMITS } from "@/lib/seedance-video";
-import { getResourceOSSUrl } from "@/services/api/resources";
+import { getResourceInputURL } from "@/services/api/resources";
 import { getMediaBlob } from "@/services/file-storage";
 import { imageToDataUrl } from "@/services/image-storage";
 import { buildApiUrl, modelOptionName, type AiConfig } from "@/stores/use-config-store";
@@ -121,7 +121,7 @@ async function buildVolcengineArkContent(prompt: string, references: ReferenceIm
 async function resolveVolcengineArkReferenceUrl(value: string | undefined, storageKey?: string) {
     // 已录入的方舟素材 ID 优先：已过审或被授权的素材直接引用，无需再换对象存储地址。
     if (String(value || "").startsWith("asset://")) return String(value);
-    if (storageKey?.startsWith("resource:")) return getResourceOSSUrl(storageKey);
+    if (storageKey?.startsWith("resource:")) return getResourceInputURL(storageKey);
     if (isPublicMediaUrl(value || "")) return String(value);
     // 已保存到服务器的素材由后端统一切换公网地址（对象存储或上游素材中转）。
     throw new Error("火山方舟视频参考素材需要公网 URL、asset:// 素材 ID，或先上传到服务器资源库");

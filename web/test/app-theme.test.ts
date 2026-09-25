@@ -36,6 +36,11 @@ describe("shared action colors and focus feedback", () => {
         const theme = getWorkspaceAntThemeConfig();
         expect(theme.components?.Button?.colorPrimary).toBeUndefined();
         expect(theme.components?.Button?.primaryColor).toBeUndefined();
-        expect(theme.components?.Input?.activeShadow).toBeUndefined();
+        // 统一控件重构后，工作台控件显式关闭焦点光晕与输入描边，避免鼠标点击出现白边。
+        expect(theme.components?.Input?.activeShadow).toBe("none");
+        expect(theme.components?.Input?.activeBorderColor).toBe("transparent");
+        expect(theme.components?.Input?.hoverBorderColor).toBe("transparent");
+        expect(theme.components?.InputNumber?.activeShadow).toBe("none");
+        expect(theme.components?.Select?.activeOutlineColor).toBe("transparent");
     });
 });

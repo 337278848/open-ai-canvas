@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
-import { Button, Dropdown, Input } from "antd";
+import { Button, Dropdown, Input, Popover } from "antd";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { ArrowLeft, Check, ChevronRight, CircleDot, Clock3, Download, History, LoaderCircle, MessageSquarePlus, MoveDiagonal2, Settings2, ShieldCheck, Trash2, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, CircleDot, Clock3, Download, History, LoaderCircle, MessageSquarePlus, MoveDiagonal2, RotateCcw, Settings2, ShieldCheck, Trash2, Sparkles, X } from "lucide-react";
 import { saveAs } from "file-saver";
 import { buildAgentDebugExport } from "@/lib/canvas/agent-debug-export";
+import { markdownPlainText } from "@/lib/markdown-plain-text";
 import { agentToolRetry, mergeAgentToolRetry } from "@/lib/canvas/agent-tool-retry";
 import { agentPlanVisible, latestAgentPlanItems, pendingAgentQuestion } from "@/lib/canvas/cloud-agent-plan";
+import { emptyAgentContextUsage, presentAgentContextUsage, reduceAgentContextUsage, type AgentContextPhase, type AgentContextUsage, type AgentContextUsageView } from "@/lib/canvas/agent-context-usage";
 import { nanoid } from "nanoid";
 
 import { ModelPicker } from "@/components/model-picker";
 import { FluidOrb } from "@/components/ui/fluid-orb";
 import { cn } from "@/lib/utils";
-import { markdownPlainText } from "@/lib/markdown-plain-text";
 import { modelCapabilityConfigFor } from "@/lib/model-capabilities";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
@@ -21,15 +22,17 @@ import { agentApprovalPresentation } from "@/lib/canvas/agent-approval-presentat
 import { agentApprovalMatchesSettings, agentImageApproval } from "@/lib/canvas/agent-media-approval";
 import type { AgentMediaSettings } from "@/services/api/agent";
 import { CanvasAgentImageApprovalSettings } from "./canvas-agent-image-approval-settings";
-import { addSkill, listAddedSkills, listSkills, type Skill, type SkillCategory } from "@/services/api/skills";
+import { addSkill, listAddedSkills, listSkills, listSkillPresets, type Skill, type SkillCategory, type SkillPreset } from "@/services/api/skills";
 import { clearCloudAgentPendingSubmission, cloudAgentConversationTitle, loadCloudAgentConversations, loadCloudAgentPendingSubmission, saveCloudAgentConversations, saveCloudAgentPendingSubmission, type CloudAgentConversation, type CloudAgentPendingSubmission } from "@/services/cloud-agent-conversations";
 import { logicalModelIDForConfig, modelOptionName, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
+import { useUserStore } from "@/stores/use-user-store";
+import { getActiveUserScope } from "@/lib/user-scope";
 import { applyAgentCanvasPatches, refreshCanvasAfterAgent, saveRemoteUserDataNow } from "@/services/user-data-sync";
 import { createAgentCanvasSync } from "@/services/agent-canvas-sync";
 import { buildSkillMentionReferences, resolveSkillMentions } from "@/services/skill-runtime";
-import { AgentChatComposer, AgentChatMessage, AgentPlanBar, AgentQuestionBar, AgentWorkingMessage, type CloudAgentChatMessage, type CloudAgentPlanItem } from "./canvas-cloud-agent-chat-ui";
+import { AgentChatComposer, AgentChatMessage, AgentPlanBar, AgentQuestionBar, AgentSceneCapsules, AgentWorkingMessage, AGENT_SCENE_DEFS, type AgentSceneBucket, type CloudAgentChatMessage, type CloudAgentPlanItem } from "./canvas-cloud-agent-chat-ui";
 import { CanvasAgentSkillLibraryModal } from "./canvas-agent-skill-library-modal";
 import { CanvasCloudAgentSettings, agentPermissionLabel, agentPermissionMenuItems, agentPermissionVisual, type AgentContextKey } from "./canvas-cloud-agent-settings";
 import { useAgentPanelLayout } from "./use-agent-panel-layout";
@@ -45,6 +48,7 @@ type ApprovalState = { approvalId: string; detail: Record<string, unknown>; reas
 type AgentPanelView = "chat" | "history" | "settings";
 
 export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, references, open, prefillPrompt, onOpen, onCollapse, onFocusNode }: CloudAgentPanelProps) {
+    const userId = useUserStore((state) => state.user?.id);
     const appearance = useAppearanceStore((state) => state.appearance.canvas) || DEFAULT_CANVAS_APPEARANCE;
     const theme = canvasThemes[useActiveTheme()];
     const config = useEffectiveConfig();
@@ -52,6 +56,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
     const reducedMotion = useReducedMotion();
     const [view, setView] = useState<AgentPanelView>("chat");
     const [run, setRun] = useState<AgentRun | null>(null);
+    const [contextUsage, setContextUsage] = useState<AgentContextUsage>(() => emptyAgentContextUsage(""));
     const [connectionStatus, setConnectionStatus] = useState<"connecting" | "connected" | "reconnecting" | "disconnected">("connecting");
     const [connectionEpoch, setConnectionEpoch] = useState(0);
     const [messages, setMessages] = useState<CloudAgentChatMessage[]>([]);
@@ -92,6 +97,9 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
     const planItems = useMemo(() => latestAgentPlanItems(messages), [messages]);
     const planVisible = agentPlanVisible(planItems);
     const pendingQuestion = useMemo(() => pendingAgentQuestion(messages), [messages]);
+    const [scenePresets, setScenePresets] = useState<SkillPreset[]>([]);
+    const [presetApplyingId, setPresetApplyingId] = useState("");
+    const presetApplyingRef = useRef<string | null>(null);
     const panelLayout = useAgentPanelLayout();
     const lastSeqRef = useRef(0);
     const canvasSyncRef = useRef<ReturnType<typeof createAgentCanvasSync> | null>(null);
@@ -126,6 +134,124 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
     useEffect(() => { if (!reasoningSupported && reasoningMode !== "off") setReasoningMode("off"); }, [reasoningSupported, reasoningMode]);
     const installedSkills = useMemo(() => skills.filter((skill) => skill.isAdded), [skills]);
     const enabledSkills = useMemo(() => installedSkills.filter((skill) => selectedSkillIds.includes(skill.skillId)), [installedSkills, selectedSkillIds]);
+    const installedSkillIds = useMemo(() => new Set(installedSkills.map((skill) => skill.skillId)), [installedSkills]);
+
+    const [createdSkills, setCreatedSkills] = useState<Skill[]>([]);
+
+    // 用户切换后重新加载，旧请求不得把其他账号的数据写回当前面板。
+    useEffect(() => {
+        let active = true;
+        presetApplyingRef.current = null;
+        setPresetApplyingId("");
+        setScenePresets([]);
+        listSkillPresets()
+            .then((result) => { if (active) setScenePresets(result.presets || []); })
+            .catch(() => { if (active) setScenePresets([]); });
+        return () => { active = false; };
+    }, [userId]);
+
+    // 用户自建技能也要能出现在推荐里：官方种子库与剧典走「已装」，自建走 scope=created。
+    useEffect(() => {
+        let active = true;
+        setCreatedSkills([]);
+        listSkills({ scope: "created", pageSize: 50 })
+            .then((result) => { if (active) setCreatedSkills(result.skills || []); })
+            .catch((cause) => { if (active) setMessages((current) => appendAgentError(current, "created-skills-error", cause, "自建技能读取失败")); });
+        return () => { active = false; };
+    }, [userId]);
+
+    // 场景分桶：把「常用 / 推荐配方 / 场景技能」收进同一个维度，一级只显示分类。
+    // 常用度：自建 > 已收藏 > 已装，同级按市场热度降序。
+    const sceneBuckets = useMemo<AgentSceneBucket[]>(() => {
+        const merged = new Map<string, Skill>();
+        for (const skill of [...installedSkills, ...createdSkills]) {
+            if (!merged.has(skill.skillId)) merged.set(skill.skillId, skill);
+        }
+        const rank = (skill: Skill) => (skill.isOwner ? 0 : skill.isLike ? 1 : 2);
+        const frequent = [...merged.values()].sort((a, b) => rank(a) - rank(b) || (b.addedCount || 0) - (a.addedCount || 0));
+        const pool = frequent.slice(0, 24);
+        const sceneOf = (skill: Skill) => skill.tag || "others";
+        return AGENT_SCENE_DEFS.map((definition) => ({
+            key: definition.key,
+            label: definition.label,
+            presets: definition.key === "frequent" ? [] : scenePresets.filter((preset) => preset.scene === definition.key),
+            skills: definition.key === "frequent" ? frequent.slice(0, 8) : pool.filter((skill) => sceneOf(skill) === definition.key),
+        }));
+    }, [installedSkills, createdSkills, scenePresets]);
+
+    const applyScenePreset = useCallback(async (preset: SkillPreset) => {
+        if (running || busy || presetApplyingRef.current || !historyHydrated || !pendingHydrated) return;
+        const scope = conversationScope;
+        const account = getActiveUserScope();
+        const token = crypto.randomUUID();
+        const isCurrent = () => presetApplyingRef.current === token && currentScope.current === scope && getActiveUserScope() === account;
+        const missing = preset.skillIds.filter((id) => !installedSkillIds.has(id));
+        presetApplyingRef.current = token;
+        setPresetApplyingId(preset.presetId);
+        try {
+            // 安装是持久写操作；任何失败都不能谎称整个配方已挂载。
+            for (const id of missing) {
+                if (!isCurrent()) return;
+                await addSkill(id);
+                if (!isCurrent()) return;
+            }
+            const refreshed = await listAddedSkills();
+            if (!isCurrent()) return;
+            if (preset.skillIds.some((id) => !refreshed.skills.some((skill) => skill.skillId === id && skill.isAdded))) {
+                throw new Error("技能库未确认全部预设技能已安装，请刷新后重试");
+            }
+            setSkills(refreshed.skills);
+            setSelectedSkillIds(preset.skillIds);
+            setMessages((current) => appendUniqueMessage(current, {
+                id: `preset-${preset.presetId}-${Date.now()}`,
+                role: "system",
+                text: `已按「${preset.name}」挂上 ${preset.skillIds.length} 个技能${missing.length ? `（新装 ${missing.length} 个）` : ""}。${preset.rationale}`,
+            }));
+        } catch (cause) {
+            if (isCurrent()) setMessages((current) => appendAgentError(current, `preset-${preset.presetId}`, cause, `「${preset.name}」挂载失败（已安装的技能仍在技能库中）`));
+        } finally {
+            if (presetApplyingRef.current === token) {
+                presetApplyingRef.current = null;
+                setPresetApplyingId("");
+            }
+        }
+    }, [busy, conversationScope, historyHydrated, installedSkillIds, pendingHydrated, running]);
+
+    // 单个技能（含用户自建）挂载到本会话；未装的先补装，已挂的不重复追加。
+    const applySingleSkill = useCallback(async (skill: Skill) => {
+        if (running || busy || presetApplyingRef.current || !historyHydrated || !pendingHydrated) return;
+        const scope = conversationScope;
+        const account = getActiveUserScope();
+        const token = crypto.randomUUID();
+        const isCurrent = () => presetApplyingRef.current === token && currentScope.current === scope && getActiveUserScope() === account;
+        presetApplyingRef.current = token;
+        setPresetApplyingId(skill.skillId);
+        try {
+            if (!installedSkillIds.has(skill.skillId)) {
+                await addSkill(skill.skillId);
+                if (!isCurrent()) return;
+            }
+            const refreshed = await listAddedSkills();
+            if (!isCurrent()) return;
+            if (!refreshed.skills.some((item) => item.skillId === skill.skillId && item.isAdded)) {
+                throw new Error("技能库未确认该技能已安装，请刷新后重试");
+            }
+            setSkills(refreshed.skills);
+            setSelectedSkillIds((current) => (current.includes(skill.skillId) ? current : [...current, skill.skillId]));
+            setMessages((current) => appendUniqueMessage(current, {
+                id: `skill-${skill.skillId}-${Date.now()}`,
+                role: "system",
+                text: `已把「${skill.skillName}」挂到本会话。用哪张卡交给 Agent 按任务检索。`,
+            }));
+        } catch (cause) {
+            if (isCurrent()) setMessages((current) => appendAgentError(current, `skill-${skill.skillId}`, cause, `「${skill.skillName}」挂载失败`));
+        } finally {
+            if (presetApplyingRef.current === token) {
+                presetApplyingRef.current = null;
+                setPresetApplyingId("");
+            }
+        }
+    }, [busy, conversationScope, historyHydrated, installedSkillIds, pendingHydrated, running]);
     const status = run?.status || "idle";
     const statusLabel = status === "waiting_approval" ? "等待审批" : status === "running" || status === "queued" ? "运行中" : status === "completed" ? "已完成" : status === "failed" ? "异常" : status === "cancelled" ? "已停止" : status === "rejected" ? "已拒绝" : "待命";
     const statusColor = status === "failed" ? "#e66b6b" : status === "rejected" || status === "cancelled" ? theme.node.muted : status === "waiting_approval" ? "#d6a24a" : status === "running" || status === "queued" ? "#69c29b" : theme.node.muted;
@@ -180,6 +306,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
 
     useEffect(() => {
         let active = true;
+        setSkills([]);
         const refresh = () => { void listAddedSkills()
             .then((result) => {
                 if (!active) return;
@@ -195,7 +322,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
             window.removeEventListener("canvas-skills-changed", refresh);
             window.removeEventListener("focus", refresh);
         };
-    }, [open]);
+    }, [open, userId]);
 
     useEffect(() => {
         if (view !== "settings" && !skillsOpen) return;
@@ -255,9 +382,12 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
         setPendingHydrated(false);
         pendingSubmission.current = null;
         setBusy(false);
+        presetApplyingRef.current = null;
+        setPresetApplyingId("");
         setConversations([]);
         setRun(null);
         setMessages([]);
+        setSelectedSkillIds([]);
         setApproval(null);
         setApprovalSubmitting(false);
         approvalRequestRef.current = null;
@@ -294,7 +424,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
         return () => {
             active = false;
         };
-    }, [canvasId]);
+    }, [canvasId, userId]);
 
     useEffect(() => {
         if (!historyHydrated || (!messages.length && !run)) return;
@@ -338,6 +468,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                     lastSeqRef.current = event.seq;
                 }
                 setMessages((current) => current.filter((item) => item.id !== `stream-error-${run.id}`));
+                setContextUsage((current) => reduceAgentContextUsage(current, event));
                 applyAgentEvent(event, setMessages, setRun, setApproval, setPrompt);
                 canvasSyncRef.current?.receive(event);
             },
@@ -446,7 +577,10 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
             setMessages(nextMessages);
             const result = submission.parentRunId ? await sendAgentMessage(submission.parentRunId, request) : await createAgentRun(request);
             accepted = true;
-            if (currentScope.current === scope) setRun(result.run);
+            if (currentScope.current === scope) {
+                setContextUsage(emptyAgentContextUsage(result.run.id));
+                setRun(result.run);
+            }
             await clearCloudAgentPendingSubmission(canvasId, activeConversationId);
             if (currentScope.current === scope) pendingSubmission.current = null;
         } catch (cause) {
@@ -553,6 +687,8 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
     const newConversation = () => {
         const id = nanoid();
         currentScope.current = `${canvasId}:${id}`;
+        presetApplyingRef.current = null;
+        setPresetApplyingId("");
         setPendingHydrated(true);
         setBusy(false);
         pendingSubmission.current = null;
@@ -561,6 +697,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
         setActiveConversationId(id);
         setRun(null);
         setMessages([]);
+        setSelectedSkillIds([]);
         setPrompt("");
         setApproval(null);
         lastSeqRef.current = 0;
@@ -569,6 +706,8 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
 
     const openConversation = (conversation: CloudAgentConversation) => {
         currentScope.current = `${canvasId}:${conversation.id}`;
+        presetApplyingRef.current = null;
+        setPresetApplyingId("");
         setPendingHydrated(false);
         setBusy(false);
         pendingSubmission.current = null;
@@ -711,6 +850,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                                             })().catch((cause) => setMessages((current) => appendAgentError(current, `export-${Date.now()}`, cause, "导出失败"))).finally(() => setExporting(false));
                                         }}
                                         onSettings={() => setView("settings")}
+                                        onResetLayout={panelLayout.reset}
                                         onCollapse={onCollapse}
                                     />
                                     {run && connectionStatus !== "connected" ? (
@@ -736,6 +876,16 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                                         onReject={() => void submitApproval("reject")}
                                     />
                                     {planVisible ? <AgentPlanBar items={planItems} theme={theme} minimized={planMinimized} onToggle={() => setPlanMinimized((value) => !value)} /> : null}
+                                    {historyHydrated && !messages.some((message) => message.role === "user" || message.role === "assistant") && !run ? (
+                                        <AgentSceneCapsules
+                                            buckets={sceneBuckets}
+                                            installedIds={installedSkillIds}
+                                            theme={theme}
+                                            disabled={busy || running || !pendingHydrated || Boolean(presetApplyingId)}
+                                            onPick={(preset) => void applyScenePreset(preset)}
+                                            onPickSkill={(skill) => void applySingleSkill(skill)}
+                                        />
+                                    ) : null}
                                     {pendingQuestion ? (
                                         <AgentQuestionBar
                                             question={pendingQuestion}
@@ -749,7 +899,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                                         disabled={Boolean(run && connectionStatus !== "connected") || !historyHydrated || !pendingHydrated}
                                         sending={busy}
                                         running={running}
-                                        placeholder={running ? "运行中可直接插话，会在它下一步生效" : agentCopy(appearance.inputPlaceholder, appearance.agentName)}
+                                        placeholder={running ? "运行中可直接插话，会在它下一步生效" : "输入操作指导；用 @ 引用画布节点，用 / 或 、 引用 Skills"}
                                         theme={theme}
                                         onPromptChange={setPrompt}
                                         onSubmit={() => void submit()}
@@ -758,6 +908,7 @@ export function CanvasCloudAgentPanel({ canvasId, domainProjectId, nodeCount, re
                                         references={[...references, ...buildSkillMentionReferences(installedSkills)]}
                                         slashSkills={installedSkills}
                                         includeAssetLibrary={false}
+                                        submitAccessory={<AgentContextRing view={presentAgentContextUsage(contextUsage)} />}
                                         left={
                                             <ComposerControls
                                                 reasoningMode={reasoningSupported ? reasoningMode : "off"}
@@ -831,7 +982,7 @@ function AgentLauncher({ theme, statusColor, approvalPending, reducedMotion, onO
             whileTap={reducedMotion || dragging ? undefined : { scale: 0.96 }}
             transition={{ duration: reducedMotion ? 0 : 0.18 }}
         >
-            {live ? <Live2DAvatar url={live2DModelURL(appearance.live2dResourceId, appearance.live2dEntry)} width={width} height={height} reducedMotion={reducedMotion} fallback={<FluidOrb size={62} color="#7164f6" />} /> : <FluidOrb size={62} color="#7164f6" />}
+            {live ? <Live2DAvatar url={live2DModelURL(appearance.live2dResourceId, appearance.live2dEntry)} width={width} height={height} reducedMotion={reducedMotion} fallback={<FluidOrb size={60} color="#7164f6" />} /> : <FluidOrb size={60} color="#7164f6" />}
             {appearance.launcherLabel ? <span className="canvas-agent-launcher-label">{appearance.launcherLabel}</span> : null}
             <span className={cn("canvas-agent-launcher-status", approvalPending && "is-pending")} style={{ "--canvas-agent-status-color": statusColor } as CSSProperties} />
             {approvalPending ? <span className="canvas-agent-launcher-badge">待审批</span> : null}
@@ -839,7 +990,7 @@ function AgentLauncher({ theme, statusColor, approvalPending, reducedMotion, onO
     );
 }
 
-function AgentHeader({ theme, hasMessages, statusLabel, statusColor, nodeCount, onNew, onHistory, onSettings, onCollapse, onExport, exporting }: { theme: CanvasTheme; hasMessages: boolean; statusLabel: string; statusColor: string; nodeCount: number; onNew: () => void; onHistory: () => void; onSettings: () => void; onCollapse: () => void; onExport: () => void; exporting: boolean }) {
+function AgentHeader({ theme, hasMessages, statusLabel, statusColor, nodeCount, onNew, onHistory, onSettings, onResetLayout, onCollapse, onExport, exporting }: { theme: CanvasTheme; hasMessages: boolean; statusLabel: string; statusColor: string; nodeCount: number; onNew: () => void; onHistory: () => void; onSettings: () => void; onResetLayout: () => void; onCollapse: () => void; onExport: () => void; exporting: boolean }) {
     const appearance = useAppearanceStore((state) => state.appearance.canvas) || DEFAULT_CANVAS_APPEARANCE;
     return (
         <header data-agent-drag-handle className="agent-panel-header flex shrink-0 items-center gap-3">
@@ -854,6 +1005,7 @@ function AgentHeader({ theme, hasMessages, statusLabel, statusColor, nodeCount, 
                 <div className="agent-panel-context">{appearance.agentName} · 当前画布 {nodeCount} 个节点</div>
             </div>
             <div className="agent-header-actions flex items-center gap-0.5" style={{ color: theme.node.muted }}>
+                <Button type="text" shape="circle" icon={<RotateCcw className="size-4" />} onClick={onResetLayout} aria-label="恢复 Agent 紧凑窗口" title="恢复默认窗口大小和位置" className="hidden sm:inline-flex" />
                 <Button type="text" shape="circle" icon={<Download className="size-4" />} loading={exporting} onClick={onExport} aria-label="导出 Agent 调试记录" title="导出对话、工具参数、审批和错误（分享前请检查隐私）" />
                 <Button type="text" shape="circle" icon={<MessageSquarePlus className="size-4" />} onClick={onNew} aria-label="新建对话" title="新建对话" />
                 <Button type="text" shape="circle" icon={<History className="size-4" />} onClick={onHistory} aria-label="历史对话" title="历史对话" />
@@ -861,6 +1013,157 @@ function AgentHeader({ theme, hasMessages, statusLabel, statusColor, nodeCount, 
                 <Button type="text" shape="circle" icon={<X className="size-4" />} onClick={onCollapse} aria-label="收起 Agent" title="收起" />
             </div>
         </header>
+    );
+}
+
+const CONTEXT_PHASE_LABEL: Record<AgentContextPhase, string> = {
+    idle: "尚未测量",
+    unknown: "窗口未知",
+    ok: "上下文充足",
+    watch: "接近压缩",
+    compress: "即将压缩",
+    compacting: "正在压缩",
+    stale: "压缩后待刷新",
+};
+
+function formatContextCount(tokens: number | undefined) {
+    if (tokens === undefined) return "—";
+    if (tokens >= 1_000_000) return `${Math.round(tokens / 100_000) / 10}M`;
+    if (tokens >= 1_000) return `${Math.round(tokens / 100) / 10}K`;
+    return Math.round(tokens).toLocaleString("zh-CN");
+}
+
+
+function formatContextBytes(bytes: number | undefined) {
+    if (bytes === undefined) return "—";
+    if (bytes >= 1_000_000) return `${Math.round(bytes / 100_000) / 10} MB`;
+    if (bytes >= 1_000) return `${Math.round(bytes / 100) / 10} KB`;
+    return `${Math.round(bytes).toLocaleString("zh-CN")} 字节`;
+}
+
+function AgentContextRing({ view }: { view: AgentContextUsageView }) {
+    const [open, setOpen] = useState(false);
+    const marker = view.compactRatio && view.compactRatio > 0 && view.compactRatio < 1 ? view.compactRatio : undefined;
+    const percent = view.ratio === undefined ? view.label : `${Math.round(view.ratio * 100)}%`;
+    const meterLabel = view.ratio === undefined ? "—" : percent;
+    const used = formatContextCount(view.inputTokens);
+    const budget = formatContextCount(view.usableTokens);
+    const remaining = formatContextCount(view.remainingTokens);
+    const protocolBytes = formatContextBytes(view.protocolBytes);
+    const usedRatio = view.ratio === undefined ? 0 : Math.max(0, Math.min(1, view.ratio));
+    const phaseLabel = CONTEXT_PHASE_LABEL[view.phase];
+    const sourceLabel = view.tokenSource === "provider" ? "模型实测校准" : view.estimate ? "本地估算" : "未测量";
+    const usageHeading = view.ratio !== undefined
+        ? `上下文已用 ${percent}`
+        : view.phase === "idle"
+            ? "上下文用量"
+            : view.phase === "unknown"
+                ? "上下文窗口未知"
+                : `上下文${view.label}`;
+
+    return (
+        <Popover
+            open={open}
+            onOpenChange={setOpen}
+            trigger="click"
+            placement="bottomRight"
+            arrow={false}
+            overlayClassName="agent-context-popover"
+            getPopupContainer={(trigger) => trigger.closest<HTMLElement>(".canvas-agent-panel") ?? document.body}
+            content={(
+                <div className="agent-context-panel" data-phase={view.phase}>
+                    <span className="agent-context-eyebrow">下一次请求</span>
+                    <div className="agent-context-panel-head">
+                        <strong>{usageHeading}</strong>
+                        {view.phase !== "ok" ? <span className={`agent-context-phase is-${view.phase}`}>{phaseLabel}</span> : null}
+                    </div>
+                    <div className="agent-context-summary">
+                        {view.remainingTokens !== undefined && view.usableTokens !== undefined ? (
+                            <>
+                                <strong>{used}</strong>
+                                <span>/ {budget} Token</span>
+                                <em>剩余 {remaining}</em>
+                            </>
+                        ) : (
+                            <>
+                                <strong>{used}</strong>
+                                <span>Token</span>
+                            </>
+                        )}
+                    </div>
+                    <div className="agent-context-progress-head">
+                        <span>输入预算占用</span>
+                        <strong>{percent}</strong>
+                    </div>
+                    <div
+                        className="agent-context-progress"
+                        role="progressbar"
+                        aria-label={`上下文已用 ${percent}`}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={view.ratio === undefined ? undefined : Math.round(view.ratio * 100)}
+                    >
+                        <span style={{ width: `${usedRatio * 100}%` }} />
+                        {marker ? <i style={{ left: `${marker * 100}%` }} aria-hidden="true" /> : null}
+                    </div>
+                    <p className="agent-context-detail">{view.detail}</p>
+                    {view.breakdown.length || view.protocolBytes !== undefined || view.remainingTokens !== undefined ? (
+                        <ul className="agent-context-breakdown">
+                            {view.breakdown.map((item) => (
+                                <li key={item.key}>
+                                    <span className="agent-context-breakdown-dot" aria-hidden="true" />
+                                    <span className="agent-context-breakdown-label">{item.label}</span>
+                                    <span className="agent-context-breakdown-value">{formatContextCount(item.tokens)}</span>
+                                </li>
+                            ))}
+                            {view.protocolBytes !== undefined ? (
+                                <li className="is-secondary">
+                                    <span className="agent-context-breakdown-dot" aria-hidden="true" />
+                                    <span className="agent-context-breakdown-label">协议外壳</span>
+                                    <span className="agent-context-breakdown-value">{protocolBytes}</span>
+                                </li>
+                            ) : null}
+                            {view.remainingTokens !== undefined ? (
+                                <li className="is-muted">
+                                    <span className="agent-context-breakdown-dot" aria-hidden="true" />
+                                    <span className="agent-context-breakdown-label">未使用</span>
+                                    <span className="agent-context-breakdown-value">{remaining}</span>
+                                </li>
+                            ) : null}
+                        </ul>
+                    ) : null}
+                    <div className="agent-context-panel-foot">
+                        <span>{sourceLabel}{view.estimate ? " · 不是计费 Token" : " · 预计下次请求"}</span>
+                        {view.compactAtTokens ? <span>压缩线 {formatContextCount(view.compactAtTokens)}</span> : null}
+                    </div>
+                    {view.lastCompaction ? <p className="agent-context-note">本轮已完成一次上下文压缩，下一次读数会刷新。</p> : null}
+                </div>
+            )}
+        >
+            <button
+                type="button"
+                className={`agent-context-ring is-${view.phase}`}
+                aria-label={`${usageHeading}，${phaseLabel}。点击查看明细`}
+                aria-expanded={open}
+                title="查看上下文用量"
+                onPointerDown={(event) => event.stopPropagation()}
+            >
+                <span
+                    className="agent-context-ring-visual"
+                    aria-hidden="true"
+                    style={{
+                        "--agent-context-progress": `${view.ring * 100}%`,
+                        "--agent-context-marker-angle": `${(marker || 0) * 360}deg`,
+                    } as CSSProperties}
+                >
+                    {marker ? <span className="agent-context-ring-marker" /> : null}
+                </span>
+                <span className="agent-context-meter-copy">
+                    <strong>{meterLabel}</strong>
+                    <small>上下文</small>
+                </span>
+            </button>
+        </Popover>
     );
 }
 
@@ -1012,14 +1315,15 @@ function ComposerControls({
     const permissionVisual = agentPermissionVisual(permissionMode);
     const PermissionIcon = permissionVisual.icon;
     return (
-        <div className="flex min-w-0 flex-wrap items-center gap-0.5">
+        <div className="agent-composer-selection flex min-w-0 flex-1 flex-nowrap items-center gap-0.5">
             <ModelPicker
                 config={config}
                 value={selectedModel}
                 capability="text"
                 onChange={onModelChange}
                 variant="creation"
-                className="!h-8 !min-w-0 !w-52 !max-w-full !border-0 !bg-transparent !px-1.5 !shadow-none"
+                fullWidth
+                className="agent-composer-model-trigger !h-8 !min-w-0 !w-full !max-w-full !border-0 !bg-transparent !px-1.5 !shadow-none"
                 popoverClassName="agent-model-picker-popover"
                 showSelectedPrice={false}
                 showOptionPrices
@@ -1106,7 +1410,7 @@ function ApprovalCard({ approval, theme, submitting, onFocusNode, onReasonChange
 }
 
 function ApprovalPreviewItemView({ item, theme, onFocusNode }: { item: ReturnType<typeof agentApprovalPresentation>["items"][number]; theme: CanvasTheme; onFocusNode?: (nodeId: string) => void }) {
-    const operationLabel = item.operation === "add_node" ? "新增" : item.operation === "update_node" ? "修改" : item.operation === "connect_nodes" ? "连线" : item.operation === "create_storyboard" ? "创建分镜" : item.operation === "edit_storyboard" ? "修改分镜" : item.operation === "plan_step" ? "计划" : "生成";
+    const operationLabel = item.operation === "add_node" ? "新增" : item.operation === "update_node" ? "修改" : item.operation === "connect_nodes" ? "连线" : item.operation === "arrange_nodes" ? "整理" : item.operation === "create_storyboard" ? "创建分镜" : item.operation === "edit_storyboard" ? "修改分镜" : item.operation === "plan_step" ? "计划" : "生成";
     const renderNode = (title: string | undefined, id: string | undefined, typeLabel: string | undefined, role: "source" | "target" | "node") => {
         if (!title) return null;
         const content = <><span className="canvas-agent-approval-node-title">{title}</span>{typeLabel ? <span className="canvas-agent-approval-node-type">{typeLabel}</span> : null}</>;

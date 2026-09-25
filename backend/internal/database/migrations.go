@@ -14,7 +14,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 36
+const CurrentSchemaVersion int64 = 39
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -34,6 +34,11 @@ const legacyChannelModelTagsChecksum = "sha256:channel-model-tags-v32"
 const lxmoneH3CapabilityChecksum = "sha256:lxmone-h3-capability-v34-20260922"
 const providerRequestIDReconciliationChecksum = "sha256:provider-request-id-reconciliation-v35-20260922"
 const reconciliationFollowupChecksum = "sha256:capability-provider-reconciliation-followup-v36-20260922"
+// Versions 37-39 are appended after the local 32-36 lineage. Upstream used
+// 33-35 for these features, but those numbers are already published locally.
+const oauthStateAcceptedTermsChecksum = "sha256:oauth-state-accepted-terms-v37-20260925"
+const taskMediaRecoveryChecksum = "sha256:task-media-recovery-v38-20260925"
+const authNotificationsChecksum = "sha256:auth-notifications-v39-20260925"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -114,6 +119,28 @@ var schemaMigrations = []migration{
 	{version: 34, name: "lxmone_h3_capability_limits", checksum: lxmoneH3CapabilityChecksum, apply: migrateLXMoneH3CapabilityLimits},
 	{version: 35, name: "provider_request_id_reconciliation", checksum: providerRequestIDReconciliationChecksum, apply: migrateFabricatedProviderRequestIDs},
 	{version: 36, name: "capability_provider_reconciliation_followup", checksum: reconciliationFollowupChecksum, apply: migrateCapabilityProviderReconciliationFollowup},
+	{version: 37, name: "oauth_state_accepted_terms", checksum: oauthStateAcceptedTermsChecksum, apply: migrateOAuthStateAcceptedTerms},
+	{version: 38, name: "task_media_recovery", checksum: taskMediaRecoveryChecksum, apply: migrateTaskMediaRecovery},
+	{version: 39, name: "auth_notifications", checksum: authNotificationsChecksum, apply: migrateSchemaV35},
+}
+
+func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {
+	if tx.Migrator().HasColumn(&model.OAuthState{}, "AcceptedTerms") {
+		return nil
+	}
+	return tx.Migrator().AddColumn(&model.OAuthState{}, "AcceptedTerms")
+}
+
+func migrateTaskMediaRecovery(tx *gorm.DB) error {
+	for _, field := range []string{"MediaRecoveryJSON", "MediaStage"} {
+		if tx.Migrator().HasColumn(&model.Task{}, field) {
+			continue
+		}
+		if err := tx.Migrator().AddColumn(&model.Task{}, field); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateAgentExecutionJournal(tx *gorm.DB) error {

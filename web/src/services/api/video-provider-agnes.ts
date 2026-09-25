@@ -1,4 +1,4 @@
-import { getResourceOSSUrl } from "@/services/api/resources";
+import { getResourceInputURL } from "@/services/api/resources";
 import { buildApiUrl, isSystemProxyBaseUrl, modelOptionName } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -184,7 +184,7 @@ function agnesAspectRatio(value: string) {
 }
 
 async function resolveAgnesMediaUrl(value: string | undefined, storageKey?: string) {
-    if (storageKey?.startsWith("resource:")) return getResourceOSSUrl(storageKey);
+    if (storageKey?.startsWith("resource:")) return getResourceInputURL(storageKey);
     if (/^https?:\/\//i.test(value || "")) return String(value);
     // 已保存到服务器的素材由后端统一切换公网地址（对象存储或上游素材中转），
     // 这里失败说明素材还没进入服务器资源库。

@@ -81,12 +81,28 @@ test("real grid consumes density rather than the old fixed column calculation", 
 
 test("menu surfaces are explicitly scoped and old account inner overrides are removed", () => {
     const css = readFileSync(new URL("../src/styles/workspace-menus.css", import.meta.url), "utf8");
-    const globals = readFileSync(new URL("../src/styles/globals.css", import.meta.url), "utf8");
+    // CSS 片段断言必须归一化换行；否则 Windows 检出下同一规则会因 CRLF 假失败。
+    const globals = readFileSync(new URL("../src/styles/globals.css", import.meta.url), "utf8").replaceAll("\r\n", "\n");
     expect(css).toContain("@layer utilities");
     expect(css).toContain(".workspace-account-popover .ant-popover-container");
     expect(css).toContain("border: 0 !important");
     expect(css).toContain("box-shadow: none !important");
     expect(css).not.toContain(".ant-modal");
     expect(globals).not.toContain(".workspace-account-popover .ant-popover-inner");
-    expect(globals).toContain(".ant-select:has(input:focus-visible)");
+    // 统一控件重构后，旧的选择器片段（:has(input:focus-visible)）已不再存在，
+    // 这里改为验证当前真实生效的合同：下拉浮层无描边、键盘焦点只走 focus-visible。
+    expect(globals).toContain(":where(.ant-select-dropdown, .ant-dropdown-menu) {\n    border: 0 !important;");
+    expect(globals).toContain(".ant-select.app-unified-select[data-input-modality=\"keyboard\"]:not(.ant-select-open)");
+    expect(globals).toContain(":where(.ant-select:focus-visible, .ant-tree-select:focus-visible, .ant-cascader-picker:focus-visible, .ant-auto-complete:focus-visible) {");
+    expect(globals).not.toContain(".ant-select-focused .ant-select-selector, .ant-select-open .ant-select-selector) {\n    border-color: var(--unified-select-border) !important;\n    box-shadow: none !important;\n    outline: auto");
+});
+
+test("shared single-select popup uses a borderless surface instead of a bright focus frame", () => {
+    const select = readFileSync(new URL("../src/components/ui/base/select/select.tsx", import.meta.url), "utf8");
+    // 统一 Select 现在只挂语义 class，视觉集中在 app-theme.ts 与 globals.css。
+    expect(select).toContain('className={cn("app-unified-select"');
+    expect(select).toContain('app-unified-select--${appearance}');
+    expect(select).toContain('variant={variant ?? "filled"}');
+    expect(select).toContain("data-input-modality={inputModality}");
+    expect(select).not.toContain('setPopoverWidth(width + 2)');
 });

@@ -1,3 +1,4 @@
+import axios from "axios";
 import localforage from "localforage";
 
 import { getActiveUserScope, setActiveUserScope } from "../../src/lib/user-scope";
@@ -7,6 +8,34 @@ type InstanceHook = (storeName: string, key: string, value: unknown) => Promise<
 type Scenario = "image-cleanup" | "scope-cleanup-switch" | "scope-cleanup-late-canvas-reference" | "video-commit-race" | "audio-commit-race" | "canvas-batch-commit-race";
 
 function installStorageHarness() {
+    // 画布结果提交现在通过统一资源访问合同取展示地址，需要一次 /resources/access 调用。
+    // 这个 worker 验证的是持久化链路，不是网络层，所以给它一个确定性的适配器，避免真实请求。
+    const originalAdapter = axios.defaults.adapter;
+    axios.defaults.adapter = (async (config: { url?: string; data?: unknown }) => {
+        const payload = typeof config.data === "string" ? JSON.parse(config.data) : config.data;
+        const items = Array.isArray(payload) ? payload : [];
+        return {
+            data: {
+                code: 0,
+                msg: "",
+                data: {
+                    items: items.map((item: { resourceId?: string; purpose?: string }) => ({
+                        resourceId: item?.resourceId,
+                        access: {
+                            url: `/api/resources/${encodeURIComponent(String(item?.resourceId || ""))}/file`,
+                            delivery: "platform-local",
+                            expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+                        },
+                    })),
+                },
+            },
+            status: 200,
+            statusText: "OK",
+            headers: {},
+            config,
+        };
+    }) as never;
+
     const originalCreateInstance = localforage.createInstance.bind(localforage);
     const originalGetItem = localforage.getItem.bind(localforage);
     const originalSetItem = localforage.setItem.bind(localforage);
@@ -123,6 +152,7 @@ function installStorageHarness() {
         scheduled,
         realSetTimeout,
         restore() {
+            axios.defaults.adapter = originalAdapter;
             localforage.createInstance = originalCreateInstance as typeof localforage.createInstance;
             localforage.getItem = originalGetItem;
             localforage.setItem = originalSetItem;

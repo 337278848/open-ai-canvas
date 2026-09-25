@@ -1,4 +1,4 @@
-import { Alert, App, Button, DatePicker, Select, Tabs, Tag } from "antd";
+import { Alert, App, Button, DatePicker, Tabs, Tag } from "antd";
 import { Tooltip } from "@/pages/admin/ui/controls";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -11,6 +11,7 @@ import { useSearchParams } from "react-router";
 import { ListToolbar, PaginationBar, AdminDataTable, AdminExportButton, AdminFilterChip, AdminStatusBadge, AdminTableEmpty, type AdminStatusTone } from "./admin-ui";
 import { exportAdminAnalytics, getAdminAnalytics, listAdminUsers, type AdminReferenceData, type AdminAnalytics, type AnalyticsFilters } from "@/services/api/auth";
 import { analyticsFinanceColumns, formatCredits, formatFinanceCost, formatFinanceMargin } from "./analytics-finance";
+import { Select } from "@/components/ui/base/select";
 
 type Props = {
     users: AdminReferenceData["users"];
@@ -91,7 +92,9 @@ export default function AnalyticsPanel({ users, channels }: Props) {
         else next.delete("rangePreset");
         setSearchParams(next, { replace: true });
         void reload();
-        return () => { requestSequence.current += 1; };
+        return () => {
+            requestSequence.current += 1;
+        };
     }, [filters, rangePreset]);
 
     useEffect(() => {
@@ -275,7 +278,19 @@ export default function AnalyticsPanel({ users, channels }: Props) {
             </ListToolbar>
 
             {financeUnavailable && <Alert type="warning" showIcon title="后端未返回完整财务统计，缺失金额显示为 --。请确认后端已更新并重启后刷新。" />}
-            {loadError && <Alert type="error" showIcon title="统计数据读取失败" description={loadError} action={<Button size="small" onClick={() => void reload()}>重试</Button>} />}
+            {loadError && (
+                <Alert
+                    type="error"
+                    showIcon
+                    title="统计数据读取失败"
+                    description={loadError}
+                    action={
+                        <Button size="small" onClick={() => void reload()}>
+                            重试
+                        </Button>
+                    }
+                />
+            )}
 
             <section className="admin-analytics-health-grid" aria-label="运营健康指标">
                 <AnalyticsHealthCard
@@ -300,19 +315,8 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                     detail={data ? (data.kpi.upstreamRequests ? "真实上游请求成功率" : "当前范围暂无请求") : undefined}
                     tone={!data || !data.kpi.upstreamRequests ? "neutral" : data.kpi.successRate < 90 ? "warning" : "success"}
                 />
-                <AnalyticsHealthCard
-                    icon={<Clock3 className="size-4" />}
-                    label="P95 请求耗时"
-                    value={data && data.kpi.upstreamRequests > 0 ? formatDuration(data.kpi.p95DurationMs) : "--"}
-                    detail="筛选范围内的上游请求"
-                />
-                <AnalyticsHealthCard
-                    icon={<Workflow className="size-4" />}
-                    label="当前排队"
-                    value={data ? formatNumber(data.kpi.currentQueuedTasks) : "--"}
-                    detail="实时快照 · 非历史累计"
-                    tone={data?.kpi.currentQueuedTasks ? "warning" : "neutral"}
-                />
+                <AnalyticsHealthCard icon={<Clock3 className="size-4" />} label="P95 请求耗时" value={data && data.kpi.upstreamRequests > 0 ? formatDuration(data.kpi.p95DurationMs) : "--"} detail="筛选范围内的上游请求" />
+                <AnalyticsHealthCard icon={<Workflow className="size-4" />} label="当前排队" value={data ? formatNumber(data.kpi.currentQueuedTasks) : "--"} detail="实时快照 · 非历史累计" tone={data?.kpi.currentQueuedTasks ? "warning" : "neutral"} />
                 <AnalyticsHealthCard
                     icon={<CircleDollarSign className="size-4" />}
                     label="费用统计（积分）"

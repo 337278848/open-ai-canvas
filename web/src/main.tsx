@@ -1,7 +1,10 @@
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
+import { installChunkRecovery } from "@/lib/chunk-recovery";
 import { bootstrapAppearance } from "@/services/appearance-bootstrap";
 import { isIsolatedDirectorRepro } from "@/lib/dev-repro";
+
+installChunkRecovery();
 
 // The public film entry checks its availability independently of workspace bootstrap.
 if (/^\/welcome\/?$/.test(window.location.pathname)) void import("./welcome-application");
@@ -20,4 +23,4 @@ else {
         void launchApplication();
         void bootstrapAppearance();
     }
-}
+  }

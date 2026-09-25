@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CanvasNodePromptPanel, buildNodeConfig } from "../src/components/canvas/canvas-node-prompt-panel";
 import { CanvasConfigNodePanel } from "../src/components/canvas/canvas-config-node-panel";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
@@ -8,6 +9,8 @@ import { useUserStore } from "../src/stores/use-user-store";
 import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 
 const noop = () => {};
+// 面板会挂载带 useInfiniteQuery 的子组件（图片风格选择器），SSR 渲染必须提供 QueryClient。
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const model = "panel-test::video-test";
 const input = { textCount: 1, imageCount: 0, videoCount: 0, audioCount: 0, characterCount: 0 };
 const restore: Array<() => void> = [];
@@ -47,9 +50,13 @@ function renderPanel(kind: "prompt" | "config", declared: boolean, seconds: stri
     restore.push(() => { initialConfig.config = originalConfig; }, () => { user.features = originalFeatures; });
     const node = nodeFixture(kind === "prompt" ? CanvasNodeType.Video : CanvasNodeType.Config, seconds);
     const common = { node, isRunning: false, onConfigChange: noop, onGenerate: noop, workspaceMode: simple ? "simple" as const : "professional" as const };
-    const markup = renderToStaticMarkup(kind === "prompt"
-        ? <CanvasNodePromptPanel {...common} projectId="test-project" onPromptChange={noop} />
-        : <CanvasConfigNodePanel {...common} inputSummary={input} onComposerToggle={noop} />);
+    const markup = renderToStaticMarkup(
+        <QueryClientProvider client={queryClient}>
+            {kind === "prompt"
+                ? <CanvasNodePromptPanel {...common} projectId="test-project" onPromptChange={noop} />
+                : <CanvasConfigNodePanel {...common} inputSummary={input} onComposerToggle={noop} />}
+        </QueryClientProvider>,
+    );
     const buttons = markup.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) || [];
     const submit = buttons.find((button) => kind === "prompt" ? button.includes("canvas-node-composer-submit ") : button.includes("开始生成"));
     expect(submit).toBeDefined();
