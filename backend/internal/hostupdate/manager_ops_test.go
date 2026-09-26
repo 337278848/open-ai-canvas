@@ -149,3 +149,46 @@ func TestCheckWritableDirectory(t *testing.T) {
 		t.Fatal("missing directory was accepted")
 	}
 }
+
+func TestValidateComposeImageContract(t *testing.T) {
+	valid := []byte(`
+services:
+  migrate:
+    image: ${CANVAS_BACKEND_IMAGE:?请先配置}
+  backend:
+    image: "${CANVAS_BACKEND_IMAGE}"
+  web:
+    image: ${CANVAS_WEB_IMAGE:-fallback}
+`)
+	if err := validateComposeImageContract(valid); err != nil {
+		t.Fatalf("valid image contract rejected: %v", err)
+	}
+
+	testCases := map[string][]byte{
+		"legacy tags": []byte(`
+services:
+  backend:
+    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+  web:
+    image: ghcr.io/ddcat-ai/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}
+`),
+		"comment only": []byte(`
+# image: ${CANVAS_BACKEND_IMAGE}
+# image: ${CANVAS_WEB_IMAGE}
+`),
+		"similar variable name": []byte(`
+services:
+  backend:
+    image: ${CANVAS_BACKEND_IMAGE_NAME}
+  web:
+    image: ${CANVAS_WEB_IMAGE_NAME}
+`),
+	}
+	for name, data := range testCases {
+		t.Run(name, func(t *testing.T) {
+			if err := validateComposeImageContract(data); err == nil {
+				t.Fatal("legacy or incomplete image contract was accepted")
+			}
+		})
+	}
+}

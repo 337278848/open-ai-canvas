@@ -108,6 +108,9 @@ func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("目标 Compose 文件为空")
 	}
+	if err := validateComposeImageContract(data); err != nil {
+		return "", fmt.Errorf("目标 Compose 不兼容：%w", err)
+	}
 	path := filepath.Join(m.config.StateDir, "compose-"+strings.TrimPrefix(targetVersion, "v")+".next.yml")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("保存目标 Compose：%w", err)
@@ -121,6 +124,12 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	}
 	if _, err := os.Stat(m.envPath()); err != nil {
 		return fmt.Errorf("读取部署环境：%w", err)
+	}
+	if err := validateComposeImageFile(m.composePath(), "当前"); err != nil {
+		return err
+	}
+	if err := validateComposeImageFile(composePath, "目标"); err != nil {
+		return err
 	}
 	if m.config.SelfUpdate {
 		if strings.TrimSpace(m.config.BinaryPath) == "" {
@@ -142,6 +151,43 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	}
 	if err := m.checkHealthOnce(m.healthURL(), current); err != nil {
 		return fmt.Errorf("当前运行版本与部署配置不一致或服务未就绪：%w", err)
+	}
+	return nil
+}
+
+func validateComposeImageContract(data []byte) error {
+	found := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "image:") {
+			continue
+		}
+		value := strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(line, "image:")), "\"'")
+		for _, variable := range []string{"CANVAS_BACKEND_IMAGE", "CANVAS_WEB_IMAGE"} {
+			prefix := "${" + variable
+			if !strings.HasPrefix(value, prefix) || len(value) == len(prefix) {
+				continue
+			}
+			if strings.ContainsRune("}:?-+", rune(value[len(prefix)])) {
+				found[variable] = true
+			}
+		}
+	}
+	for _, variable := range []string{"CANVAS_BACKEND_IMAGE", "CANVAS_WEB_IMAGE"} {
+		if !found[variable] {
+			return fmt.Errorf("image 字段必须使用 ${%s} 镜像变量", variable)
+		}
+	}
+	return nil
+}
+
+func validateComposeImageFile(path, label string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取%s Compose：%w", label, err)
+	}
+	if err := validateComposeImageContract(data); err != nil {
+		return fmt.Errorf("%s Compose 不兼容：%w", label, err)
 	}
 	return nil
 }

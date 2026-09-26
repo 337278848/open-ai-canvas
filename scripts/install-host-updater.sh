@@ -4,7 +4,8 @@ set -Eeuo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 REPOSITORY="${REPOSITORY:-ddcat-ai/open-ai-canvas}"
-SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}"
+REQUESTED_SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-}"
+SOCKET_DIR=""
 UPDATER_BIN="/usr/local/bin/open-ai-canvas-host-updater"
 UPDATER_ENV="/etc/open-ai-canvas-updater.env"
 UPDATER_SERVICE="/etc/systemd/system/open-ai-canvas-updater.service"
@@ -12,6 +13,14 @@ UPDATER_SERVICE="/etc/systemd/system/open-ai-canvas-updater.service"
 fail() {
     printf 'Host Updater 安装失败：%s\n' "$1" >&2
     exit 1
+}
+
+validate_compose_image_contract() {
+    local compose_path="$1"
+    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_BACKEND_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
+        fail "部署 Compose 必须在 image 字段使用 CANVAS_BACKEND_IMAGE，已拒绝旧格式"
+    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_WEB_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
+        fail "部署 Compose 必须在 image 字段使用 CANVAS_WEB_IMAGE，已拒绝旧格式"
 }
 
 require_root() {
@@ -23,11 +32,42 @@ require_root() {
     command -v openssl >/dev/null 2>&1 || fail "缺少 openssl"
     [[ -f "${INSTALL_DIR}/.env" ]] || fail "未找到 ${INSTALL_DIR}/.env"
     [[ -f "${INSTALL_DIR}/docker-compose.deploy.yml" ]] || fail "未找到部署 Compose"
+    validate_compose_image_contract "${INSTALL_DIR}/docker-compose.deploy.yml"
     local backend_image web_image
     backend_image="$(sed -n 's/^CANVAS_BACKEND_IMAGE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
     web_image="$(sed -n 's/^CANVAS_WEB_IMAGE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
     [[ "$backend_image" =~ ^ghcr\.io/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_BACKEND_IMAGE 必须固定为 GHCR digest"
     [[ "$web_image" =~ ^ghcr\.io/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_WEB_IMAGE 必须固定为 GHCR digest"
+}
+
+set_env_value() {
+    local path="$1"
+    local key="$2"
+    local value="$3"
+    local temporary
+    temporary="$(mktemp "${path}.XXXXXX")"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { updated=0 }
+        $0 ~ "^" key "=" { print key "=" value; updated=1; next }
+        { print }
+        END { if (!updated) print key "=" value }
+    ' "$path" > "$temporary"
+    chmod --reference="$path" "$temporary"
+    mv "$temporary" "$path"
+}
+
+resolve_socket_dir() {
+    local configured_socket_dir
+    configured_socket_dir="$(sed -n 's/^CANVAS_UPDATER_SOCKET_DIR=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
+    if [[ -n "$REQUESTED_SOCKET_DIR" ]]; then
+        SOCKET_DIR="$REQUESTED_SOCKET_DIR"
+        set_env_value "${INSTALL_DIR}/.env" CANVAS_UPDATER_SOCKET_DIR "$SOCKET_DIR"
+    elif [[ -n "$configured_socket_dir" ]]; then
+        SOCKET_DIR="$configured_socket_dir"
+    else
+        SOCKET_DIR="/run/open-ai-canvas-updater"
+    fi
+    [[ "$SOCKET_DIR" == /* ]] || fail "CANVAS_UPDATER_SOCKET_DIR 必须是绝对路径"
 }
 
 read_image_tag() {
@@ -115,6 +155,7 @@ install_service() {
 
 main() {
     require_root
+    resolve_socket_dir
     read_image_tag
     install_binary
     ensure_token

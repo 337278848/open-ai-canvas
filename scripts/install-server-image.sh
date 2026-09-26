@@ -10,8 +10,10 @@ CANVAS_IMAGE_TAG="${REQUESTED_IMAGE_TAG#v}"
 IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/ddcat-ai/open-ai-canvas}"
 CANVAS_BACKEND_IMAGE=""
 CANVAS_WEB_IMAGE=""
+REQUESTED_UPDATER_SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-}"
 COMPOSE_FILE="docker-compose.deploy.yml"
-COMPOSE_URL="${COMPOSE_URL:-https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${REPOSITORY_REF}/${COMPOSE_FILE}}"
+COMPOSE_REF="${COMPOSE_REF:-}"
+COMPOSE_URL="${COMPOSE_URL:-}"
 UPDATER_INSTALL_URL="${UPDATER_INSTALL_URL:-https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${REPOSITORY_REF}/scripts/install-host-updater.sh}"
 
 step() {
@@ -21,6 +23,14 @@ step() {
 fail() {
     printf '\n安装失败：%s\n' "$1" >&2
     exit 1
+}
+
+validate_compose_image_contract() {
+    local compose_path="$1"
+    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_BACKEND_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
+        fail "部署 Compose 必须在 image 字段使用 CANVAS_BACKEND_IMAGE，已拒绝旧格式"
+    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_WEB_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
+        fail "部署 Compose 必须在 image 字段使用 CANVAS_WEB_IMAGE，已拒绝旧格式"
 }
 
 require_root() {
@@ -121,6 +131,7 @@ prepare_environment() {
         set_env_value .env CANVAS_IMAGE_TAG "$CANVAS_IMAGE_TAG"
         set_env_value .env CANVAS_BACKEND_IMAGE "$CANVAS_BACKEND_IMAGE"
         set_env_value .env CANVAS_WEB_IMAGE "$CANVAS_WEB_IMAGE"
+        resolve_updater_socket_dir
         return
     fi
 
@@ -145,6 +156,7 @@ CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
 CANVAS_CORS_ORIGINS=
 EOF
+    resolve_updater_socket_dir
 }
 
 set_env_value() {
@@ -163,11 +175,40 @@ set_env_value() {
     mv "$temporary" "$path"
 }
 
+resolve_updater_socket_dir() {
+    local configured_socket_dir
+    configured_socket_dir="$(sed -n 's/^CANVAS_UPDATER_SOCKET_DIR=//p' .env | tail -n 1)"
+    if [[ -n "$REQUESTED_UPDATER_SOCKET_DIR" ]]; then
+        CANVAS_UPDATER_SOCKET_DIR="$REQUESTED_UPDATER_SOCKET_DIR"
+        set_env_value .env CANVAS_UPDATER_SOCKET_DIR "$CANVAS_UPDATER_SOCKET_DIR"
+    elif [[ -n "$configured_socket_dir" ]]; then
+        CANVAS_UPDATER_SOCKET_DIR="$configured_socket_dir"
+    else
+        CANVAS_UPDATER_SOCKET_DIR="/run/open-ai-canvas-updater"
+    fi
+    [[ "$CANVAS_UPDATER_SOCKET_DIR" == /* ]] || fail "CANVAS_UPDATER_SOCKET_DIR 必须是绝对路径"
+}
+
+resolve_compose_url() {
+    [[ -n "$COMPOSE_URL" ]] && return
+    local compose_ref="$COMPOSE_REF"
+    if [[ -z "$compose_ref" ]]; then
+        if [[ -n "$CANVAS_IMAGE_TAG" ]]; then
+            compose_ref="v${CANVAS_IMAGE_TAG}"
+        else
+            compose_ref="$REPOSITORY_REF"
+        fi
+    fi
+    COMPOSE_URL="https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${compose_ref}/${COMPOSE_FILE}"
+}
+
 download_compose() {
-    step "下载 GHCR 镜像部署配置"
+    resolve_compose_url
+    step "下载与镜像 Release 匹配的 GHCR 部署配置"
     local temporary_file
     temporary_file="$(mktemp "${INSTALL_DIR}/.docker-compose.deploy.XXXXXX")"
     curl -fsSL "$COMPOSE_URL" -o "$temporary_file"
+    validate_compose_image_contract "$temporary_file"
     mv "$temporary_file" "$COMPOSE_FILE"
 }
 
@@ -176,7 +217,7 @@ install_host_updater() {
     local installer
     installer="$(mktemp)"
     curl -fsSL "$UPDATER_INSTALL_URL" -o "$installer"
-    INSTALL_DIR="$INSTALL_DIR" bash "$installer"
+    INSTALL_DIR="$INSTALL_DIR" CANVAS_UPDATER_SOCKET_DIR="$CANVAS_UPDATER_SOCKET_DIR" bash "$installer"
     rm -f "$installer"
 }
 

@@ -24,6 +24,14 @@ fail() {
     exit 1
 }
 
+validate_compose_image_contract() {
+    local compose_path="$1"
+    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_BACKEND_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
+        fail "部署 Compose 必须在 image 字段使用 CANVAS_BACKEND_IMAGE，已拒绝旧格式"
+    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_WEB_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
+        fail "部署 Compose 必须在 image 字段使用 CANVAS_WEB_IMAGE，已拒绝旧格式"
+}
+
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
         fail "请使用 README 中带 sudo 的一键安装命令"
@@ -98,6 +106,9 @@ prepare_environment() {
         if ! grep -Eq '^CANVAS_WEB_IMAGE=.+$' .env; then
             printf 'CANVAS_WEB_IMAGE=%s\n' "$SOURCE_BUILD_WEB_IMAGE" >>.env
         fi
+        if ! grep -Eq '^GOPROXY=.+$' .env; then
+            printf 'GOPROXY=%s\n' "$SOURCE_BUILD_GOPROXY" >>.env
+        fi
         local configured_http_port
         configured_http_port="$(sed -n 's/^CANVAS_HTTP_PORT=//p' .env | tail -n 1)"
         if [[ -n "$configured_http_port" ]]; then
@@ -157,6 +168,7 @@ main() {
     install_packages
     install_docker
     sync_source
+    validate_compose_image_contract "$COMPOSE_FILE"
     prepare_environment
     start_services
     print_result
