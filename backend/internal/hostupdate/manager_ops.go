@@ -156,26 +156,59 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 }
 
 func validateComposeImageContract(data []byte) error {
-	found := map[string]bool{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || !strings.HasPrefix(line, "image:") {
+	required := map[string]string{
+		"backend": "CANVAS_BACKEND_IMAGE",
+		"migrate": "CANVAS_BACKEND_IMAGE",
+		"web":     "CANVAS_WEB_IMAGE",
+	}
+	found := make(map[string]bool, len(required))
+	servicesIndent := -1
+	currentService := ""
+	currentServiceIndent := -1
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		rawLine = strings.TrimSuffix(rawLine, "\r")
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		value := strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(line, "image:")), "\"'")
-		for _, variable := range []string{"CANVAS_BACKEND_IMAGE", "CANVAS_WEB_IMAGE"} {
-			prefix := "${" + variable
-			if !strings.HasPrefix(value, prefix) || len(value) == len(prefix) {
-				continue
+		indent := len(rawLine) - len(strings.TrimLeft(rawLine, " \t"))
+		if servicesIndent < 0 {
+			if trimmed == "services:" {
+				servicesIndent = indent
 			}
-			if strings.ContainsRune("}:?-+", rune(value[len(prefix)])) {
-				found[variable] = true
-			}
+			continue
+		}
+		if indent <= servicesIndent {
+			currentService = ""
+			currentServiceIndent = -1
+			continue
+		}
+		if currentService != "" && indent <= currentServiceIndent {
+			currentService = ""
+			currentServiceIndent = -1
+		}
+		if currentService == "" && indent == servicesIndent+2 && strings.HasSuffix(trimmed, ":") {
+			currentService = strings.TrimSuffix(trimmed, ":")
+			currentServiceIndent = indent
+			continue
+		}
+		if currentService == "" || indent != currentServiceIndent+2 || !strings.HasPrefix(trimmed, "image:") {
+			continue
+		}
+		variable, ok := required[currentService]
+		if !ok {
+			continue
+		}
+		value := strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(trimmed, "image:")), "\"'")
+		prefix := "${" + variable
+		if strings.HasPrefix(value, prefix) && len(value) > len(prefix) &&
+			strings.ContainsRune("}:?-+", rune(value[len(prefix)])) {
+			found[currentService] = true
 		}
 	}
-	for _, variable := range []string{"CANVAS_BACKEND_IMAGE", "CANVAS_WEB_IMAGE"} {
-		if !found[variable] {
-			return fmt.Errorf("image 字段必须使用 ${%s} 镜像变量", variable)
+	for service, variable := range required {
+		if !found[service] {
+			return fmt.Errorf("services.%s 的 image 字段必须使用 ${%s} 镜像变量", service, variable)
 		}
 	}
 	return nil

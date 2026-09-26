@@ -167,6 +167,8 @@ services:
 	testCases := map[string][]byte{
 		"legacy tags": []byte(`
 services:
+  migrate:
+    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
   backend:
     image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
   web:
@@ -176,8 +178,21 @@ services:
 # image: ${CANVAS_BACKEND_IMAGE}
 # image: ${CANVAS_WEB_IMAGE}
 `),
+		"unrelated image lines": []byte(`
+services:
+  postgres:
+    image: ${CANVAS_BACKEND_IMAGE}
+  migrate:
+    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+  backend:
+    image: ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+  web:
+    image: ghcr.io/ddcat-ai/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}
+`),
 		"similar variable name": []byte(`
 services:
+  migrate:
+    image: ${CANVAS_BACKEND_IMAGE_NAME}
   backend:
     image: ${CANVAS_BACKEND_IMAGE_NAME}
   web:
@@ -190,5 +205,31 @@ services:
 				t.Fatal("legacy or incomplete image contract was accepted")
 			}
 		})
+	}
+}
+
+func TestImageInstallerInstallsUpdaterBeforeBackend(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("无法定位测试文件")
+	}
+	scriptPath := filepath.Join(filepath.Dir(testFile), "..", "..", "..", "scripts", "install-server-image.sh")
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("读取镜像安装脚本：%v", err)
+	}
+	source := string(data)
+	mainStart := strings.LastIndex(source, "\nmain() {")
+	if mainStart < 0 {
+		t.Fatal("镜像安装脚本缺少 main 入口")
+	}
+	main := source[mainStart:]
+	previous := -1
+	for _, step := range []string{"pull_and_pin_images", "install_host_updater", "start_services"} {
+		position := strings.Index(main, step)
+		if position <= previous {
+			t.Fatalf("安装顺序错误：%s 出现在前一个步骤之前或缺失", step)
+		}
+		previous = position
 	}
 }

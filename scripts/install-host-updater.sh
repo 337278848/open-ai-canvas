@@ -17,10 +17,72 @@ fail() {
 
 validate_compose_image_contract() {
     local compose_path="$1"
-    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_BACKEND_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
-        fail "部署 Compose 必须在 image 字段使用 CANVAS_BACKEND_IMAGE，已拒绝旧格式"
-    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_WEB_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
-        fail "部署 Compose 必须在 image 字段使用 CANVAS_WEB_IMAGE，已拒绝旧格式"
+    awk '
+        function indent(line,    prefix) {
+            prefix = line
+            sub(/[^ \t].*/, "", prefix)
+            return length(prefix)
+        }
+        function uses_image_variable(line, variable,    value, prefix, next_char) {
+            value = line
+            sub(/^[ \t]*image:[ \t]*/, "", value)
+            sub(/^["\047]/, "", value)
+            prefix = "${" variable
+            if (index(value, prefix) != 1) {
+                return 0
+            }
+            next_char = substr(value, length(prefix) + 1, 1)
+            return next_char == "}" || next_char == ":" || next_char == "?" || next_char == "-" || next_char == "+"
+        }
+        {
+            current_indent = indent($0)
+            trimmed = $0
+            sub(/^[ \t]*/, "", trimmed)
+            sub(/[ \t]*$/, "", trimmed)
+            if (trimmed == "" || trimmed ~ /^#/) {
+                next
+            }
+            if (!in_services) {
+                if (trimmed == "services:") {
+                    in_services = 1
+                    services_indent = current_indent
+                }
+                next
+            }
+            if (current_indent <= services_indent) {
+                in_services = 0
+                service = ""
+                next
+            }
+            if (service != "" && current_indent <= service_indent) {
+                service = ""
+            }
+            if (service == "" && current_indent == services_indent + 2 && trimmed ~ /^[^:]+:[ \t]*(#.*)?$/) {
+                service = trimmed
+                sub(/[ \t]*#.*/, "", service)
+                sub(/:.*/, "", service)
+                service_indent = current_indent
+                next
+            }
+            if (service != "" && current_indent == service_indent + 2 && trimmed ~ /^image:[ \t]*/) {
+                if (service == "backend" && uses_image_variable($0, "CANVAS_BACKEND_IMAGE")) {
+                    found_backend = 1
+                }
+                if (service == "migrate" && uses_image_variable($0, "CANVAS_BACKEND_IMAGE")) {
+                    found_migrate = 1
+                }
+                if (service == "web" && uses_image_variable($0, "CANVAS_WEB_IMAGE")) {
+                    found_web = 1
+                }
+            }
+        }
+        END {
+            if (!found_backend || !found_migrate || !found_web) {
+                exit 1
+            }
+        }
+    ' "$compose_path" ||
+        fail "部署 Compose 的 services.backend、services.migrate、services.web 必须分别使用对应镜像变量，已拒绝旧格式"
 }
 
 require_root() {

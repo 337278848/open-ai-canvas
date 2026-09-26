@@ -27,10 +27,72 @@ fail() {
 
 validate_compose_image_contract() {
     local compose_path="$1"
-    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_BACKEND_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
-        fail "部署 Compose 必须在 image 字段使用 CANVAS_BACKEND_IMAGE，已拒绝旧格式"
-    grep -Eq '^[[:space:]]*image:[[:space:]]*"?\$\{CANVAS_WEB_IMAGE([^A-Za-z0-9_]|$)' "$compose_path" ||
-        fail "部署 Compose 必须在 image 字段使用 CANVAS_WEB_IMAGE，已拒绝旧格式"
+    awk '
+        function indent(line,    prefix) {
+            prefix = line
+            sub(/[^ \t].*/, "", prefix)
+            return length(prefix)
+        }
+        function uses_image_variable(line, variable,    value, prefix, next_char) {
+            value = line
+            sub(/^[ \t]*image:[ \t]*/, "", value)
+            sub(/^["\047]/, "", value)
+            prefix = "${" variable
+            if (index(value, prefix) != 1) {
+                return 0
+            }
+            next_char = substr(value, length(prefix) + 1, 1)
+            return next_char == "}" || next_char == ":" || next_char == "?" || next_char == "-" || next_char == "+"
+        }
+        {
+            current_indent = indent($0)
+            trimmed = $0
+            sub(/^[ \t]*/, "", trimmed)
+            sub(/[ \t]*$/, "", trimmed)
+            if (trimmed == "" || trimmed ~ /^#/) {
+                next
+            }
+            if (!in_services) {
+                if (trimmed == "services:") {
+                    in_services = 1
+                    services_indent = current_indent
+                }
+                next
+            }
+            if (current_indent <= services_indent) {
+                in_services = 0
+                service = ""
+                next
+            }
+            if (service != "" && current_indent <= service_indent) {
+                service = ""
+            }
+            if (service == "" && current_indent == services_indent + 2 && trimmed ~ /^[^:]+:[ \t]*(#.*)?$/) {
+                service = trimmed
+                sub(/[ \t]*#.*/, "", service)
+                sub(/:.*/, "", service)
+                service_indent = current_indent
+                next
+            }
+            if (service != "" && current_indent == service_indent + 2 && trimmed ~ /^image:[ \t]*/) {
+                if (service == "backend" && uses_image_variable($0, "CANVAS_BACKEND_IMAGE")) {
+                    found_backend = 1
+                }
+                if (service == "migrate" && uses_image_variable($0, "CANVAS_BACKEND_IMAGE")) {
+                    found_migrate = 1
+                }
+                if (service == "web" && uses_image_variable($0, "CANVAS_WEB_IMAGE")) {
+                    found_web = 1
+                }
+            }
+        }
+        END {
+            if (!found_backend || !found_migrate || !found_web) {
+                exit 1
+            }
+        }
+    ' "$compose_path" ||
+        fail "部署 Compose 的 services.backend、services.migrate、services.web 必须分别使用对应镜像变量，已拒绝旧格式"
 }
 
 require_root() {
@@ -221,8 +283,8 @@ install_host_updater() {
     rm -f "$installer"
 }
 
-start_services() {
-    step "拉取并启动 GHCR 网页与后端镜像"
+pull_and_pin_images() {
+    step "拉取并固定 GHCR 网页与后端镜像 digest"
     if ! docker compose --env-file .env -f "$COMPOSE_FILE" pull; then
         fail "GHCR 镜像拉取失败；如果容器包尚未公开，请通过 GHCR_USERNAME 和 GHCR_TOKEN 登录后重试"
     fi
@@ -233,6 +295,10 @@ start_services() {
     [[ "$web_digest" =~ ^${IMAGE_REPOSITORY//\//\/}-web@sha256:[a-f0-9]{64}$ ]] || fail "Web 镜像未返回可验证的仓库 digest"
     set_env_value .env CANVAS_BACKEND_IMAGE "$backend_digest"
     set_env_value .env CANVAS_WEB_IMAGE "$web_digest"
+}
+
+start_services() {
+    step "启动 GHCR 网页与后端镜像"
     docker compose --env-file .env -f "$COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 600
 }
 
@@ -256,8 +322,9 @@ main() {
     login_ghcr
     prepare_environment
     download_compose
-    start_services
+    pull_and_pin_images
     install_host_updater
+    start_services
     print_result
 }
 
