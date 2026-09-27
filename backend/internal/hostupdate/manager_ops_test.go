@@ -107,18 +107,96 @@ func TestCurrentVersionRejectsLatest(t *testing.T) {
 	}
 }
 
+func TestLegacyReleaseVersionsAreRejectedBeforeUpdate(t *testing.T) {
+	for _, version := range []string{"v1.2.9", "1.5.7", "v1.5.7.1"} {
+		if !isLegacyReleaseVersion(version) {
+			t.Fatalf("legacy release %q was not identified", version)
+		}
+	}
+	for _, version := range []string{"v1.5.7.2", "v1.6.0", "main"} {
+		if isLegacyReleaseVersion(version) {
+			t.Fatalf("non-legacy release %q was rejected", version)
+		}
+	}
+}
+
+func TestDeploymentImageRepositoryPreservesCustomRepositoryName(t *testing.T) {
+	imageRepository, err := deploymentImageRepository("acme/canvas")
+	if err != nil {
+		t.Fatalf("custom repository rejected: %v", err)
+	}
+	if imageRepository != "ghcr.io/acme/canvas" {
+		t.Fatalf("image repository=%q, want ghcr.io/acme/canvas", imageRepository)
+	}
+	images := immutableImageRefs("acme/canvas", "v1.6.0")
+	if images.backend != "ghcr.io/acme/canvas-backend:1.6.0" ||
+		images.web != "ghcr.io/acme/canvas-web:1.6.0" {
+		t.Fatalf("custom immutable refs=%+v", images)
+	}
+}
+
+func TestManagerUsesConfiguredCustomImageRepository(t *testing.T) {
+	manager := &Manager{config: Config{
+		Repository:      "ddcat-ai/open-ai-canvas",
+		ImageRepository: "ghcr.io/acme/canvas",
+	}}
+	imageRepository, err := manager.imageRepository()
+	if err != nil {
+		t.Fatalf("configured image repository rejected: %v", err)
+	}
+	if imageRepository != "ghcr.io/acme/canvas" {
+		t.Fatalf("manager image repository=%q, want ghcr.io/acme/canvas", imageRepository)
+	}
+	images, err := manager.immutableImageRefs("v1.6.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if images.backend != "ghcr.io/acme/canvas-backend:1.6.0" ||
+		images.web != "ghcr.io/acme/canvas-web:1.6.0" {
+		t.Fatalf("manager custom immutable refs=%+v", images)
+	}
+}
+
+func TestStartUpdateRejectsLegacyReleaseBeforeStateWrite(t *testing.T) {
+	installDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(installDir, ".env"), []byte("CANVAS_IMAGE_TAG=1.0.0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := &Manager{
+		config: Config{InstallDir: installDir, EnvFile: ".env"},
+		state: persistedState{
+			LatestRelease: &Release{Version: "v1.5.7.1"},
+			Operation:     Operation{Phase: PhaseReady},
+		},
+	}
+	before := manager.state.Operation
+	if _, err := manager.StartUpdate("v1.5.7.1"); err == nil || !strings.Contains(err.Error(), "tag-based legacy") {
+		t.Fatalf("legacy update was not rejected clearly: %v", err)
+	}
+	if manager.state.Operation.Phase != before.Phase ||
+		manager.state.Operation.TargetVersion != before.TargetVersion ||
+		len(manager.state.Operation.Logs) != len(before.Logs) {
+		t.Fatalf("legacy rejection mutated operation state: before=%+v after=%+v", before, manager.state.Operation)
+	}
+}
+
 func TestCreateBackupReadsBackendDataAsRoot(t *testing.T) {
 	installDir := t.TempDir()
 	backupDir := filepath.Join(installDir, "backups")
 	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(installDir, ".env"), []byte("POSTGRES_USER=canvas\nPOSTGRES_DB=canvas\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(installDir, ".env"), []byte(
+		"POSTGRES_USER=canvas\nPOSTGRES_DB=canvas\n"+
+			"CANVAS_IMAGE_TAG=1.2.2-preview.2\n"+
+			"CANVAS_BACKEND_IMAGE=ghcr.io/ddcat-ai/open-ai-canvas-backend@sha256:"+strings.Repeat("a", 64)+"\n"+
+			"CANVAS_WEB_IMAGE=ghcr.io/ddcat-ai/open-ai-canvas-web@sha256:"+strings.Repeat("b", 64)+"\n",
+	), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	runner := &recordingRunner{}
 	manager := &Manager{
-		config: Config{InstallDir: installDir, ComposeFile: "docker-compose.deploy.yml", EnvFile: ".env", BackupDir: backupDir},
+		config: Config{Repository: "ddcat-ai/open-ai-canvas", InstallDir: installDir, ComposeFile: "docker-compose.deploy.yml", EnvFile: ".env", BackupDir: backupDir},
 		runner: runner,
 	}
 	if _, err := manager.createBackup("v1.2.2-preview.2"); err != nil {
@@ -158,7 +236,7 @@ services:
   backend:
     image: "${CANVAS_BACKEND_IMAGE}"
   web:
-    image: ${CANVAS_WEB_IMAGE:-fallback}
+    image: ${CANVAS_WEB_IMAGE:?请先配置}
 `)
 	if err := validateComposeImageContract(valid); err != nil {
 		t.Fatalf("valid image contract rejected: %v", err)
@@ -205,6 +283,67 @@ services:
 				t.Fatal("legacy or incomplete image contract was accepted")
 			}
 		})
+	}
+}
+
+func TestNormalizeHistoricalV1571ComposeFixture(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("无法定位测试文件")
+	}
+	fixturePath := filepath.Join(filepath.Dir(testFile), "testdata", "v1.5.7.1", "docker-compose.deploy.yml")
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatalf("读取历史 Compose fixture：%v", err)
+	}
+	normalized, err := normalizeComposeImageContractForRepository(data, defaultDeploymentImageRepository)
+	if err != nil {
+		t.Fatalf("legacy Compose normalization failed: %v", err)
+	}
+	text := string(normalized)
+	for _, legacy := range []string{
+		"ghcr.io/ddcat-ai/open-ai-canvas-backend:${CANVAS_IMAGE_TAG:-latest}",
+		"ghcr.io/ddcat-ai/open-ai-canvas-web:${CANVAS_IMAGE_TAG:-latest}",
+	} {
+		if strings.Contains(text, legacy) {
+			t.Fatalf("normalized fixture still contains legacy image reference %q", legacy)
+		}
+	}
+	for _, required := range []string{
+		"image: ${CANVAS_BACKEND_IMAGE:?请先配置 CANVAS_BACKEND_IMAGE}",
+		"image: ${CANVAS_WEB_IMAGE:?请先配置 CANVAS_WEB_IMAGE}",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("normalized fixture is missing %q", required)
+		}
+	}
+	if err := validateComposeImageContract(normalized); err != nil {
+		t.Fatalf("normalized fixture failed canonical validation: %v", err)
+	}
+}
+
+func TestNormalizeLegacyComposeForCustomRepository(t *testing.T) {
+	data := []byte(`
+services:
+  migrate:
+    image: ghcr.io/acme/canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+  backend:
+    image: ghcr.io/acme/canvas-backend:${CANVAS_IMAGE_TAG:-latest}
+  web:
+    image: ghcr.io/acme/canvas-web:${CANVAS_IMAGE_TAG:-latest}
+`)
+	normalized, err := normalizeComposeImageContractForRepository(data, "ghcr.io/acme/canvas")
+	if err != nil {
+		t.Fatalf("custom legacy Compose normalization failed: %v", err)
+	}
+	text := string(normalized)
+	for _, required := range []string{
+		"image: ${CANVAS_BACKEND_IMAGE:?请先配置 CANVAS_BACKEND_IMAGE}",
+		"image: ${CANVAS_WEB_IMAGE:?请先配置 CANVAS_WEB_IMAGE}",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("custom normalized Compose is missing %q", required)
+		}
 	}
 }
 

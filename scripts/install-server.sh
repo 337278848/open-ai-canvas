@@ -24,6 +24,67 @@ fail() {
     exit 1
 }
 
+is_legacy_release_ref() {
+    local ref="$1"
+    ref="${ref#refs/tags/}"
+    ref="${ref#v}"
+    case "$ref" in
+        1.2.9|1.5.7|1.5.7.1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+reject_legacy_release_before_write() {
+    if is_legacy_release_ref "$REPOSITORY_REF"; then
+        fail "Release ${REPOSITORY_REF} 使用 tag-based legacy Compose/Host Updater；为避免写入旧部署目录，已拒绝安装。请使用当前 main/upstream/main 入口"
+    fi
+}
+
+set_env_values() {
+    local path="$1"
+    shift
+    (( $# > 0 && $# % 2 == 0 )) || fail "环境变量更新参数无效"
+    local temporary updates
+    temporary="$(mktemp "${path}.XXXXXX")"
+    updates="$(mktemp "${path}.updates.XXXXXX")"
+    umask 077
+    while (( $# > 0 )); do
+        printf '%s=%s\n' "$1" "$2" >>"$updates"
+        shift 2
+    done
+    awk '
+        NR == FNR {
+            key = $0
+            sub(/=.*/, "", key)
+            value = $0
+            sub(/^[^=]*=/, "", value)
+            if (!(key in update)) order[++order_count] = key
+            update[key] = value
+            next
+        }
+        {
+            key = $0
+            sub(/^[ \t]*/, "", key)
+            sub(/=.*/, "", key)
+            if (key in update) {
+                if (!(key in written)) printf "%s\n", key "=" update[key]
+                written[key] = 1
+                next
+            }
+            printf "%s\n", $0
+        }
+        END {
+            for (order_index = 1; order_index <= order_count; order_index++) {
+                key = order[order_index]
+                if (!(key in written)) printf "%s\n", key "=" update[key]
+            }
+        }
+    ' "$updates" "$path" >"$temporary"
+    rm -f "$updates"
+    chmod --reference="$path" "$temporary"
+    mv "$temporary" "$path"
+}
+
 validate_compose_image_contract() {
     local compose_path="$1"
     awk '
@@ -162,14 +223,18 @@ prepare_environment() {
         grep -Eq '^DATABASE_URL=.+$' .env || fail "现有 .env 缺少 DATABASE_URL"
         # deploy.yml 对镜像变量使用 ${VAR:?} 强制校验，缺失时 compose 连解析都过不去。
         # 源码构建路径由 build.yml 覆盖成固定本地镜像名，这里补齐同名变量即可解析。
+        local env_updates=()
         if ! grep -Eq '^CANVAS_BACKEND_IMAGE=.+$' .env; then
-            printf 'CANVAS_BACKEND_IMAGE=%s\n' "$SOURCE_BUILD_BACKEND_IMAGE" >>.env
+            env_updates+=(CANVAS_BACKEND_IMAGE "$SOURCE_BUILD_BACKEND_IMAGE")
         fi
         if ! grep -Eq '^CANVAS_WEB_IMAGE=.+$' .env; then
-            printf 'CANVAS_WEB_IMAGE=%s\n' "$SOURCE_BUILD_WEB_IMAGE" >>.env
+            env_updates+=(CANVAS_WEB_IMAGE "$SOURCE_BUILD_WEB_IMAGE")
         fi
         if ! grep -Eq '^GOPROXY=.+$' .env; then
-            printf 'GOPROXY=%s\n' "$SOURCE_BUILD_GOPROXY" >>.env
+            env_updates+=(GOPROXY "$SOURCE_BUILD_GOPROXY")
+        fi
+        if (( ${#env_updates[@]} > 0 )); then
+            set_env_values .env "${env_updates[@]}"
         fi
         local configured_http_port
         configured_http_port="$(sed -n 's/^CANVAS_HTTP_PORT=//p' .env | tail -n 1)"
@@ -225,6 +290,7 @@ print_result() {
 }
 
 main() {
+    reject_legacy_release_before_write
     require_root
     step "安装服务器基础工具"
     install_packages
