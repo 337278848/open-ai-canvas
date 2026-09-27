@@ -152,10 +152,10 @@ sudo docker compose --env-file .env \
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/main/scripts/install-server-image.sh \
-  | sudo env CANVAS_IMAGE_TAG=v1.5.7.1 bash
+  | sudo env CANVAS_IMAGE_TAG=v1.5.7.1 CANVAS_SKIP_HOST_UPDATER=1 bash
 ```
 
-脚本会先按指定 Release 拉取镜像，再解析并写入 `CANVAS_BACKEND_IMAGE`、`CANVAS_WEB_IMAGE` 的 GHCR digest；生产 Compose 不接受缺失 digest 的默认镜像或 `latest`。更新流程、数据库迁移、备份和回退说明见[系统更新文档](docs/content/docs/backend/system-update.mdx)。
+历史 `v1.2.9`、`v1.5.7`、`v1.5.7.1` 的 Host Updater 仍是 tag-based 格式，必须显式设置 `CANVAS_SKIP_HOST_UPDATER=1`；脚本会在写入部署文件前拒绝隐式安装旧更新器。脚本会先按指定 Release 拉取镜像，再解析并写入 `CANVAS_BACKEND_IMAGE`、`CANVAS_WEB_IMAGE` 的 GHCR digest；生产 Compose 不接受缺失 digest 的默认镜像或 `latest`。更新流程、数据库迁移、备份和回退说明见[系统更新文档](docs/content/docs/backend/system-update.mdx)。
 
 ## 安全边界
 

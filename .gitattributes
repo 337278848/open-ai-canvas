@@ -1,1 +1,5 @@
 plugin-packages/*.sh text eol=lf
+scripts/install-server.sh text eol=lf
+scripts/install-server-image.sh text eol=lf
+scripts/install-host-updater.sh text eol=lf
+scripts/test-deploy-contract.sh text eol=lf

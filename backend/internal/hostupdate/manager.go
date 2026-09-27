@@ -22,19 +22,20 @@ import (
 const maxReleaseResponseBytes = 4 << 20
 
 type Config struct {
-	Repository   string
-	InstallDir   string
-	ComposeFile  string
-	EnvFile      string
-	StateDir     string
-	BackupDir    string
-	HealthURL    string
-	GitHubToken  string
-	StableWindow time.Duration
-	StepTimeout  time.Duration
-	BinaryPath   string
-	ServiceName  string
-	SelfUpdate   bool
+	Repository      string
+	ImageRepository string
+	InstallDir      string
+	ComposeFile     string
+	EnvFile         string
+	StateDir        string
+	BackupDir       string
+	HealthURL       string
+	GitHubToken     string
+	StableWindow    time.Duration
+	StepTimeout     time.Duration
+	BinaryPath      string
+	ServiceName     string
+	SelfUpdate      bool
 }
 
 type commandRunner interface {
@@ -71,6 +72,9 @@ func NewManager(config Config) (*Manager, error) {
 	config.Repository = strings.TrimSpace(config.Repository)
 	if config.Repository == "" {
 		config.Repository = "ddcat-ai/open-ai-canvas"
+	}
+	if strings.TrimSpace(config.ImageRepository) == "" {
+		config.ImageRepository = strings.TrimSpace(os.Getenv("CANVAS_UPDATER_IMAGE_REPOSITORY"))
 	}
 	if config.InstallDir == "" {
 		config.InstallDir = "/opt/open-ai-canvas"
@@ -179,6 +183,9 @@ func (m *Manager) StartUpdate(targetVersion string) (Status, error) {
 	if m.state.LatestRelease == nil || m.state.LatestRelease.Version != targetVersion {
 		return m.snapshotLocked(), errors.New("目标版本与最近一次检查结果不一致，请重新检查更新")
 	}
+	if isLegacyReleaseVersion(targetVersion) {
+		return m.snapshotLocked(), errors.New("目标 Release 使用 tag-based legacy Compose/Host Updater，已拒绝静默更新；请先部署带 digest contract 的版本")
+	}
 	current, err := m.currentVersion()
 	if err != nil {
 		return m.snapshotLocked(), err
@@ -248,10 +255,28 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 	if updaterBinary != "" {
 		defer os.Remove(updaterBinary)
 	}
+	imageRepository, err := m.imageRepository()
+	if err != nil {
+		m.failWithoutRollback(PhaseFailed, err)
+		return
+	}
+	normalizedCurrent, currentImages, err := m.currentDeploymentContract(fromVersion, imageRepository)
+	if err != nil {
+		m.failWithoutRollback(PhaseFailed, err)
+		return
+	}
+	restoreCurrent, err := m.stageCurrentDeploymentContract(normalizedCurrent, fromVersion, currentImages)
+	if err != nil {
+		m.failWithoutRollback(PhaseFailed, err)
+		return
+	}
 
 	m.setPhase(PhaseBackingUp, "创建 PostgreSQL 与数据目录 ZIP 备份")
 	backup, err := m.createBackup(fromVersion)
 	if err != nil {
+		if restoreErr := restoreCurrent(); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("恢复预检阶段部署文件：%w", restoreErr))
+		}
 		m.failWithoutRollback(PhaseFailed, err)
 		return
 	}
@@ -261,16 +286,23 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 	_ = m.saveStateLocked()
 	m.mu.Unlock()
 	if err := replaceFile(m.composePath(), m.previousComposePath(), 0o600); err != nil {
+		_ = restoreCurrent()
 		m.failWithoutRollback(PhaseFailed, fmt.Errorf("保存旧 Compose 配置：%w", err))
 		return
 	}
 	if err := replaceFile(m.envPath(), m.previousEnvPath(), 0o600); err != nil {
+		_ = restoreCurrent()
 		m.failWithoutRollback(PhaseFailed, fmt.Errorf("保存旧部署环境：%w", err))
 		return
 	}
+	restoreCurrent = nil
 
 	m.setPhase(PhasePulling, "拉取目标版本镜像")
-	targetImages := immutableImageRefs(m.config.Repository, targetVersion)
+	targetImages, err := m.immutableImageRefs(targetVersion)
+	if err != nil {
+		m.failWithoutRollback(PhaseFailed, err)
+		return
+	}
 	if err := m.composeWithImages(nextCompose, targetVersion, targetImages, m.config.StepTimeout, nil, "pull", "backend", "web"); err != nil {
 		m.failWithoutRollback(PhaseFailed, err)
 		return

@@ -30,6 +30,17 @@ type githubRelease struct {
 	Prerelease  bool      `json:"prerelease"`
 }
 
+const defaultDeploymentImageRepository = "ghcr.io/ddcat-ai/open-ai-canvas"
+
+func isLegacyReleaseVersion(version string) bool {
+	switch strings.TrimPrefix(strings.TrimSpace(version), "v") {
+	case "1.2.9", "1.5.7", "1.5.7.1":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *Manager) latestRelease(ctx context.Context) (*Release, error) {
 	url := "https://api.github.com/repos/" + m.config.Repository + "/releases?per_page=30"
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -108,7 +119,12 @@ func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("目标 Compose 文件为空")
 	}
-	if err := validateComposeImageContract(data); err != nil {
+	imageRepository, err := m.imageRepository()
+	if err != nil {
+		return "", err
+	}
+	data, err = normalizeComposeImageContractForRepository(data, imageRepository)
+	if err != nil {
 		return "", fmt.Errorf("目标 Compose 不兼容：%w", err)
 	}
 	path := filepath.Join(m.config.StateDir, "compose-"+strings.TrimPrefix(targetVersion, "v")+".next.yml")
@@ -125,10 +141,18 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	if _, err := os.Stat(m.envPath()); err != nil {
 		return fmt.Errorf("读取部署环境：%w", err)
 	}
-	if err := validateComposeImageFile(m.composePath(), "当前"); err != nil {
+	imageRepository, err := m.imageRepository()
+	if err != nil {
 		return err
 	}
-	if err := validateComposeImageFile(composePath, "目标"); err != nil {
+	if err := normalizeComposeImageFile(composePath, "目标", imageRepository); err != nil {
+		return err
+	}
+	current, err := m.currentVersion()
+	if err != nil {
+		return err
+	}
+	if _, _, err := m.currentDeploymentContract(current, imageRepository); err != nil {
 		return err
 	}
 	if m.config.SelfUpdate {
@@ -142,12 +166,12 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	if err := checkBackupDiskSpace(m.config.BackupDir); err != nil {
 		return err
 	}
-	if err := m.composeWithImages(composePath, targetVersion, immutableImageRefs(m.config.Repository, targetVersion), 2*time.Minute, nil, "config", "--quiet"); err != nil {
-		return fmt.Errorf("目标 Compose 校验失败：%w", err)
-	}
-	current, err := m.currentVersion()
+	targetImages, err := m.immutableImageRefs(targetVersion)
 	if err != nil {
 		return err
+	}
+	if err := m.composeWithImages(composePath, targetVersion, targetImages, 2*time.Minute, nil, "config", "--quiet"); err != nil {
+		return fmt.Errorf("目标 Compose 校验失败：%w", err)
 	}
 	if err := m.checkHealthOnce(m.healthURL(), current); err != nil {
 		return fmt.Errorf("当前运行版本与部署配置不一致或服务未就绪：%w", err)
@@ -156,22 +180,52 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 }
 
 func validateComposeImageContract(data []byte) error {
+	return validateComposeImageContractForRepository(data, defaultDeploymentImageRepository)
+}
+
+func validateComposeImageContractForRepository(data []byte, imageRepository string) error {
+	_, err := processComposeImageContract(data, imageRepository, false)
+	return err
+}
+
+func normalizeComposeImageContract(data []byte) ([]byte, error) {
+	return normalizeComposeImageContractForRepository(data, defaultDeploymentImageRepository)
+}
+
+func normalizeComposeImageContractForRepository(data []byte, imageRepository string) ([]byte, error) {
+	normalized, err := processComposeImageContract(data, imageRepository, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateComposeImageContractForRepository(normalized, imageRepository); err != nil {
+		return nil, err
+	}
+	return normalized, nil
+}
+
+func processComposeImageContract(data []byte, imageRepository string, convertLegacy bool) ([]byte, error) {
 	required := map[string]string{
 		"backend": "CANVAS_BACKEND_IMAGE",
 		"migrate": "CANVAS_BACKEND_IMAGE",
 		"web":     "CANVAS_WEB_IMAGE",
 	}
+	components := map[string]string{
+		"backend": "backend",
+		"migrate": "backend",
+		"web":     "web",
+	}
 	found := make(map[string]bool, len(required))
 	servicesIndent := -1
 	currentService := ""
 	currentServiceIndent := -1
-	for _, rawLine := range strings.Split(string(data), "\n") {
-		rawLine = strings.TrimSuffix(rawLine, "\r")
-		trimmed := strings.TrimSpace(rawLine)
+	lines := strings.Split(string(data), "\n")
+	for index, rawLine := range lines {
+		line := strings.TrimSuffix(rawLine, "\r")
+		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		indent := len(rawLine) - len(strings.TrimLeft(rawLine, " \t"))
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
 		if servicesIndent < 0 {
 			if trimmed == "services:" {
 				servicesIndent = indent
@@ -187,8 +241,12 @@ func validateComposeImageContract(data []byte) error {
 			currentService = ""
 			currentServiceIndent = -1
 		}
-		if currentService == "" && indent == servicesIndent+2 && strings.HasSuffix(trimmed, ":") {
-			currentService = strings.TrimSuffix(trimmed, ":")
+		if currentService == "" && indent == servicesIndent+2 {
+			serviceName, ok := composeServiceName(trimmed)
+			if !ok {
+				continue
+			}
+			currentService = serviceName
 			currentServiceIndent = indent
 			continue
 		}
@@ -199,19 +257,33 @@ func validateComposeImageContract(data []byte) error {
 		if !ok {
 			continue
 		}
-		value := strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(trimmed, "image:")), "\"'")
-		prefix := "${" + variable
-		if strings.HasPrefix(value, prefix) && len(value) > len(prefix) &&
-			strings.ContainsRune("}:?-+", rune(value[len(prefix)])) {
+		value, ok := composeImageScalar(strings.TrimSpace(strings.TrimPrefix(trimmed, "image:")))
+		if !ok {
+			return nil, fmt.Errorf("services.%s 的 image 字段不是支持的标量", currentService)
+		}
+		if usesComposeImageVariable(value, variable) {
 			found[currentService] = true
+			continue
 		}
+		if convertLegacy && isLegacyComposeImage(value, imageRepository, components[currentService]) {
+			indentPrefix := rawLine[:len(rawLine)-len(strings.TrimLeft(rawLine, " \t"))]
+			lineEnding := ""
+			if strings.HasSuffix(rawLine, "\r") {
+				lineEnding = "\r"
+			}
+			lines[index] = indentPrefix + "image: ${" + variable + ":?请先配置 " + variable + "}" + lineEnding
+			found[currentService] = true
+			continue
+		}
+		return nil, fmt.Errorf("services.%s 的 image 字段必须使用 ${%s} 镜像变量", currentService, variable)
 	}
-	for service, variable := range required {
+	for _, service := range []string{"backend", "migrate", "web"} {
+		variable := required[service]
 		if !found[service] {
-			return fmt.Errorf("services.%s 的 image 字段必须使用 ${%s} 镜像变量", service, variable)
+			return nil, fmt.Errorf("services.%s 的 image 字段必须使用 ${%s} 镜像变量", service, variable)
 		}
 	}
-	return nil
+	return []byte(strings.Join(lines, "\n")), nil
 }
 
 func validateComposeImageFile(path, label string) error {
@@ -223,6 +295,324 @@ func validateComposeImageFile(path, label string) error {
 		return fmt.Errorf("%s Compose 不兼容：%w", label, err)
 	}
 	return nil
+}
+
+func normalizeComposeImageFile(path, label, imageRepository string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取%s Compose：%w", label, err)
+	}
+	normalized, err := normalizeComposeImageContractForRepository(data, imageRepository)
+	if err != nil {
+		return fmt.Errorf("%s Compose 不兼容：%w", label, err)
+	}
+	if bytes.Equal(data, normalized) {
+		return nil
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("读取%s Compose 属性：%w", label, err)
+	}
+	if err := writeAtomicFile(path, normalized, stat.Mode().Perm()); err != nil {
+		return fmt.Errorf("写入兼容的%s Compose：%w", label, err)
+	}
+	return nil
+}
+
+func (m *Manager) currentDeploymentContract(version, imageRepository string) ([]byte, deploymentImages, error) {
+	data, err := os.ReadFile(m.composePath())
+	if err != nil {
+		return nil, deploymentImages{}, fmt.Errorf("读取当前 Compose：%w", err)
+	}
+	normalized, err := normalizeComposeImageContractForRepository(data, imageRepository)
+	if err != nil {
+		return nil, deploymentImages{}, fmt.Errorf("当前 Compose 不兼容：%w", err)
+	}
+	values, err := readEnvFile(m.envPath())
+	if err != nil {
+		return nil, deploymentImages{}, err
+	}
+	images := deploymentImages{
+		backend: values["CANVAS_BACKEND_IMAGE"],
+		web:     values["CANVAS_WEB_IMAGE"],
+	}
+	if err := validateDeploymentImageRefs(images, imageRepository); err != nil {
+		targetImages, resolveErr := m.immutableImageRefs(version)
+		if resolveErr != nil {
+			return nil, deploymentImages{}, resolveErr
+		}
+		images, err = m.resolveImageDigests(targetImages)
+		if err != nil {
+			return nil, deploymentImages{}, fmt.Errorf("当前部署镜像未固定为 digest，且无法从本地镜像安全解析：%w", err)
+		}
+	}
+	if err := validateDeploymentImageRefs(images, imageRepository); err != nil {
+		return nil, deploymentImages{}, err
+	}
+	return normalized, images, nil
+}
+
+func (m *Manager) stageCurrentDeploymentContract(normalized []byte, version string, images deploymentImages) (func() error, error) {
+	composePath := m.composePath()
+	envPath := m.envPath()
+	originalCompose, err := os.ReadFile(composePath)
+	if err != nil {
+		return nil, err
+	}
+	originalEnv, err := os.ReadFile(envPath)
+	if err != nil {
+		return nil, err
+	}
+	composeStat, err := os.Stat(composePath)
+	if err != nil {
+		return nil, err
+	}
+	envStat, err := os.Stat(envPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := setDeploymentImages(envPath, version, images); err != nil {
+		return nil, fmt.Errorf("固定当前部署镜像 digest：%w", err)
+	}
+	if err := writeAtomicFile(composePath, normalized, composeStat.Mode().Perm()); err != nil {
+		_ = writeAtomicFile(envPath, originalEnv, envStat.Mode().Perm())
+		return nil, fmt.Errorf("写入兼容的当前 Compose：%w", err)
+	}
+	restore := func() error {
+		if err := writeAtomicFile(envPath, originalEnv, envStat.Mode().Perm()); err != nil {
+			return err
+		}
+		return writeAtomicFile(composePath, originalCompose, composeStat.Mode().Perm())
+	}
+	return restore, nil
+}
+
+func composeServiceName(trimmed string) (string, bool) {
+	key, rest, ok := strings.Cut(trimmed, ":")
+	if !ok || strings.ContainsAny(key, " \t") {
+		return "", false
+	}
+	rest = strings.TrimSpace(rest)
+	if rest != "" && !strings.HasPrefix(rest, "#") {
+		return "", false
+	}
+	return key, true
+}
+
+func composeImageScalar(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	if raw[0] == '"' || raw[0] == '\'' {
+		quote := raw[0]
+		end := strings.IndexByte(raw[1:], quote)
+		if end < 0 {
+			return "", false
+		}
+		value := raw[1 : end+1]
+		remainder := strings.TrimSpace(raw[end+2:])
+		if remainder != "" && !strings.HasPrefix(remainder, "#") {
+			return "", false
+		}
+		return value, true
+	}
+	if comment := strings.Index(raw, " #"); comment >= 0 {
+		raw = raw[:comment]
+	}
+	raw = strings.TrimSpace(raw)
+	return raw, raw != ""
+}
+
+func usesComposeImageVariable(value, variable string) bool {
+	if value == "${"+variable+"}" {
+		return true
+	}
+	prefix := "${" + variable + ":?"
+	return strings.HasPrefix(value, prefix) && strings.HasSuffix(value, "}") && len(value) > len(prefix)+1
+}
+
+func isLegacyComposeImage(value, imageRepository, component string) bool {
+	prefix := imageRepository + "-" + component + ":"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	switch strings.TrimPrefix(value, prefix) {
+	case "${CANVAS_IMAGE_TAG}", "${CANVAS_IMAGE_TAG:-latest}":
+		return true
+	default:
+		return false
+	}
+}
+
+func deploymentImageRepository(repository string) (string, error) {
+	value := strings.TrimSpace(repository)
+	parts := strings.Split(value, "/")
+	if len(parts) != 2 || !validRepositoryPart(parts[0]) || !validRepositoryPart(parts[1]) {
+		return "", fmt.Errorf("不支持的部署仓库 %q，必须是安全的 owner/repository", repository)
+	}
+	return "ghcr.io/" + value, nil
+}
+
+func validateImageRepositoryPath(repository string) (string, error) {
+	value := strings.TrimSpace(repository)
+	parts := strings.Split(value, "/")
+	if len(parts) < 2 {
+		return "", fmt.Errorf("不支持的镜像仓库 %q，必须包含 registry 与 repository", repository)
+	}
+	registry := parts[0]
+	if colon := strings.LastIndexByte(registry, ':'); colon >= 0 {
+		if strings.Count(registry, ":") != 1 || colon == 0 || colon == len(registry)-1 {
+			return "", fmt.Errorf("不支持的镜像仓库 %q", repository)
+		}
+		for _, char := range registry[colon+1:] {
+			if char < '0' || char > '9' {
+				return "", fmt.Errorf("不支持的镜像仓库 %q", repository)
+			}
+		}
+		registry = registry[:colon]
+	}
+	if !validRepositoryPart(registry) {
+		return "", fmt.Errorf("不支持的镜像仓库 %q", repository)
+	}
+	for _, part := range parts[1:] {
+		if !validRepositoryPart(part) {
+			return "", fmt.Errorf("不支持的镜像仓库 %q", repository)
+		}
+	}
+	return value, nil
+}
+
+func (m *Manager) imageRepository() (string, error) {
+	if strings.TrimSpace(m.config.ImageRepository) != "" {
+		return validateImageRepositoryPath(m.config.ImageRepository)
+	}
+	return deploymentImageRepository(m.config.Repository)
+}
+
+func validRepositoryPart(value string) bool {
+	if value == "" || value == "." || value == ".." || strings.Contains(value, "..") {
+		return false
+	}
+	for index, char := range value {
+		if index == 0 && ((char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9')) {
+			return false
+		}
+		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') &&
+			(char < '0' || char > '9') && char != '-' && char != '_' && char != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func validateDeploymentImageValues(values map[string]string, imageRepository string) error {
+	for _, component := range []string{"backend", "web"} {
+		key := "CANVAS_" + strings.ToUpper(component) + "_IMAGE"
+		if err := validateDeploymentImageReference(values[key], imageRepository, component); err != nil {
+			return fmt.Errorf("%s：%w", key, err)
+		}
+	}
+	return nil
+}
+
+func validateDeploymentImageReference(value, imageRepository, component string) error {
+	prefix := imageRepository + "-" + component + "@sha256:"
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, prefix) {
+		return fmt.Errorf("必须固定到 %s<64位十六进制摘要>", prefix)
+	}
+	digest := strings.TrimPrefix(value, prefix)
+	if len(digest) != sha256.Size*2 || !isLowerHex(digest) {
+		return fmt.Errorf("必须固定到 %s<64位十六进制摘要>", prefix)
+	}
+	return nil
+}
+
+func validateDeploymentImageRefs(images deploymentImages, imageRepository string) error {
+	if err := validateDeploymentImageReference(images.backend, imageRepository, "backend"); err != nil {
+		return err
+	}
+	return validateDeploymentImageReference(images.web, imageRepository, "web")
+}
+
+func validateTaggedImageRefs(images deploymentImages, imageRepository string) error {
+	for _, item := range []struct {
+		value     string
+		component string
+	}{
+		{images.backend, "backend"},
+		{images.web, "web"},
+	} {
+		prefix := imageRepository + "-" + item.component + ":"
+		tag := strings.TrimPrefix(item.value, prefix)
+		if !strings.HasPrefix(item.value, prefix) || !isValidImageTag(tag) {
+			return fmt.Errorf("目标 %s 镜像引用不是固定 Release tag", item.component)
+		}
+	}
+	return nil
+}
+
+func isValidImageTag(value string) bool {
+	if value == "" || value == "latest" || len(value) > 128 {
+		return false
+	}
+	for index, char := range value {
+		if index == 0 {
+			if !isImageTagStart(char) {
+				return false
+			}
+			continue
+		}
+		if !isImageTagChar(char) {
+			return false
+		}
+	}
+	return true
+}
+
+func isImageTagStart(char rune) bool {
+	return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+		(char >= '0' && char <= '9') || char == '_'
+}
+
+func isImageTagChar(char rune) bool {
+	return isImageTagStart(char) || char == '.' || char == '-'
+}
+
+func isLowerHex(value string) bool {
+	for _, char := range value {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func writeAtomicFile(path string, data []byte, mode os.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".deployment-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryName, path)
 }
 
 func checkWritableDirectory(directory string) error {
@@ -328,19 +718,70 @@ type deploymentImages struct {
 }
 
 func immutableImageRefs(repository, version string) deploymentImages {
-	owner := strings.SplitN(repository, "/", 2)[0]
+	imageRepository := "ghcr.io/" + strings.TrimSpace(repository)
+	if validated, err := deploymentImageRepository(repository); err == nil {
+		imageRepository = validated
+	}
 	tag := strings.TrimPrefix(version, "v")
 	return deploymentImages{
-		backend: "ghcr.io/" + owner + "/open-ai-canvas-backend:" + tag,
-		web:     "ghcr.io/" + owner + "/open-ai-canvas-web:" + tag,
+		backend: imageRepository + "-backend:" + tag,
+		web:     imageRepository + "-web:" + tag,
 	}
 }
 
+func (m *Manager) immutableImageRefs(version string) (deploymentImages, error) {
+	imageRepository, err := m.imageRepository()
+	if err != nil {
+		return deploymentImages{}, err
+	}
+	tag := strings.TrimPrefix(version, "v")
+	return deploymentImages{
+		backend: imageRepository + "-backend:" + tag,
+		web:     imageRepository + "-web:" + tag,
+	}, nil
+}
+
 func (m *Manager) compose(composePath, imageTag string, timeout time.Duration, stdout io.Writer, arguments ...string) error {
-	return m.composeWithImages(composePath, imageTag, deploymentImages{}, timeout, stdout, arguments...)
+	values, err := readEnvFile(m.envPath())
+	if err != nil {
+		return fmt.Errorf("读取部署镜像：%w", err)
+	}
+	imageRepository, err := m.imageRepository()
+	if err != nil {
+		return err
+	}
+	if err := validateDeploymentImageValues(values, imageRepository); err != nil {
+		return fmt.Errorf("当前部署镜像未通过 digest 预检：%w", err)
+	}
+	return m.composeWithImages(composePath, imageTag, deploymentImages{
+		backend: values["CANVAS_BACKEND_IMAGE"],
+		web:     values["CANVAS_WEB_IMAGE"],
+	}, timeout, stdout, arguments...)
 }
 
 func (m *Manager) composeWithImages(composePath, imageTag string, images deploymentImages, timeout time.Duration, stdout io.Writer, arguments ...string) error {
+	if images.backend == "" || images.web == "" {
+		return errors.New("Compose 执行缺少 backend/web 镜像引用")
+	}
+	imageRepository, err := m.imageRepository()
+	if err != nil {
+		return err
+	}
+	if len(arguments) == 0 {
+		return errors.New("Compose 执行缺少操作")
+	}
+	switch arguments[0] {
+	case "config", "pull":
+		if err := validateTaggedImageRefs(images, imageRepository); err != nil {
+			if err := validateDeploymentImageRefs(images, imageRepository); err != nil {
+				return fmt.Errorf("目标镜像引用不安全：%w", err)
+			}
+		}
+	default:
+		if err := validateDeploymentImageRefs(images, imageRepository); err != nil {
+			return fmt.Errorf("运行镜像引用不安全：%w", err)
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	args := []string{"compose", "--env-file", m.envPath(), "-f", composePath}
@@ -353,7 +794,7 @@ func (m *Manager) composeWithImages(composePath, imageTag string, images deploym
 	if images.backend != "" {
 		environment = append(environment, "CANVAS_BACKEND_IMAGE="+images.backend, "CANVAS_WEB_IMAGE="+images.web)
 	}
-	err := m.runner.Run(ctx, "docker", args, environment, stdout, &stderr)
+	err = m.runner.Run(ctx, "docker", args, environment, stdout, &stderr)
 	if err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if len(message) > 1000 {
@@ -368,7 +809,18 @@ func (m *Manager) composeWithImages(composePath, imageTag string, images deploym
 }
 
 func (m *Manager) verifyImages(targetVersion string) (deploymentImages, error) {
-	images := immutableImageRefs(m.config.Repository, targetVersion)
+	images, err := m.immutableImageRefs(targetVersion)
+	if err != nil {
+		return deploymentImages{}, err
+	}
+	return m.resolveImageDigests(images)
+}
+
+func (m *Manager) resolveImageDigests(images deploymentImages) (deploymentImages, error) {
+	imageRepository, err := m.imageRepository()
+	if err != nil {
+		return deploymentImages{}, err
+	}
 	refs := []string{images.backend, images.web}
 	digests := make([]string, 0, len(refs))
 	for _, image := range refs {
@@ -395,19 +847,24 @@ func (m *Manager) verifyImages(targetVersion string) (deploymentImages, error) {
 		if digest == "" {
 			return deploymentImages{}, fmt.Errorf("目标镜像 %s 未包含仓库摘要", image)
 		}
+		component := "backend"
+		if strings.HasSuffix(strings.SplitN(image, ":", 2)[0], "-web") {
+			component = "web"
+		}
+		if err := validateDeploymentImageReference(digest, imageRepository, component); err != nil {
+			return deploymentImages{}, err
+		}
 		digests = append(digests, digest)
 	}
 	return deploymentImages{backend: digests[0], web: digests[1]}, nil
 }
 
 func setDeploymentImages(path, version string, images deploymentImages) error {
-	if err := setEnvValue(path, "CANVAS_IMAGE_TAG", strings.TrimPrefix(version, "v")); err != nil {
-		return err
-	}
-	if err := setEnvValue(path, "CANVAS_BACKEND_IMAGE", images.backend); err != nil {
-		return err
-	}
-	return setEnvValue(path, "CANVAS_WEB_IMAGE", images.web)
+	return setEnvValues(path,
+		envUpdate{key: "CANVAS_IMAGE_TAG", value: strings.TrimPrefix(version, "v")},
+		envUpdate{key: "CANVAS_BACKEND_IMAGE", value: images.backend},
+		envUpdate{key: "CANVAS_WEB_IMAGE", value: images.web},
+	)
 }
 
 func (m *Manager) createBackup(version string) (Backup, error) {
@@ -669,49 +1126,60 @@ func readEnvFile(path string) (map[string]string, error) {
 	return values, nil
 }
 
+type envUpdate struct {
+	key   string
+	value string
+}
+
 func setEnvValue(path, key, value string) error {
+	return setEnvValues(path, envUpdate{key: key, value: value})
+}
+
+func setEnvValues(path string, updates ...envUpdate) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-	found := false
-	for index, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, key+"=") {
-			lines[index] = key + "=" + value
-			found = true
-		}
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	text = strings.TrimSuffix(text, "\n")
+	lines := []string{}
+	if text != "" {
+		lines = strings.Split(text, "\n")
 	}
-	if !found {
-		lines = append(lines, key+"="+value)
+	values := make(map[string]string, len(updates))
+	for _, update := range updates {
+		if strings.TrimSpace(update.key) == "" {
+			return errors.New("环境变量名不能为空")
+		}
+		values[update.key] = update.value
+	}
+	found := make(map[string]bool, len(values))
+	output := make([]string, 0, len(lines)+len(values))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		key, _, ok := strings.Cut(trimmed, "=")
+		if ok {
+			if value, changed := values[key]; changed {
+				if !found[key] {
+					output = append(output, key+"="+value)
+					found[key] = true
+				}
+				continue
+			}
+		}
+		output = append(output, line)
+	}
+	for _, update := range updates {
+		if !found[update.key] {
+			output = append(output, update.key+"="+update.value)
+			found[update.key] = true
+		}
 	}
 	stat, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".env-*.tmp")
-	if err != nil {
-		return err
-	}
-	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
-	if err := temporary.Chmod(stat.Mode().Perm()); err != nil {
-		temporary.Close()
-		return err
-	}
-	if _, err := temporary.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryName, path)
+	return writeAtomicFile(path, []byte(strings.Join(output, "\n")+"\n"), stat.Mode().Perm())
 }
 
 func replaceFile(source, target string, mode os.FileMode) error {
