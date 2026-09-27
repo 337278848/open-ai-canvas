@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 44
+const CurrentSchemaVersion int64 = 45
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -52,6 +52,12 @@ const skillLibraryCategoriesChecksum = "sha256:skill-library-categories-v43-2026
 const builtinSkillTombstonesChecksum = "sha256:builtin-skill-tombstones-v44-20260927-local-lineage"
 const legacySkillLibraryCategoriesChecksum = "sha256:skill-library-categories-v39-20260926"
 const legacyBuiltinSkillTombstonesChecksum = "sha256:builtin-skill-tombstones-v40-20260927"
+
+// Upstream's resource thumbnail feature originally used version 41 in the
+// other lineage. Keep that checksum for recognition, but append the feature
+// as local version 45 after the already-published 37-44 lineage.
+const resourceThumbnailChecksum = "sha256:resource-thumbnail-v45-20260927-local-lineage"
+const legacyResourceThumbnailChecksum = "sha256:resource-thumbnail-v41-20260927"
 
 // The other lineage consumed versions 32-40 for a different suffix. These
 // historical checksums are accepted only when that lineage is detected; the
@@ -151,6 +157,7 @@ var schemaMigrations = []migration{
 	{version: 42, name: "prefixed_id_sequence_reconcile", checksum: prefixedIDSequenceReconcileChecksum, apply: migratePrefixedIDSequenceReconcile},
 	{version: 43, name: "skill_library_categories", checksum: skillLibraryCategoriesChecksum, apply: migrateSkillLibraryCategories},
 	{version: 44, name: "builtin_skill_tombstones", checksum: builtinSkillTombstonesChecksum, apply: migrateBuiltinSkillTombstones},
+	{version: 45, name: "resource_thumbnail", checksum: resourceThumbnailChecksum, apply: migrateResourceThumbnail},
 }
 
 func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {
@@ -185,6 +192,10 @@ func migrateSkillLibraryCategories(tx *gorm.DB) error {
 
 func migrateBuiltinSkillTombstones(tx *gorm.DB) error {
 	return tx.AutoMigrate(&model.BuiltinSkillTombstone{})
+}
+
+func migrateResourceThumbnail(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.Resource{})
 }
 
 func migratePrefixedIDSequenceReconcile(tx *gorm.DB) error {
@@ -948,6 +959,12 @@ func applyUpstreamLineageCompatibility(db *gorm.DB, plan []migration, allowConve
 	aliases = append(aliases,
 		upstreamMigrationAlias{version: 39, name: "skill_library_categories", checksum: legacySkillLibraryCategoriesChecksum, apply: migrateSkillLibraryCategories},
 		upstreamMigrationAlias{version: 40, name: "builtin_skill_tombstones", checksum: legacyBuiltinSkillTombstonesChecksum, apply: migrateBuiltinSkillTombstones},
+	)
+	// The newest upstream lineage added resource thumbnails as v41. That slot is
+	// already the local Gemini cache identity migration, so recognize a valid
+	// historical v41 thumbnail row and install the physical columns again at v45.
+	aliases = append(aliases,
+		upstreamMigrationAlias{version: 41, name: "resource_thumbnail", checksum: legacyResourceThumbnailChecksum, apply: migrateResourceThumbnail},
 	)
 	for _, alias := range aliases {
 		legacy := migration{
