@@ -1,4 +1,3 @@
-import { getResourceInputURL } from "@/services/api/resources";
 import { buildApiUrl, isSystemProxyBaseUrl, modelOptionName } from "@/stores/use-config-store";
 import type { ReferenceImage } from "@/types/image";
 import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
@@ -184,11 +183,13 @@ function agnesAspectRatio(value: string) {
 }
 
 async function resolveAgnesMediaUrl(value: string | undefined, storageKey?: string) {
-    if (storageKey?.startsWith("resource:")) return getResourceInputURL(storageKey);
     if (/^https?:\/\//i.test(value || "")) return String(value);
+    if (storageKey?.startsWith("resource:")) {
+        throw new Error("Agnes 浏览器 Provider 不能直接使用后端资源作为参考素材；请提供公网 URL，或切换到服务端生成渠道");
+    }
     // 已保存到服务器的素材由后端统一切换公网地址（对象存储或上游素材中转），
-    // 这里失败说明素材还没进入服务器资源库。
-    throw new Error("Agnes 参考素材必须先上传到服务器资源库；上传后由服务端生成可供上游读取的地址");
+    // 浏览器侧不能替服务端签发 provider-input 凭据。
+    throw new Error("Agnes 参考素材必须先上传到服务器资源库或提供公网 URL；浏览器 Provider 不支持直接读取后端资源");
 }
 
 function agnesFailureMessage(state: AgnesTaskResponse) {

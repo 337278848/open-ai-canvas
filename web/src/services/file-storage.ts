@@ -29,7 +29,8 @@ export type UploadedFile = {
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "media_files" });
 const objectUrls = new Map<string, string>();
 
-export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<UploadedFile> {
+export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?: (uploadedBytes: number, totalBytes: number) => void, signal?: AbortSignal): Promise<UploadedFile> {
+    throwIfUploadAborted(signal);
     // 直传和失败后的本地同步必须复用同一上传身份，避免响应丢失后创建第二个对象。
     const storageKey = `${prefix}:${getActiveUserScope()}:${nanoid()}`;
     const blob = input;
@@ -40,8 +41,9 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
         let captured: Awaited<ReturnType<typeof captureVideoPoster>> | undefined;
         if (blob.type.startsWith("video/")) {
             try {
-                captured = await captureVideoPoster(previewUrl);
+                captured = await captureVideoPoster(previewUrl, { signal });
             } catch (error) {
+                if (isUploadCancellation(error, signal)) throw toUploadAbortError(error, signal);
                 // 封面和轨道信息属于展示增强：失败不阻断原文件上传，但必须留下可诊断信号。
                 console.warn("读取视频封面与媒体信息失败，继续上传原文件", { mimeType: blob.type, bytes: blob.size, error });
             }
@@ -52,8 +54,9 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
         let parsedHasAudio: boolean | undefined;
         if (blob.type.startsWith("video/") && captured?.hasAudio !== true) {
             try {
-                parsedHasAudio = await detectVideoAudioTrackFromBlob(blob);
+                parsedHasAudio = await abortable(detectVideoAudioTrackFromBlob(blob), signal);
             } catch (error) {
+                if (isUploadCancellation(error, signal)) throw toUploadAbortError(error, signal);
                 console.warn("解析视频音轨失败，继续上传但不写入音轨结论", { mimeType: blob.type, bytes: blob.size, error });
             }
         }
@@ -64,8 +67,9 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
             meta = { width: captured.width, height: captured.height, durationMs: captured.durationMs, hasAudio: resolvedHasAudio };
         } else if (blob.type.startsWith("audio/")) {
             try {
-                meta = await readAudioMeta(previewUrl);
+                meta = await readAudioMeta(previewUrl, signal);
             } catch (error) {
+                if (isUploadCancellation(error, signal)) throw toUploadAbortError(error, signal);
                 console.warn("读取音频时长失败，继续上传原文件", { mimeType: blob.type, bytes: blob.size, error });
                 meta = {};
             }
@@ -76,8 +80,9 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
         let poster: UploadedImage | undefined;
         if (captured?.poster) {
             try {
-                poster = await uploadImage(captured.poster);
+                poster = await uploadImage(captured.poster, undefined, signal);
             } catch (error) {
+                if (isUploadCancellation(error, signal)) throw toUploadAbortError(error, signal);
                 // 预览图失败不应把已经可用的视频降级成本地文件；视频本体仍按强校验上传。
                 console.warn("上传视频预览图失败，继续保存视频本体", { mimeType: blob.type, bytes: blob.size, error });
             }
@@ -86,22 +91,29 @@ export async function uploadMediaFile(input: Blob, prefix = "file", onProgress?:
         let remoteUploadError = "";
         try {
             const kind = blob.type.startsWith("video/") ? "video" : blob.type.startsWith("audio/") ? "audio" : "file";
-            const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey }, onProgress);
+            const resource = await uploadResourceFile(blob, kind, { ...meta, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey }, onProgress, signal);
             try {
                 await primeResourceBlobCache(resourceStorageKey(resource.id), blob);
             } catch (error) {
                 // 缓存只影响后续读取性能，服务端资源已经成功落盘，不得把缓存失败误报为上传失败。
                 console.warn("预热媒体缓存失败，服务端资源已保存", { resourceId: resource.id, error });
             }
+            throwIfUploadAborted(signal);
             return { url: resource.publicUrl || resourceFileUrl(resource.id), storageKey: resourceStorageKey(resource.id), bytes: resource.size || blob.size, mimeType: resource.mimeType || blob.type || "application/octet-stream", width: resource.width || meta.width, height: resource.height || meta.height, durationMs: resource.durationMs || meta.durationMs, hasAudio: meta.hasAudio, preview: poster };
         } catch (error) {
+            if (isUploadCancellation(error, signal)) throw toUploadAbortError(error, signal);
             // 与图片上传同一套判定：永久性失败必须当场暴露，不能混进“稍后自动同步”。
             if (error instanceof ResourceUploadError && error.permanent) throw error;
             remoteUploadError = error instanceof Error ? error.message : "媒体直传失败";
         }
 
+        throwIfUploadAborted(signal);
         // 瞬时失败退回本机：文件仍可用，且云端数据同步会用同一幂等键重传。
         await store.setItem(storageKey, blob);
+        if (signal?.aborted) {
+            await store.removeItem(storageKey).catch((error) => console.warn("清理已取消的本地媒体暂存失败", { storageKey, error }));
+            throw toUploadAbortError(signal.reason, signal);
+        }
         retainPreviewUrl = true;
         objectUrls.set(storageKey, previewUrl);
         return { url: previewUrl, storageKey, bytes: blob.size, mimeType: blob.type || "application/octet-stream", ...meta, preview: poster, pendingRemoteUpload: true, remoteUploadError };
@@ -170,12 +182,74 @@ export function collectMediaStorageKeys(value: unknown, keys = new Set<string>()
     return keys;
 }
 
-function readAudioMeta(url: string) {
-    return new Promise<{ durationMs?: number }>((resolve) => {
+function readAudioMeta(url: string, signal?: AbortSignal) {
+    return new Promise<{ durationMs?: number }>((resolve, reject) => {
         const audio = document.createElement("audio");
-        const done = () => resolve({ durationMs: Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : undefined });
+        let settled = false;
+        const cleanup = () => {
+            signal?.removeEventListener("abort", onAbort);
+            audio.onloadedmetadata = null;
+            audio.onerror = null;
+            audio.removeAttribute?.("src");
+            audio.load?.();
+        };
+        const done = () => {
+            if (settled) return;
+            settled = true;
+            const durationMs = Number.isFinite(audio.duration) ? Math.round(audio.duration * 1000) : undefined;
+            cleanup();
+            resolve({ durationMs });
+        };
+        const onAbort = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(toUploadAbortError(signal?.reason, signal));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) {
+            onAbort();
+            return;
+        }
         audio.onloadedmetadata = done;
         audio.onerror = done;
         audio.src = url;
     });
+}
+
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return promise;
+    if (signal.aborted) return Promise.reject(toUploadAbortError(signal.reason, signal));
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(toUploadAbortError(signal.reason, signal));
+        signal.addEventListener("abort", onAbort, { once: true });
+        promise.then(
+            (value) => {
+                signal.removeEventListener("abort", onAbort);
+                resolve(value);
+            },
+            (error) => {
+                signal.removeEventListener("abort", onAbort);
+                reject(error);
+            },
+        );
+    });
+}
+
+function isUploadCancellation(error: unknown, signal?: AbortSignal) {
+    return signal?.aborted === true || isAbortError(error);
+}
+
+function isAbortError(error: unknown) {
+    return typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "AbortError";
+}
+
+function toUploadAbortError(error: unknown, signal?: AbortSignal) {
+    if (signal?.aborted && isAbortError(signal.reason)) return signal.reason;
+    if (isAbortError(error)) return error;
+    return new DOMException("媒体上传已取消", "AbortError");
+}
+
+function throwIfUploadAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) throw toUploadAbortError(signal.reason, signal);
 }

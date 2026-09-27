@@ -179,6 +179,23 @@ describe("Agnes Video 2.5 request contract", () => {
         await expect(createAgnesVideoTask(providerDeps(config).deps, config, "agnes::agnes-video-2.5", "test", [{ id: "image-1", name: "local.png", type: "image/png", dataUrl: "data:image/png;base64,AAAA" }], [], [])).rejects.toThrow("必须先上传到服务器资源库");
     });
 
+    test("does not request provider-input credentials for backend resources", async () => {
+        const config = resolveModelRequestConfig(configForAgnes(), "agnes::agnes-video-2.5");
+        const { calls, deps } = providerDeps(config);
+        await expect(
+            createAgnesVideoTask(
+                deps,
+                config,
+                "agnes::agnes-video-2.5",
+                "使用后端资源",
+                [{ id: "resource-image", name: "image.png", type: "image/png", url: "/api/resources/resource-image/file", storageKey: "resource:resource-image" }],
+                [],
+                [],
+            ),
+        ).rejects.toThrow("不能直接使用后端资源");
+        expect(calls).toEqual([]);
+    });
+
     test("publishes Agnes-specific capability limits", () => {
         expect(defaultModelCapabilityConfig("agnes-video", "agnes-video-2.5").video).toMatchObject({
             duration: { selection: "range", min: 4, max: 12, default: 5 },

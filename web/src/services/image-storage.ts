@@ -26,13 +26,15 @@ export type UploadedImage = {
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
 const objectUrls = new Map<string, string>();
 
-export async function uploadImage(input: string | Blob, onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<UploadedImage> {
+export async function uploadImage(input: string | Blob, onProgress?: (uploadedBytes: number, totalBytes: number) => void, signal?: AbortSignal): Promise<UploadedImage> {
+    throwIfAborted(signal);
     // 同一个逻辑上传在直传失败后会退回 IndexedDB，并由云端数据同步再次提交。
     // 提前生成本地 key，确保两条路径向后端发送相同的幂等标识。
     const storageKey = `image:${getActiveUserScope()}:${nanoid()}`;
     if (typeof input === "string" && shouldImportRemoteImage(input)) {
         try {
-            const resource = await importResourceFromUrl(input, "image", { idempotencyKey: storageKey });
+            const resource = await importResourceFromUrl(input, "image", { idempotencyKey: storageKey }, signal);
+            throwIfAborted(signal);
             return {
                 url: resource.publicUrl || resourceFileUrl(resource.id),
                 storageKey: resourceStorageKey(resource.id),
@@ -41,36 +43,59 @@ export async function uploadImage(input: string | Blob, onProgress?: (uploadedBy
                 bytes: resource.size || 0,
                 mimeType: resource.mimeType || "image/png",
             };
-        } catch {
+        } catch (error) {
+            if (signal?.aborted) throw toUploadAbortError(error, signal);
+            if (isAbortError(error)) throw error;
             // Keep the browser-side path as a fallback for CORS-enabled HTTPS images.
         }
     }
-    const blob = typeof input === "string" ? await (await fetch(input)).blob() : input;
+    const blob = typeof input === "string" ? await (await fetch(input, { signal })).blob() : input;
+    throwIfAborted(signal);
     const previewUrl = URL.createObjectURL(blob);
-    const meta = await readImageMeta(previewUrl);
-    let remoteUploadError = "";
+    let retainPreviewUrl = false;
     try {
-        const resource = await uploadResourceFile(blob, "image", { width: meta.width, height: meta.height, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey }, onProgress);
-        await primeResourceBlobCache(resourceStorageKey(resource.id), blob).catch(() => "");
-        URL.revokeObjectURL(previewUrl);
-        return {
-            url: resource.publicUrl || resourceFileUrl(resource.id),
-            storageKey: resourceStorageKey(resource.id),
-            width: resource.width || meta.width,
-            height: resource.height || meta.height,
-            bytes: resource.size || blob.size,
-            mimeType: resource.mimeType || blob.type || meta.mimeType,
-        };
-    } catch (error) {
-        // 鉴权失效、越权、体积超限这类失败重传也是同样结果，不能退化成"稍后自动同步"。
-        if (error instanceof ResourceUploadError && error.permanent) throw error;
-        remoteUploadError = error instanceof Error ? error.message : "图片直传失败";
+        const meta = await readImageMeta(previewUrl, signal);
+        throwIfAborted(signal);
+        let remoteUploadError = "";
+        try {
+            const resource = await uploadResourceFile(blob, "image", { width: meta.width, height: meta.height, fileName: input instanceof File ? input.name : undefined, idempotencyKey: storageKey }, onProgress, signal);
+            throwIfAborted(signal);
+            try {
+                await primeResourceBlobCache(resourceStorageKey(resource.id), blob);
+            } catch (error) {
+                if (signal?.aborted) throw toUploadAbortError(error, signal);
+                if (isAbortError(error)) throw error;
+            }
+            throwIfAborted(signal);
+            return {
+                url: resource.publicUrl || resourceFileUrl(resource.id),
+                storageKey: resourceStorageKey(resource.id),
+                width: resource.width || meta.width,
+                height: resource.height || meta.height,
+                bytes: resource.size || blob.size,
+                mimeType: resource.mimeType || blob.type || meta.mimeType,
+            };
+        } catch (error) {
+            if (signal?.aborted) throw toUploadAbortError(error, signal);
+            if (isAbortError(error)) throw error;
+            // 鉴权失效、越权、体积超限这类失败重传也是同样结果，不能退化成"稍后自动同步"。
+            if (error instanceof ResourceUploadError && error.permanent) throw error;
+            remoteUploadError = error instanceof Error ? error.message : "图片直传失败";
+        }
+        throwIfAborted(signal);
+        // 瞬时失败退回本机：文件仍可用，且云端数据同步会用同一幂等键重传。
+        await store.setItem(storageKey, blob);
+        if (signal?.aborted) {
+            await store.removeItem(storageKey).catch((error) => console.warn("清理已取消的本地图片暂存失败", { storageKey, error }));
+            throw toUploadAbortError(signal.reason, signal);
+        }
+        const url = previewUrl;
+        objectUrls.set(storageKey, url);
+        retainPreviewUrl = true;
+        return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType, pendingRemoteUpload: true, remoteUploadError };
+    } finally {
+        if (!retainPreviewUrl) URL.revokeObjectURL(previewUrl);
     }
-    // 瞬时失败退回本机：文件仍可用，且云端数据同步会用同一幂等键重传。
-    await store.setItem(storageKey, blob);
-    const url = previewUrl;
-    objectUrls.set(storageKey, url);
-    return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type || meta.mimeType, pendingRemoteUpload: true, remoteUploadError };
 }
 
 function shouldImportRemoteImage(input: string) {
@@ -182,4 +207,18 @@ function imageMimeTypeFromName(value: string) {
     if (path.endsWith(".gif")) return "image/gif";
     if (path.endsWith(".bmp")) return "image/bmp";
     return "";
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+    if (signal?.aborted) throw toUploadAbortError(signal.reason, signal);
+}
+
+function isAbortError(error: unknown) {
+    return typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "AbortError";
+}
+
+function toUploadAbortError(error: unknown, signal?: AbortSignal) {
+    if (signal?.aborted && isAbortError(signal.reason)) return signal.reason;
+    if (isAbortError(error)) return error;
+    return new DOMException("图片上传已取消", "AbortError");
 }

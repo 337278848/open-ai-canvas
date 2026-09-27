@@ -62,3 +62,35 @@ test("传输结束不吞掉服务端保存错误", async () => {
         apiClient.defaults.adapter = adapter;
     }
 });
+
+test("取消 multipart 上传时透传 AbortSignal 且不会退回为本地成功", async () => {
+    const adapter = apiClient.defaults.adapter;
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    try {
+        apiClient.defaults.adapter = async (config) => {
+            receivedSignal = config.signal;
+            controller.abort();
+            throw new DOMException("请求已取消", "AbortError");
+        };
+        await expect(uploadResourceFile(new Blob(["poster"]), "image", undefined, undefined, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+        expect(receivedSignal).toBe(controller.signal);
+    } finally {
+        apiClient.defaults.adapter = adapter;
+    }
+});
+
+test("取消原因保持原始 AbortError 身份，不被资源层重新包装", async () => {
+    const adapter = apiClient.defaults.adapter;
+    const controller = new AbortController();
+    const reason = new DOMException("用户停止上传", "AbortError");
+    try {
+        apiClient.defaults.adapter = async (config) => {
+            controller.abort(reason);
+            throw new Error("transport interrupted");
+        };
+        await expect(uploadResourceFile(new Blob(["poster"]), "image", undefined, undefined, controller.signal)).rejects.toBe(reason);
+    } finally {
+        apiClient.defaults.adapter = adapter;
+    }
+});

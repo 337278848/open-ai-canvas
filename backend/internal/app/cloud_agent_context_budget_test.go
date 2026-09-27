@@ -68,6 +68,36 @@ func TestCloudAgentContextBudgetUsesLogicalRouteSafeIntersection(t *testing.T) {
 	}
 }
 
+func TestCloudAgentContextBudgetKeepsRouteWindowAndOutputPaired(t *testing.T) {
+	capability := DefaultModelCapabilityConfigForModel(string(model.ChannelInterfaceChatCompletion), "text-test")
+	narrowWindow := *capability.Text
+	narrowWindow.ContextWindowTokens = 512_000
+	narrowWindow.MaxOutputTokens = 256_000
+	wideWindow := narrowWindow
+	wideWindow.ContextWindowTokens = 1_000_000
+	wideWindow.MaxOutputTokens = 32_000
+
+	s := &Service{
+		repo:            repository.New(nil),
+		routeCatalogTTL: time.Hour,
+		routeCatalog: &routeCatalogSnapshot{LoadedAt: time.Now(), Models: map[string]cachedLogicalModel{
+			"logical-text": {
+				Routes: []cachedLogicalRoute{
+					{CapabilitySpec: CapabilitySpec{Capability: "text"}, ChannelModel: model.ChannelModel{Capability: "text", CapabilityConfigJSON: mustEncodeModelCapabilityConfig(t, &ModelCapabilityConfig{Version: 1, Text: &narrowWindow})}},
+					{CapabilitySpec: CapabilitySpec{Capability: "text"}, ChannelModel: model.ChannelModel{Capability: "text", CapabilityConfigJSON: mustEncodeModelCapabilityConfig(t, &ModelCapabilityConfig{Version: 1, Text: &wideWindow})}},
+				},
+			},
+		}},
+	}
+
+	budget := s.cloudAgentContextBudgetForRequest(CloudAgentRequest{LogicalModelID: "logical-text"})
+	if budget.ContextWindowTokens != narrowWindow.ContextWindowTokens ||
+		budget.MaxOutputTokens != narrowWindow.MaxOutputTokens ||
+		budget.InputBudgetTokens != 235_520 {
+		t.Fatalf("logical route budget mixed capabilities: %#v", budget)
+	}
+}
+
 func TestCloudAgentEstimatedTokensIsConservativeForChinese(t *testing.T) {
 	english := cloudAgentEstimatedTokens([]byte(strings.Repeat("word ", 1000)))
 	chinese := cloudAgentEstimatedTokens([]byte(strings.Repeat("中文", 1000)))

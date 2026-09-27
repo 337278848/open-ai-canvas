@@ -5,7 +5,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
       args:
-        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
 
   backend:
     image: open-ai-canvas-backend:server
@@ -13,7 +13,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
       args:
-        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
 
   web:
     image: open-ai-canvas-web:server

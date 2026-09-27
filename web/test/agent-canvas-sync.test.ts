@@ -59,17 +59,21 @@ test("cleanup and other-canvas events cannot update the new canvas", async () =>
 
 
 test("fallback snapshots obey the configured minimum refresh interval", async () => {
+    const refreshIntervalMs = 100;
     const times: number[] = [];
-    const sync = createAgentCanvasSync({ canvasId: "canvas", applyPatches: async () => {}, refresh: async () => { times.push(Date.now()); }, onError: () => {}, batchMs: 0, refreshIntervalMs: 100 });
+    const sync = createAgentCanvasSync({ canvasId: "canvas", applyPatches: async () => {}, refresh: async () => { times.push(Date.now()); }, onError: () => {}, batchMs: 0, refreshIntervalMs });
     sync.reconcile();
     await sleep(15);
     for (let index = 0; index < 50; index++) sync.reconcile();
     await sleep(15);
     expect(times).toHaveLength(1);
-    await sleep(120);
+    await sleep(refreshIntervalMs + 20);
     sync.dispose();
     expect(times).toHaveLength(2);
-    expect(times[1] - times[0]).toBeGreaterThanOrEqual(100);
+    // The implementation records lastRefresh immediately before invoking refresh().
+    // A second Date.now() inside this callback can be one millisecond later than
+    // that boundary, so callback timestamps may observe 99ms for a valid 100ms wait.
+    expect(times[1] - times[0]).toBeGreaterThanOrEqual(refreshIntervalMs - 1);
 });
 
 test("a full invalidation and undo still refresh after delta support was detected", async () => {

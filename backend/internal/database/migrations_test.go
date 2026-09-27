@@ -2,6 +2,9 @@ package database
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +21,38 @@ func TestCurrentSchemaVersionMatchesMigrationPlan(t *testing.T) {
 	latest := schemaMigrations[len(schemaMigrations)-1].version
 	if CurrentSchemaVersion != latest {
 		t.Fatalf("supported schema version %d does not match latest migration %d", CurrentSchemaVersion, latest)
+	}
+}
+
+func TestSchema42MigrationSuffixPreservesPublishedMetadata(t *testing.T) {
+	expected := map[int64]struct {
+		name     string
+		checksum string
+	}{
+		32: {"tool_schema_reconciliation", toolSchemaReconciliationChecksum},
+		33: {"channel_model_tags", channelModelTagsChecksum},
+		34: {"lxmone_h3_capability_limits", lxmoneH3CapabilityChecksum},
+		35: {"provider_request_id_reconciliation", providerRequestIDReconciliationChecksum},
+		36: {"capability_provider_reconciliation_followup", reconciliationFollowupChecksum},
+		37: {"oauth_state_accepted_terms", oauthStateAcceptedTermsChecksum},
+		38: {"task_media_recovery", taskMediaRecoveryChecksum},
+		39: {"auth_notifications", authNotificationsChecksum},
+		40: {"cloud_agent_gemini_cache", "sha256:cloud-agent-gemini-cache-v40-20260926"},
+		41: {"cloud_agent_gemini_cache_identity", "sha256:cloud-agent-gemini-cache-identity-v41-20260926"},
+		42: {"prefixed_id_sequence_reconcile", "sha256:prefixed-id-sequence-reconcile-v42-20260926"},
+	}
+	for _, item := range schemaMigrations {
+		want, ok := expected[item.version]
+		if !ok {
+			continue
+		}
+		if item.name != want.name || item.checksum != want.checksum {
+			t.Fatalf("migration %d = %s/%s, want %s/%s", item.version, item.name, item.checksum, want.name, want.checksum)
+		}
+		delete(expected, item.version)
+	}
+	if len(expected) != 0 {
+		t.Fatalf("migration suffix missing versions: %#v", expected)
 	}
 }
 
@@ -78,6 +113,19 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 		!db.Migrator().HasColumn(&model.EmailVerificationCode{}, "attempts") {
 		t.Fatal("schema migration v39 did not add authentication verification fields")
 	}
+	if !db.Migrator().HasTable(&model.CloudAgentGeminiCache{}) {
+		t.Fatal("schema migration v40 did not create Gemini cache table")
+	}
+	if !db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_cache_user_key") {
+		t.Fatal("schema migration v41 did not create user-scoped Gemini cache identity")
+	}
+	if !db.Migrator().HasTable(&model.IDSequence{}) {
+		t.Fatal("schema migration v42 did not create readable ID sequence table")
+	}
+	var sequence model.IDSequence
+	if err := db.First(&sequence, "name = ?", "id:CHANNEL").Error; err != nil {
+		t.Fatalf("schema migration v42 did not reconcile CHANNEL sequence: %v", err)
+	}
 	if err := MigrateSchema(db); err != nil {
 		t.Fatalf("migration should be idempotent: %v", err)
 	}
@@ -124,6 +172,461 @@ func TestMigrateSchemaV39UpgradesExistingDatabase(t *testing.T) {
 	}
 	if !db.Migrator().HasColumn(&model.EmailVerificationCode{}, "attempts") {
 		t.Fatal("migration v39 did not restore email verification attempts")
+	}
+}
+
+func TestMigrateCloudAgentGeminiCacheIdentityDropsGlobalCacheKeyIndex(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-gemini-cache-identity-v41?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.CloudAgentGeminiCache{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("DROP INDEX IF EXISTS idx_cloud_agent_gemini_cache_user_key").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX idx_cloud_agent_gemini_caches_cache_key ON cloud_agent_gemini_caches(cache_key)").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrateCloudAgentGeminiCacheIdentity(db); err != nil {
+		t.Fatalf("reconcile Gemini cache identity: %v", err)
+	}
+	if !db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_cache_user_key") {
+		t.Fatal("composite Gemini cache identity index missing")
+	}
+	if db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_caches_cache_key") {
+		t.Fatal("global Gemini cache key index was not removed")
+	}
+
+	expiry := time.Now().Add(time.Hour)
+	for _, item := range []model.CloudAgentGeminiCache{
+		{ID: "cache-user-a", UserID: "user-a", CacheKey: "same-key", BaseURL: "https://example.test", Model: "gemini", CredentialHash: "hash-a", ResourceName: "cachedContents/a", ExpireTime: expiry},
+		{ID: "cache-user-b", UserID: "user-b", CacheKey: "same-key", BaseURL: "https://example.test", Model: "gemini", CredentialHash: "hash-b", ResourceName: "cachedContents/b", ExpireTime: expiry},
+	} {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("same cache key must be reusable across users: %v", err)
+		}
+	}
+	if err := db.Create(&model.CloudAgentGeminiCache{
+		ID: "cache-user-a-duplicate", UserID: "user-a", CacheKey: "same-key",
+		BaseURL: "https://example.test", Model: "gemini", CredentialHash: "hash-a",
+		ResourceName: "cachedContents/duplicate", ExpireTime: expiry,
+	}).Error; err == nil {
+		t.Fatal("same user/cache key must remain unique")
+	}
+}
+
+func TestMigrateSchemaPostgresV38To42ReplacesGlobalGeminiCacheIndex(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("CANVAS_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("CANVAS_TEST_POSTGRES_DSN is not configured")
+	}
+
+	base, err := Open(Config{Driver: "postgres", DSN: dsn})
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	baseSQL, err := base.DB()
+	if err != nil {
+		t.Fatalf("postgres sql db: %v", err)
+	}
+	defer baseSQL.Close()
+
+	schemaName := fmt.Sprintf("gemini_cache_v38_to_42_%d", time.Now().UnixNano())
+	if err := base.Exec(`CREATE SCHEMA "` + schemaName + `"`).Error; err != nil {
+		t.Fatalf("create test schema: %v", err)
+	}
+	defer func() {
+		if err := base.Exec(`DROP SCHEMA IF EXISTS "` + schemaName + `" CASCADE`).Error; err != nil {
+			t.Errorf("drop test schema: %v", err)
+		}
+	}()
+
+	testDSN, err := postgresDSNWithSearchPath(dsn, schemaName)
+	if err != nil {
+		t.Fatalf("test postgres dsn: %v", err)
+	}
+	db, err := Open(Config{Driver: "postgres", DSN: testDSN})
+	if err != nil {
+		t.Fatalf("open test schema: %v", err)
+	}
+	dbSQL, err := db.DB()
+	if err != nil {
+		t.Fatalf("test schema sql db: %v", err)
+	}
+	defer dbSQL.Close()
+
+	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
+		t.Fatalf("create schema migration table: %v", err)
+	}
+	appliedAt := time.Date(2026, 9, 26, 3, 0, 0, 0, time.UTC)
+	record := func(item migration) {
+		t.Helper()
+		if err := db.Create(&schemaMigration{
+			Version: item.version, Name: item.name, Checksum: item.checksum, AppliedAt: appliedAt,
+		}).Error; err != nil {
+			t.Fatalf("record migration %d: %v", item.version, err)
+		}
+	}
+
+	for _, item := range schemaMigrations[:31] {
+		if err := item.apply(db); err != nil {
+			t.Fatalf("apply common migration %d: %v", item.version, err)
+		}
+		record(item)
+	}
+	if err := db.Create(&model.ModelChannel{ID: "CHANNEL_000321"}).Error; err != nil {
+		t.Fatalf("create deterministic channel: %v", err)
+	}
+
+	upstream := []migration{
+		{version: 32, name: "channel_model_tags", checksum: legacyChannelModelTagsChecksum, apply: migrateChannelModelTags},
+		{version: 33, name: "oauth_state_accepted_terms", checksum: legacyOAuthStateAcceptedTermsChecksum, apply: migrateOAuthStateAcceptedTerms},
+		{version: 34, name: "task_media_recovery", checksum: legacyTaskMediaRecoveryChecksum, apply: migrateTaskMediaRecovery},
+		{version: 35, name: "auth_notifications", checksum: legacyAuthNotificationsChecksum, apply: migrateSchemaV35},
+		{version: 36, name: "cloud_agent_gemini_cache", checksum: legacyCloudAgentGeminiCacheChecksum, apply: migrateCloudAgentGeminiCache},
+		{version: 37, name: "cloud_agent_gemini_cache_identity", checksum: legacyCloudAgentGeminiCacheIdentityChecksum, apply: migrateCloudAgentGeminiCacheIdentity},
+		{version: 38, name: "prefixed_id_sequence_reconcile", checksum: legacyPrefixedIDSequenceReconcileChecksum, apply: migratePrefixedIDSequenceReconcile},
+	}
+	for _, item := range upstream {
+		if err := item.apply(db); err != nil {
+			t.Fatalf("apply upstream migration %d: %v", item.version, err)
+		}
+		record(item)
+	}
+
+	if err := db.Exec(`DROP INDEX IF EXISTS "idx_cloud_agent_gemini_cache_user_key"`).Error; err != nil {
+		t.Fatalf("drop composite Gemini cache index: %v", err)
+	}
+	if err := db.Exec(`CREATE UNIQUE INDEX "idx_cloud_agent_gemini_caches_cache_key" ON "cloud_agent_gemini_caches" ("cache_key")`).Error; err != nil {
+		t.Fatalf("create legacy global Gemini cache index: %v", err)
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("upgrade PostgreSQL schema v38 to v42: %v", err)
+	}
+	status, err := ReadSchemaStatus(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.Current != CurrentSchemaVersion {
+		t.Fatalf("unexpected migrated status: %+v", status)
+	}
+	if db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_caches_cache_key") {
+		t.Fatal("legacy global Gemini cache index still exists")
+	}
+	if !db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_cache_user_key") {
+		t.Fatal("user-scoped Gemini cache index is missing")
+	}
+
+	expiry := time.Now().Add(time.Hour)
+	for _, item := range []model.CloudAgentGeminiCache{
+		{ID: "cache-user-a", UserID: "user-a", CacheKey: "same-key", BaseURL: "https://example.test", Model: "gemini", CredentialHash: "hash-a", ResourceName: "cachedContents/a", ExpireTime: expiry},
+		{ID: "cache-user-b", UserID: "user-b", CacheKey: "same-key", BaseURL: "https://example.test", Model: "gemini", CredentialHash: "hash-b", ResourceName: "cachedContents/b", ExpireTime: expiry},
+	} {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("same cache key must be reusable across users after PostgreSQL upgrade: %v", err)
+		}
+	}
+	if err := db.Create(&model.CloudAgentGeminiCache{
+		ID: "cache-user-a-duplicate", UserID: "user-a", CacheKey: "same-key",
+		BaseURL: "https://example.test", Model: "gemini", CredentialHash: "hash-a",
+		ResourceName: "cachedContents/duplicate", ExpireTime: expiry,
+	}).Error; err == nil {
+		t.Fatal("same user/cache key must remain unique after PostgreSQL upgrade")
+	}
+}
+
+func TestMigrateSchemaV42ReconcilesPrefixedIDSequences(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-prefixed-id-sequence-v42?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.ModelChannel{}, &model.IDSequence{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.ModelChannel{ID: "CHANNEL_000123"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.IDSequence{Name: "id:CHANNEL", Value: 7}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migratePrefixedIDSequenceReconcile(db); err != nil {
+		t.Fatalf("reconcile prefixed ID sequence: %v", err)
+	}
+	var sequence model.IDSequence
+	if err := db.First(&sequence, "name = ?", "id:CHANNEL").Error; err != nil {
+		t.Fatal(err)
+	}
+	if sequence.Value != 123 {
+		t.Fatalf("CHANNEL sequence = %d, want 123", sequence.Value)
+	}
+
+	if err := db.Model(&model.IDSequence{}).Where("name = ?", "id:CHANNEL").Update("value", 200).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := migratePrefixedIDSequenceReconcile(db); err != nil {
+		t.Fatalf("repeat sequence reconciliation: %v", err)
+	}
+	if err := db.First(&sequence, "name = ?", "id:CHANNEL").Error; err != nil {
+		t.Fatal(err)
+	}
+	if sequence.Value != 200 {
+		t.Fatalf("sequence regressed to %d, want 200", sequence.Value)
+	}
+}
+
+func TestMigrateSchemaConvergesUpstreamSchema38Lineage(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-upstream-schema-38-to-42?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&schemaMigration{}); err != nil {
+		t.Fatal(err)
+	}
+	appliedAt := time.Date(2026, 9, 26, 3, 0, 0, 0, time.UTC)
+	record := func(version int64, name, checksum string) {
+		t.Helper()
+		if err := db.Create(&schemaMigration{
+			Version: version, Name: name, Checksum: checksum, AppliedAt: appliedAt,
+		}).Error; err != nil {
+			t.Fatalf("record migration %d: %v", version, err)
+		}
+	}
+
+	for _, item := range schemaMigrations[:31] {
+		if err := item.apply(db); err != nil {
+			t.Fatalf("apply common migration %d: %v", item.version, err)
+		}
+		record(item.version, item.name, item.checksum)
+	}
+	if err := db.Create(&model.ModelChannel{ID: "CHANNEL_000321"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	upstream := []struct {
+		version  int64
+		name     string
+		checksum string
+		apply    func(*gorm.DB) error
+	}{
+		{32, "channel_model_tags", legacyChannelModelTagsChecksum, migrateChannelModelTags},
+		{33, "oauth_state_accepted_terms", legacyOAuthStateAcceptedTermsChecksum, migrateOAuthStateAcceptedTerms},
+		{34, "task_media_recovery", legacyTaskMediaRecoveryChecksum, migrateTaskMediaRecovery},
+		{35, "auth_notifications", legacyAuthNotificationsChecksum, migrateSchemaV35},
+		{36, "cloud_agent_gemini_cache", legacyCloudAgentGeminiCacheChecksum, migrateCloudAgentGeminiCache},
+		{37, "cloud_agent_gemini_cache_identity", legacyCloudAgentGeminiCacheIdentityChecksum, migrateCloudAgentGeminiCacheIdentity},
+		{38, "prefixed_id_sequence_reconcile", legacyPrefixedIDSequenceReconcileChecksum, migratePrefixedIDSequenceReconcile},
+	}
+	for _, item := range upstream {
+		if err := item.apply(db); err != nil {
+			t.Fatalf("apply upstream migration %d: %v", item.version, err)
+		}
+		record(item.version, item.name, item.checksum)
+	}
+	// Simulate a partially merged build that recorded the canonical v40 row
+	// after creating only the cache table. The compatibility pass must still
+	// repair local-only schema work when the normal v40 loop skips this row.
+	record(40, "cloud_agent_gemini_cache", cloudAgentGeminiCacheChecksum)
+
+	var historyBefore [7]schemaMigration
+	for index, version := range []int64{32, 33, 34, 35, 36, 37, 38} {
+		if err := db.First(&historyBefore[index], "version = ?", version).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Exec("DROP INDEX IF EXISTS idx_cloud_agent_gemini_cache_user_key").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX idx_cloud_agent_gemini_caches_cache_key ON cloud_agent_gemini_caches(cache_key)").Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"RelayURL", "RelayExpiresAt"} {
+		if db.Migrator().HasColumn(&model.Resource{}, field) {
+			if err := db.Migrator().DropColumn(&model.Resource{}, field); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := db.Model(&model.IDSequence{}).Where("name = ?", "id:CHANNEL").Update("value", 0).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("converge upstream schema 38: %v", err)
+	}
+	status, err := ReadSchemaStatus(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.Current != 42 {
+		t.Fatalf("unexpected converged status: %+v", status)
+	}
+
+	for index, version := range []int64{32, 33, 34, 35, 36, 37, 38} {
+		var after schemaMigration
+		if err := db.First(&after, "version = ?", version).Error; err != nil {
+			t.Fatal(err)
+		}
+		if after.Name != historyBefore[index].Name ||
+			after.Checksum != historyBefore[index].Checksum ||
+			!after.AppliedAt.Equal(historyBefore[index].AppliedAt) {
+			t.Fatalf("upstream migration %d was rewritten: before=%+v after=%+v", version, historyBefore[index], after)
+		}
+	}
+	for _, item := range []migration{
+		schemaMigrations[38], schemaMigrations[39], schemaMigrations[40], schemaMigrations[41],
+	} {
+		var applied schemaMigration
+		if err := db.First(&applied, "version = ?", item.version).Error; err != nil {
+			t.Fatalf("missing target migration %d: %v", item.version, err)
+		}
+		if applied.Name != item.name || applied.Checksum != item.checksum {
+			t.Fatalf("target migration %d = %+v, want %s/%s", item.version, applied, item.name, item.checksum)
+		}
+	}
+	if !db.Migrator().HasColumn(&model.Resource{}, "relay_url") ||
+		!db.Migrator().HasColumn(&model.Resource{}, "relay_expires_at") {
+		t.Fatal("v40 convergence did not restore local relay columns")
+	}
+	if !db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_cache_user_key") ||
+		db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_caches_cache_key") {
+		t.Fatal("v40 convergence did not restore user-scoped Gemini cache identity")
+	}
+	var sequence model.IDSequence
+	if err := db.First(&sequence, "name = ?", "id:CHANNEL").Error; err != nil {
+		t.Fatal(err)
+	}
+	if sequence.Value != 321 {
+		t.Fatalf("v40 convergence sequence = %d, want 321", sequence.Value)
+	}
+	if err := migrateUpstreamLineageConvergence(db); err != nil {
+		t.Fatalf("repeated v40 convergence is not idempotent: %v", err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("converged upstream schema is not idempotent: %v", err)
+	}
+}
+
+func TestReadOnlySchemaValidationDoesNotRepairLatestSchema(t *testing.T) {
+	for _, upstreamLineage := range []bool{false, true} {
+		name := "canonical-lineage"
+		if upstreamLineage {
+			name = "upstream-lineage"
+		}
+		t.Run(name, func(t *testing.T) {
+			db, err := Open(Config{Driver: "sqlite", DSN: "file:" + t.Name() + "?mode=memory&cache=shared"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := MigrateSchema(db); err != nil {
+				t.Fatal(err)
+			}
+			if upstreamLineage {
+				for _, item := range []struct {
+					version  int64
+					name     string
+					checksum string
+				}{
+					{32, "channel_model_tags", legacyChannelModelTagsChecksum},
+					{33, "oauth_state_accepted_terms", legacyOAuthStateAcceptedTermsChecksum},
+					{34, "task_media_recovery", legacyTaskMediaRecoveryChecksum},
+					{35, "auth_notifications", legacyAuthNotificationsChecksum},
+					{36, "cloud_agent_gemini_cache", legacyCloudAgentGeminiCacheChecksum},
+					{37, "cloud_agent_gemini_cache_identity", legacyCloudAgentGeminiCacheIdentityChecksum},
+					{38, "prefixed_id_sequence_reconcile", legacyPrefixedIDSequenceReconcileChecksum},
+				} {
+					if err := db.Model(&schemaMigration{}).Where("version = ?", item.version).Updates(map[string]any{
+						"name": item.name, "checksum": item.checksum,
+					}).Error; err != nil {
+						t.Fatalf("rewrite upstream lineage record %d: %v", item.version, err)
+					}
+				}
+			}
+			if err := db.Create(&model.ModelChannel{ID: "CHANNEL_000321", Name: "keep"}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Model(&model.IDSequence{}).Where("name = ?", "id:CHANNEL").Update("value", 0).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Migrator().DropTable(&model.AuthVerification{}); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"RelayURL", "RelayExpiresAt"} {
+				if db.Migrator().HasColumn(&model.Resource{}, field) {
+					if err := db.Migrator().DropColumn(&model.Resource{}, field); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := db.Exec("DROP INDEX IF EXISTS idx_cloud_agent_gemini_cache_user_key").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Exec("CREATE UNIQUE INDEX idx_cloud_agent_gemini_caches_cache_key ON cloud_agent_gemini_caches(cache_key)").Error; err != nil {
+				t.Fatal(err)
+			}
+			historyBefore := make([]schemaMigration, 0, CurrentSchemaVersion)
+			if err := db.Order("version ASC").Find(&historyBefore).Error; err != nil {
+				t.Fatal(err)
+			}
+			var channelBefore model.ModelChannel
+			if err := db.First(&channelBefore, "id = ?", "CHANNEL_000321").Error; err != nil {
+				t.Fatal(err)
+			}
+			var sequenceBefore model.IDSequence
+			if err := db.First(&sequenceBefore, "name = ?", "id:CHANNEL").Error; err != nil {
+				t.Fatal(err)
+			}
+
+			status, err := ReadSchemaStatus(db)
+			if err != nil {
+				t.Fatalf("read schema status: %v", err)
+			}
+			if !status.Ready || status.Current != CurrentSchemaVersion {
+				t.Fatalf("unexpected schema status: %+v", status)
+			}
+			if err := RequireSchemaVersion(db); err != nil {
+				t.Fatalf("require schema version: %v", err)
+			}
+
+			if db.Migrator().HasTable(&model.AuthVerification{}) {
+				t.Fatal("read-only validation recreated auth verification table")
+			}
+			if db.Migrator().HasColumn(&model.Resource{}, "relay_url") ||
+				db.Migrator().HasColumn(&model.Resource{}, "relay_expires_at") {
+				t.Fatal("read-only validation restored resource relay columns")
+			}
+			if db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_cache_user_key") {
+				t.Fatal("read-only validation recreated Gemini cache index")
+			}
+			if !db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_caches_cache_key") {
+				t.Fatal("read-only validation removed the legacy Gemini cache index")
+			}
+			var channelAfter model.ModelChannel
+			if err := db.First(&channelAfter, "id = ?", "CHANNEL_000321").Error; err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(channelBefore, channelAfter) {
+				t.Fatalf("read-only validation changed business data: before=%+v after=%+v", channelBefore, channelAfter)
+			}
+			var sequenceAfter model.IDSequence
+			if err := db.First(&sequenceAfter, "name = ?", "id:CHANNEL").Error; err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(sequenceBefore, sequenceAfter) {
+				t.Fatalf("read-only validation recalibrated ID sequence: before=%+v after=%+v", sequenceBefore, sequenceAfter)
+			}
+			historyAfter := make([]schemaMigration, 0, CurrentSchemaVersion)
+			if err := db.Order("version ASC").Find(&historyAfter).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(historyBefore, historyAfter) {
+				t.Fatalf("read-only validation changed schema_migrations: before=%+v after=%+v", historyBefore, historyAfter)
+			}
+		})
 	}
 }
 

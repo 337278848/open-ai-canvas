@@ -40,6 +40,12 @@ export type StartCanvasUploadStatus = (title: string, detail: string, total?: nu
     update: (detail: string, step: number) => void;
     done: (detail?: string) => void;
     fail: (detail?: string) => void;
+    cancel: (detail?: string) => void;
+};
+
+type UploadPersistenceGuard = {
+    signal?: AbortSignal;
+    isCurrent?: () => boolean;
 };
 
 const NODE_STATUS_SUCCESS = "success" as const;
@@ -73,14 +79,23 @@ export function useCanvasUpload({
     const assetInsertPositionRef = useRef<Position | null>(null);
     const uploadStatusIdRef = useRef(0);
     const statusTimersRef = useRef<Set<number>>(new Set());
+    const activeUploadsRef = useRef(new Map<string, AbortController>());
+    const disposedRef = useRef(false);
     const fileDragDepthRef = useRef(0);
     const [assetPickerOpen, setAssetPickerOpen] = useState(false);
     const [uploadModalOpen, setUploadModalOpen] = useState(false);
     const [uploadStatus, setUploadStatus] = useState<CanvasUploadStatus | null>(null);
     const [fileDropActive, setFileDropActive] = useState(false);
 
-    useEffect(() => () => {
-        statusTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    useEffect(() => {
+        disposedRef.current = false;
+        return () => {
+            disposedRef.current = true;
+            activeUploadsRef.current.forEach((controller) => controller.abort());
+            activeUploadsRef.current.clear();
+            statusTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+            statusTimersRef.current.clear();
+        };
     }, []);
 
     const startUploadStatus = useCallback<StartCanvasUploadStatus>((title, detail, total = 3) => {
@@ -103,6 +118,10 @@ export function useCanvasUpload({
                 setUploadStatus((current) => (current?.id === id ? { ...current, detail: nextDetail, error: true } : current));
                 dismiss(1800);
             },
+            cancel: (nextDetail = "上传已取消") => {
+                setUploadStatus((current) => (current?.id === id ? { ...current, detail: nextDetail, done: undefined, error: undefined } : current));
+                dismiss(350);
+            },
         };
     }, []);
 
@@ -112,19 +131,26 @@ export function useCanvasUpload({
         if (dialog !== "preserve") setDialogNodeId(dialog === "open" ? nodeId : null);
     }, [setDialogNodeId, setSelectedConnectionId, setSelectedNodeIds]);
 
-    const persistMediaNode = useCallback(async (node: CanvasNodeData) => {
+    const persistMediaNode = useCallback(async (node: CanvasNodeData, guard?: UploadPersistenceGuard) => {
+        if (guard?.isCurrent && !guard.isCurrent()) return false;
         try {
-            const result = await ensureCanvasNodeAsset({ canvasId, domainProjectId, node, source: "canvas-upload" });
+            const result = await ensureCanvasNodeAsset({ canvasId, domainProjectId, node, source: "canvas-upload", signal: guard?.signal });
+            if (guard?.isCurrent && !guard.isCurrent()) return false;
             setNodes((current) => current.map((item) => item.id === node.id ? { ...item, metadata: { ...item.metadata, assetId: result.assetId } } : item));
-            if (domainProjectId) await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
+            if (domainProjectId) {
+                await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
+                if (guard?.isCurrent && !guard.isCurrent()) return false;
+            }
             return true;
         } catch (error) {
+            if (guard?.isCurrent && !guard.isCurrent()) return false;
             message.warning(error instanceof Error ? `媒体已添加到画布，但素材同步失败：${error.message}` : "媒体已添加到画布，但素材同步失败");
             return false;
         }
     }, [canvasId, domainProjectId, message, queryClient, setNodes]);
 
-    const persistTimelineMedia = useCallback(async (media: TimelineDirectMedia) => {
+    const persistTimelineMedia = useCallback(async (media: TimelineDirectMedia, guard?: UploadPersistenceGuard) => {
+        if (guard?.isCurrent && !guard.isCurrent()) return undefined;
         const type = media.kind === "audio" ? CanvasNodeType.Audio : media.kind === "video" ? CanvasNodeType.Video : CanvasNodeType.Image;
         const defaults = NODE_DEFAULT_SIZE[type];
         const node: CanvasNodeData = {
@@ -144,20 +170,34 @@ export function useCanvasUpload({
                 mimeType: media.mimeType,
             },
         };
-        const result = await ensureCanvasNodeAsset({ canvasId, domainProjectId, node, source: "canvas-upload" });
-        if (domainProjectId) await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
+        const result = await ensureCanvasNodeAsset({ canvasId, domainProjectId, node, source: "canvas-upload", signal: guard?.signal });
+        if (guard?.isCurrent && !guard.isCurrent()) return undefined;
+        if (domainProjectId) {
+            await queryClient.invalidateQueries({ queryKey: ["project", domainProjectId] });
+            if (guard?.isCurrent && !guard.isCurrent()) return undefined;
+        }
         return result.assetId;
     }, [canvasId, domainProjectId, queryClient]);
 
-    const activeUploadsRef = useRef(new Set<string>());
     const createFileNode = useCallback(async (file: File, position: Position, replaceId?: string) => {
         const original = replaceId ? nodesRef.current.find((node) => node.id === replaceId) : undefined;
-        if (replaceId && (!original || activeUploadsRef.current.has(replaceId))) return null;
+        if (disposedRef.current) return null;
         const id = replaceId || `upload-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        activeUploadsRef.current.add(id);
+        activeUploadsRef.current.get(id)?.abort();
+        if (replaceId && !original) return null;
+        const controller = new AbortController();
+        activeUploadsRef.current.set(id, controller);
+        const isCurrentUpload = () => activeUploadsRef.current.get(id) === controller && !controller.signal.aborted && !disposedRef.current;
+        const rollback = () => {
+            if (disposedRef.current) return;
+            setNodes((current) => original
+                ? current.map((item) => item.id === id ? original : item)
+                : current.filter((item) => item.id !== id));
+        };
         const progress = startUploadStatus(replaceId ? "替换文件" : "上传文件", "读取文件信息", domainProjectId ? 4 : 3);
         try {
-            const placeholder = await createFileUploadPlaceholder(id, file, position);
+            const placeholder = await withAbort(createFileUploadPlaceholder(id, file, position), controller.signal);
+            if (!isCurrentUpload()) return null;
             setNodes((current) => replaceId ? current.map((item) => item.id === id ? {
                 ...item, width: placeholder.width, height: placeholder.height,
                 metadata: { ...item.metadata, fileUpload: "uploading", fileUploadProgress: undefined, status: undefined, size: undefined, errorDetails: undefined },
@@ -165,6 +205,7 @@ export function useCanvasUpload({
             selectInsertedNode(id, "close");
             let lastPercent: number | undefined;
             const onProgress = (loaded: number, total: number) => {
+                if (!isCurrentUpload()) return;
                 const percent = uploadPercent(loaded, total);
                 if (percent === undefined || percent === lastPercent) return;
                 lastPercent = percent;
@@ -174,15 +215,16 @@ export function useCanvasUpload({
             progress.update("上传文件并同步资源", 2);
             let metadata: CanvasNodeData["metadata"];
             if (placeholder.type === CanvasNodeType.Image) {
-                metadata = imageMetadata(await uploadImage(file, onProgress));
+                metadata = imageMetadata(await uploadImage(file, onProgress, controller.signal));
             } else if (placeholder.type === CanvasNodeType.Text) {
-                const content = await file.text();
-                const resource = await uploadResourceFile(file, "file", { fileName: file.name }, onProgress);
+                const content = await withAbort(file.text(), controller.signal);
+                const resource = await uploadResourceFile(file, "file", { fileName: file.name }, onProgress, controller.signal);
                 metadata = { content, prompt: content, storageKey: resourceStorageKey(resource.id), mimeType: file.type || "text/plain", bytes: file.size, status: "success" };
             } else {
-                const media = await uploadMediaFile(file, placeholder.type === CanvasNodeType.Video ? "video" : "audio", onProgress);
+                const media = await uploadMediaFile(file, placeholder.type === CanvasNodeType.Video ? "video" : "audio", onProgress, controller.signal);
                 metadata = placeholder.type === CanvasNodeType.Video ? videoMetadata(media) : audioMetadata(media);
             }
+            if (!isCurrentUpload()) return null;
             progress.update("更新画布节点", 3);
             const currentNode = nodesRef.current.find((item) => item.id === id);
             if (!currentNode) {
@@ -208,23 +250,35 @@ export function useCanvasUpload({
                     } : {}),
                 },
             };
+            if (!isCurrentUpload()) return null;
             setNodes((current) => current.map((item) => item.id === id ? { ...item, type: node.type, metadata: node.metadata } : item));
             if (domainProjectId) progress.update("写入项目资产", 4);
-            const persisted = await persistMediaNode(node);
+            const persisted = await persistMediaNode(node, { signal: controller.signal, isCurrent: isCurrentUpload });
+            if (!isCurrentUpload()) {
+                rollback();
+                return null;
+            }
             const localOnly = metadata.storageKey && !resourceIdFromStorageKey(metadata.storageKey);
             progress.done(localOnly ? "已保存在本机，尚未上传到服务器" : persisted ? "文件已添加到画布" : "文件已添加，项目资产待重试");
             if (localOnly) message.warning("文件已保存在本机，尚未上传到服务器");
             return id;
         } catch (error) {
+            if (isUploadCancellation(error, controller.signal)) {
+                if (!disposedRef.current) {
+                    rollback();
+                    progress.cancel();
+                }
+                return null;
+            }
+            if (!isCurrentUpload()) return null;
             const details = error instanceof Error ? error.message : "文件上传失败";
-            setNodes((current) => current.map((item) => item.id !== id ? item : original?.metadata?.content ? {
-                ...item, width: original.width, height: original.height, metadata: original.metadata,
-            } : { ...item, metadata: { ...item.metadata, fileUpload: "error", fileUploadProgress: undefined, errorDetails: details } }));
+            if (original) rollback();
+            else setNodes((current) => current.map((item) => item.id === id ? { ...item, metadata: { ...item.metadata, fileUpload: "error", fileUploadProgress: undefined, errorDetails: details } } : item));
             progress.fail(details);
             message.error(details);
             return null;
         } finally {
-            activeUploadsRef.current.delete(id);
+            if (activeUploadsRef.current.get(id) === controller) activeUploadsRef.current.delete(id);
         }
     }, [domainProjectId, message, nodesRef, persistMediaNode, selectInsertedNode, setNodes, startUploadStatus]);
 
@@ -371,9 +425,15 @@ export function useCanvasUpload({
         }
         const created: TimelineDirectMedia[] = [];
         for (const file of supportedFiles) {
+            if (disposedRef.current) break;
+            const uploadId = `timeline-upload-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            const controller = new AbortController();
+            activeUploadsRef.current.set(uploadId, controller);
             try {
+                const isCurrentUpload = () => activeUploadsRef.current.get(uploadId) === controller && !controller.signal.aborted && !disposedRef.current;
                 if (isAudioFile(file)) {
-                    const audio = await uploadMediaFile(file, "audio");
+                    const audio = await uploadMediaFile(file, "audio", undefined, controller.signal);
+                    if (!isCurrentUpload()) continue;
                     const media: TimelineDirectMedia = {
                         id: `audio-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                         kind: "audio",
@@ -384,10 +444,11 @@ export function useCanvasUpload({
                         bytes: audio.bytes,
                         mimeType: audio.mimeType,
                     };
-                    media.assetId = await persistTimelineMedia(media);
-                    created.push(media);
+                    media.assetId = await persistTimelineMedia(media, { signal: controller.signal, isCurrent: isCurrentUpload });
+                    if (isCurrentUpload() && media.assetId) created.push(media);
                 } else {
-                    const video = await uploadMediaFile(file, "video");
+                    const video = await uploadMediaFile(file, "video", undefined, controller.signal);
+                    if (!isCurrentUpload()) continue;
                     const media: TimelineDirectMedia = {
                         id: `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                         kind: "video",
@@ -400,28 +461,52 @@ export function useCanvasUpload({
                         bytes: video.bytes,
                         mimeType: video.mimeType,
                     };
-                    media.assetId = await persistTimelineMedia(media);
-                    created.push(media);
+                    media.assetId = await persistTimelineMedia(media, { signal: controller.signal, isCurrent: isCurrentUpload });
+                    if (isCurrentUpload() && media.assetId) created.push(media);
                 }
             } catch (error) {
+                if (isUploadCancellation(error, controller.signal)) {
+                    if (disposedRef.current) break;
+                    continue;
+                }
                 message.error(error instanceof Error ? `素材上传失败：${error.message}` : "素材上传失败");
+            } finally {
+                if (activeUploadsRef.current.get(uploadId) === controller) activeUploadsRef.current.delete(uploadId);
             }
         }
-        if (created.length) message.success(`已上传 ${created.length} 个素材到时间线`);
+        if (!disposedRef.current && created.length) message.success(`已上传 ${created.length} 个素材到时间线`);
         return created;
     }, [message, persistTimelineMedia]);
 
     // 组装能力闭环：把时间线合成结果（MP4 Blob）上传并创建为新的视频节点放回画布，
     // 复用上传/持久化/选中逻辑，新节点可继续编辑字幕与样式。
     const createVideoNodeFromBlob = useCallback(async (blob: Blob, title: string): Promise<CanvasNodeData | null> => {
+        if (disposedRef.current) return null;
+        const uploadId = `assembled-video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        const controller = new AbortController();
+        activeUploadsRef.current.set(uploadId, controller);
+        const isCurrentUpload = () => activeUploadsRef.current.get(uploadId) === controller && !controller.signal.aborted && !disposedRef.current;
+        let createdNodeId: string | undefined;
+        const removeCreatedNode = () => {
+            if (!createdNodeId || disposedRef.current) return;
+            setNodes((current) => current.filter((item) => item.id !== createdNodeId));
+            setSelectedNodeIds((current) => {
+                const next = new Set(current);
+                next.delete(createdNodeId as string);
+                return next;
+            });
+            setDialogNodeId((current) => current === createdNodeId ? null : current);
+        };
         const progress = startUploadStatus("合成视频片段", "上传合成结果", domainProjectId ? 4 : 3);
         try {
             progress.update("上传到服务器并同步资源", 2);
-            const video = await uploadMediaFile(blob, "video");
+            const video = await uploadMediaFile(blob, "video", undefined, controller.signal);
+            if (!isCurrentUpload()) return null;
             progress.update("更新画布节点", 3);
             const size = fitNodeSize(video.width || 1280, video.height || 720, VIDEO_NODE_MAX_SIZE.width, VIDEO_NODE_MAX_SIZE.height);
             const center = getCanvasCenter();
             const id = `video-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+            createdNodeId = id;
             const node = {
                 id,
                 type: CanvasNodeType.Video,
@@ -434,14 +519,26 @@ export function useCanvasUpload({
             setNodes((current) => [...current, node]);
             selectInsertedNode(id, "preserve");
             if (domainProjectId) progress.update("写入项目资产", 4);
-            const persisted = await persistMediaNode(node);
+            const persisted = await persistMediaNode(node, { signal: controller.signal, isCurrent: isCurrentUpload });
+            if (!isCurrentUpload()) {
+                removeCreatedNode();
+                return null;
+            }
             progress.done(persisted ? "已生成新视频片段并加入项目资产" : "已生成新视频片段，项目资产待重试");
             return node;
         } catch (error) {
+            if (isUploadCancellation(error, controller.signal)) {
+                removeCreatedNode();
+                if (!disposedRef.current) progress.cancel();
+                return null;
+            }
+            if (activeUploadsRef.current.get(uploadId) !== controller || disposedRef.current) return null;
             const details = error instanceof Error ? error.message : "合成视频片段失败";
             progress.fail(details);
             message.error(details);
             return null;
+        } finally {
+            if (activeUploadsRef.current.get(uploadId) === controller) activeUploadsRef.current.delete(uploadId);
         }
     }, [domainProjectId, getCanvasCenter, message, persistMediaNode, selectInsertedNode, setNodes, startUploadStatus]);
 
@@ -786,4 +883,36 @@ function htmlToPlainText(value: string) {
     if (!value) return "";
     const document = new DOMParser().parseFromString(value, "text/html");
     return document.body.textContent?.trim() || "";
+}
+
+function isUploadCancellation(error: unknown, signal?: AbortSignal) {
+    return signal?.aborted === true || isAbortError(error);
+}
+
+function isAbortError(error: unknown) {
+    return typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "AbortError";
+}
+
+function uploadAbortError(signal?: AbortSignal) {
+    if (isAbortError(signal?.reason)) return signal?.reason;
+    return new DOMException("上传已取消", "AbortError");
+}
+
+function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) return promise;
+    if (signal.aborted) return Promise.reject(uploadAbortError(signal));
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(uploadAbortError(signal));
+        signal.addEventListener("abort", onAbort, { once: true });
+        promise.then(
+            (value) => {
+                signal.removeEventListener("abort", onAbort);
+                resolve(value);
+            },
+            (error) => {
+                signal.removeEventListener("abort", onAbort);
+                reject(error);
+            },
+        );
+    });
 }

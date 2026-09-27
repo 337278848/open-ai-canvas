@@ -95,6 +95,9 @@ test("menu surfaces are explicitly scoped and old account inner overrides are re
     expect(globals).toContain(".ant-select.app-unified-select[data-input-modality=\"keyboard\"]:not(.ant-select-open)");
     expect(globals).toContain(":where(.ant-select:focus-visible, .ant-tree-select:focus-visible, .ant-cascader-picker:focus-visible, .ant-auto-complete:focus-visible) {");
     expect(globals).not.toContain(".ant-select-focused .ant-select-selector, .ant-select-open .ant-select-selector) {\n    border-color: var(--unified-select-border) !important;\n    box-shadow: none !important;\n    outline: auto");
+    expect(globals).toContain('.app-unified-select[data-input-modality="keyboard"]:not(.ant-select-open)');
+    expect(globals).toMatch(/:where\(\.ant-select-dropdown, \.ant-dropdown-menu,[^)]*\)\s*\{\s*border: 0 !important;/);
+    expect(globals).toContain("body.app-spatial-overlays :where(.ant-dropdown-menu, .ant-select-dropdown, .ant-cascader-menus, .ant-mentions-dropdown) {\n        border: 0 !important;");
 });
 
 test("shared single-select popup uses a borderless surface instead of a bright focus frame", () => {
@@ -105,4 +108,5 @@ test("shared single-select popup uses a borderless surface instead of a bright f
     expect(select).toContain('variant={variant ?? "filled"}');
     expect(select).toContain("data-input-modality={inputModality}");
     expect(select).not.toContain('setPopoverWidth(width + 2)');
+    expect(select).toContain('setInputModality("keyboard")');
 });

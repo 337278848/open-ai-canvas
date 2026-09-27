@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,11 +23,22 @@ import (
 // 文件整体不再受 multipart 单请求大小限制（对齐 Concat 桌面端“任意大小直接入库”的体验）。
 // 会话状态只存在内存（重启即失效 → 前端整传重试），磁盘暂存在系统临时目录，随会话清理。
 const (
-	chunkUploadChunkSize   = 8 << 20
-	chunkUploadSlackBytes  = 64 << 10 // MaxBytesReader 允许的超片余量
-	chunkUploadTTL         = 90 * time.Minute
-	chunkUploadMaxPerUser  = 32
-	chunkUploadBodyCapJSON = 16 << 10
+	chunkUploadChunkSize       = 8 << 20
+	chunkUploadSlackBytes      = 64 << 10 // MaxBytesReader 允许的超片余量
+	chunkUploadTTL             = 90 * time.Minute
+	chunkUploadJanitorInterval = 5 * time.Minute
+	chunkUploadMaxPerUser      = 32
+	chunkUploadBodyCapJSON     = 16 << 10
+)
+
+type chunkUploadSessionState uint8
+
+const (
+	chunkUploadSessionActive chunkUploadSessionState = iota
+	chunkUploadSessionCompleting
+	chunkUploadSessionCancelled
+	chunkUploadSessionCompleted
+	chunkUploadSessionExpired
 )
 
 type chunkedUploadSession struct {
@@ -41,12 +54,22 @@ type chunkedUploadSession struct {
 	ChunkCount     int
 	Dir            string
 	CreatedAt      time.Time
+
+	mu             sync.Mutex
+	commitMu       sync.Mutex
+	state          chunkUploadSessionState
+	activeOps      int
+	activePuts     int
+	cleanupPending bool
+	cleanupStarted bool
 }
 
 var chunkUploadSessions = struct {
 	sync.Mutex
 	m map[string]*chunkedUploadSession
 }{m: make(map[string]*chunkedUploadSession)}
+
+var chunkUploadJanitorOnce sync.Once
 
 func newUploadSessionID() string {
 	raw := make([]byte, 12)
@@ -82,42 +105,356 @@ func (s *chunkedUploadSession) chunkSizeAt(index int) int64 {
 	return chunkUploadChunkSize
 }
 
+func startChunkUploadJanitor() {
+	chunkUploadJanitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(chunkUploadJanitorInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				removeExpiredChunkSessions()
+			}
+		}()
+	})
+}
+
+func lookupChunkSession(id string) *chunkedUploadSession {
+	chunkUploadSessions.Lock()
+	session := chunkUploadSessions.m[id]
+	chunkUploadSessions.Unlock()
+	return session
+}
+
+func removeChunkSessionIndex(id string, session *chunkedUploadSession) {
+	chunkUploadSessions.Lock()
+	if chunkUploadSessions.m[id] == session {
+		delete(chunkUploadSessions.m, id)
+	}
+	chunkUploadSessions.Unlock()
+}
+
+// cleanupChunkSessionDir 只在没有活动文件操作时执行，且实际磁盘 IO 始终位于锁外。
+func cleanupChunkSessionDir(session *chunkedUploadSession) {
+	session.mu.Lock()
+	if !session.cleanupPending || session.cleanupStarted || session.activeOps != 0 {
+		session.mu.Unlock()
+		return
+	}
+	session.cleanupStarted = true
+	dir := session.Dir
+	session.mu.Unlock()
+
+	err := os.RemoveAll(dir)
+	if err == nil {
+		return
+	}
+
+	session.mu.Lock()
+	// A failed cleanup must remain retryable. The session is already terminal
+	// and no new operation can acquire it, so only reset the in-flight marker.
+	session.cleanupStarted = false
+	session.mu.Unlock()
+	log.Printf("chunk upload session cleanup failed: upload_id=%s error=%v", session.ID, err)
+}
+
+func retireChunkSession(id string, session *chunkedUploadSession, state chunkUploadSessionState) {
+	session.mu.Lock()
+	session.state = state
+	session.cleanupPending = true
+	session.mu.Unlock()
+
+	removeChunkSessionIndex(id, session)
+	cleanupChunkSessionDir(session)
+}
+
+func releaseChunkSessionOperation(session *chunkedUploadSession, put bool) {
+	session.mu.Lock()
+	if put && session.activePuts > 0 {
+		session.activePuts--
+	}
+	if session.activeOps > 0 {
+		session.activeOps--
+	}
+	shouldCleanup := session.cleanupPending && session.activeOps == 0
+	session.mu.Unlock()
+
+	if shouldCleanup {
+		cleanupChunkSessionDir(session)
+	}
+}
+
+func reopenChunkSession(session *chunkedUploadSession) {
+	session.mu.Lock()
+	if session.state == chunkUploadSessionCompleting {
+		session.state = chunkUploadSessionActive
+	}
+	session.mu.Unlock()
+
+	releaseChunkSessionOperation(session, false)
+}
+
+// expireChunkSessionLocked is the authoritative TTL transition. Callers must
+// hold session.mu and perform index removal/IO after releasing it.
+func expireChunkSessionLocked(session *chunkedUploadSession, now time.Time) bool {
+	if session.state != chunkUploadSessionActive || now.Sub(session.CreatedAt) <= chunkUploadTTL {
+		return false
+	}
+	session.state = chunkUploadSessionExpired
+	session.cleanupPending = true
+	return true
+}
+
+func finishExpiredChunkSession(id string, session *chunkedUploadSession) {
+	removeChunkSessionIndex(id, session)
+	cleanupChunkSessionDir(session)
+}
+
 func removeExpiredChunkSessions() {
 	now := time.Now()
 	chunkUploadSessions.Lock()
-	defer chunkUploadSessions.Unlock()
+	type candidate struct {
+		id      string
+		session *chunkedUploadSession
+	}
+	candidates := make([]candidate, 0, len(chunkUploadSessions.m))
 	for id, sess := range chunkUploadSessions.m {
-		if now.Sub(sess.CreatedAt) > chunkUploadTTL {
-			_ = os.RemoveAll(sess.Dir)
-			delete(chunkUploadSessions.m, id)
+		candidates = append(candidates, candidate{id: id, session: sess})
+	}
+	chunkUploadSessions.Unlock()
+
+	for _, item := range candidates {
+		session := item.session
+		session.mu.Lock()
+		expired := expireChunkSessionLocked(session, now)
+		session.mu.Unlock()
+		if expired {
+			finishExpiredChunkSession(item.id, session)
 		}
 	}
 }
 
-func takeChunkSession(id string) *chunkedUploadSession {
+func beginChunkPut(id string, userID string) (*chunkedUploadSession, bool) {
 	removeExpiredChunkSessions()
-	chunkUploadSessions.Lock()
-	defer chunkUploadSessions.Unlock()
-	return chunkUploadSessions.m[id]
-}
-
-func dropChunkSession(id string) {
-	chunkUploadSessions.Lock()
-	defer chunkUploadSessions.Unlock()
-	if sess := chunkUploadSessions.m[id]; sess != nil {
-		_ = os.RemoveAll(sess.Dir)
-		delete(chunkUploadSessions.m, id)
+	session := lookupChunkSession(id)
+	if session == nil {
+		return nil, false
 	}
+
+	expired := false
+	session.mu.Lock()
+	if expireChunkSessionLocked(session, time.Now()) {
+		expired = true
+	} else if session.UserID != userID || session.state != chunkUploadSessionActive {
+		session.mu.Unlock()
+		return nil, false
+	} else {
+		session.activeOps++
+		session.activePuts++
+	}
+	session.mu.Unlock()
+	if expired {
+		finishExpiredChunkSession(id, session)
+		return nil, false
+	}
+	return session, true
 }
 
-// RegisterChunkedUploadRoutes 注册本地媒体分片上传三条接口（POST 开始 / PUT 上传片 / POST 合并）。
+func chunkSessionAcceptsWrites(session *chunkedUploadSession) bool {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.state == chunkUploadSessionActive
+}
+
+// replaceChunkFile publishes a fully written temporary chunk. On Unix, Rename
+// atomically replaces an existing chunk. Windows' MoveFile does not replace an
+// existing path, so move the old complete chunk aside while the caller's
+// session operation keeps complete/cleanup from observing the short gap.
+func replaceChunkFile(tempPath string, finalPath string) error {
+	renameErr := os.Rename(tempPath, finalPath)
+	if renameErr == nil {
+		return nil
+	}
+	if !os.IsExist(renameErr) {
+		return renameErr
+	}
+	targetInfo, statErr := os.Lstat(finalPath)
+	if statErr != nil {
+		return renameErr
+	}
+	if !targetInfo.Mode().IsRegular() {
+		return fmt.Errorf("chunk target is not a regular file: %w", renameErr)
+	}
+
+	backup, err := os.CreateTemp(filepath.Dir(finalPath), ".chunk-replace-*")
+	if err != nil {
+		return err
+	}
+	backupPath := backup.Name()
+	if err := backup.Close(); err != nil {
+		_ = os.Remove(backupPath)
+		return err
+	}
+	if err := os.Remove(backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(finalPath, backupPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, finalPath); err != nil {
+		restoreErr := os.Rename(backupPath, finalPath)
+		if restoreErr != nil {
+			// A failed MoveFile may leave a target behind. The old chunk is
+			// authoritative, so remove that target before one restore retry.
+			_ = os.Remove(finalPath)
+			restoreErr = os.Rename(backupPath, finalPath)
+		}
+		if restoreErr != nil {
+			return fmt.Errorf("%w (also failed to restore previous chunk: %v)", err, restoreErr)
+		}
+		return err
+	}
+	if err := os.Remove(backupPath); err != nil {
+		log.Printf("chunk upload backup cleanup failed: target=%s error=%v", finalPath, err)
+	}
+	return nil
+}
+
+// publishChunkFile serializes the short publication step, checks the session
+// state both before and after Rename, and never holds a lock during chunk IO.
+func publishChunkFile(session *chunkedUploadSession, index int, tempPath string) (bool, error) {
+	session.commitMu.Lock()
+	defer session.commitMu.Unlock()
+
+	if !chunkSessionAcceptsWrites(session) {
+		return false, nil
+	}
+	finalPath := session.chunkPath(index)
+	if err := replaceChunkFile(tempPath, finalPath); err != nil {
+		return false, err
+	}
+	if !chunkSessionAcceptsWrites(session) {
+		// No later PUT can publish after cancellation/expiry. Remove the
+		// just-published file before releasing the active operation.
+		_ = os.Remove(finalPath)
+		return false, nil
+	}
+	return true, nil
+}
+
+type chunkCompleteBeginResult uint8
+
+const (
+	chunkCompleteBeginOK chunkCompleteBeginResult = iota
+	chunkCompleteBeginNotFound
+	chunkCompleteBeginBusy
+)
+
+func beginChunkComplete(id string, userID string) (*chunkedUploadSession, chunkCompleteBeginResult) {
+	removeExpiredChunkSessions()
+	session := lookupChunkSession(id)
+	if session == nil {
+		return nil, chunkCompleteBeginNotFound
+	}
+
+	expired := false
+	result := chunkCompleteBeginNotFound
+	session.mu.Lock()
+	if expireChunkSessionLocked(session, time.Now()) {
+		expired = true
+	} else if session.UserID == userID {
+		switch session.state {
+		case chunkUploadSessionActive:
+			if session.activePuts != 0 {
+				result = chunkCompleteBeginBusy
+				break
+			}
+			session.state = chunkUploadSessionCompleting
+			session.activeOps++
+			result = chunkCompleteBeginOK
+		case chunkUploadSessionCompleting:
+			result = chunkCompleteBeginBusy
+		}
+	}
+	session.mu.Unlock()
+	if expired {
+		finishExpiredChunkSession(id, session)
+		return nil, chunkCompleteBeginNotFound
+	}
+	if result != chunkCompleteBeginOK {
+		return nil, result
+	}
+	return session, result
+}
+
+type chunkCancelResult uint8
+
+const (
+	chunkCancelNotFound chunkCancelResult = iota
+	chunkCancelAccepted
+	chunkCancelCompletionOwns
+)
+
+func cancelChunkSession(id string, userID string) chunkCancelResult {
+	removeExpiredChunkSessions()
+	session := lookupChunkSession(id)
+	if session == nil {
+		return chunkCancelNotFound
+	}
+
+	expired := false
+	session.mu.Lock()
+	if expireChunkSessionLocked(session, time.Now()) {
+		expired = true
+	} else if session.UserID != userID {
+		session.mu.Unlock()
+		return chunkCancelNotFound
+	} else {
+		switch session.state {
+		case chunkUploadSessionActive:
+			session.state = chunkUploadSessionCancelled
+			session.cleanupPending = true
+			session.mu.Unlock()
+			removeChunkSessionIndex(id, session)
+			cleanupChunkSessionDir(session)
+			return chunkCancelAccepted
+		case chunkUploadSessionCompleting, chunkUploadSessionCompleted:
+			// complete 已经取得提交权时优先完成；取消成为幂等 no-op，绝不删除其目录或已提交资源。
+			session.mu.Unlock()
+			return chunkCancelCompletionOwns
+		default:
+			session.mu.Unlock()
+			return chunkCancelNotFound
+		}
+	}
+	session.mu.Unlock()
+	if expired {
+		finishExpiredChunkSession(id, session)
+	}
+	return chunkCancelNotFound
+}
+
+func resolveChunkUploadIdempotencyKey(bodyKey string, headerKey string) (string, error) {
+	bodyKey = strings.TrimSpace(bodyKey)
+	headerKey = strings.TrimSpace(headerKey)
+	if bodyKey != "" && headerKey != "" && bodyKey != headerKey {
+		return "", fmt.Errorf("请求体与 X-Idempotency-Key 不一致")
+	}
+	if headerKey != "" {
+		return headerKey, nil
+	}
+	return bodyKey, nil
+}
+
+// RegisterChunkedUploadRoutes 注册本地媒体分片上传四条接口（POST 开始 / PUT 上传片 / POST 合并 / DELETE 取消）。
 func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
+	startChunkUploadJanitor()
+
 	r.POST("/resources/uploads", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
 			failService(c, err)
 			return
 		}
+		removeExpiredChunkSessions()
 		policy, available := loadRuntimePolicy(c, svc)
 		if !available || !enforceRateLimit(c, "resources-upload:"+user.ID, policy.Request.ResourceUploadPerMinute, time.Minute) {
 			return
@@ -136,6 +473,12 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			fail(c, http.StatusBadRequest, err)
 			return
 		}
+		idempotencyKey, keyErr := resolveChunkUploadIdempotencyKey(req.IdempotencyKey, c.GetHeader("X-Idempotency-Key"))
+		if keyErr != nil {
+			fail(c, http.StatusConflict, keyErr)
+			return
+		}
+		req.IdempotencyKey = idempotencyKey
 		if req.FileName == "" || len(req.FileName) > 255 {
 			fail(c, http.StatusBadRequest, fmt.Errorf("文件名不能为空且不能超过 255 个字符"))
 			return
@@ -193,11 +536,12 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		session := takeChunkSession(c.Param("id"))
-		if session == nil || session.UserID != user.ID {
+		session, found := beginChunkPut(c.Param("id"), user.ID)
+		if !found {
 			fail(c, http.StatusNotFound, fmt.Errorf("上传会话不存在或已过期，请重新导入"))
 			return
 		}
+		defer releaseChunkSessionOperation(session, true)
 		index, err := strconv.Atoi(c.Param("index"))
 		if err != nil || index < 0 || index >= session.ChunkCount {
 			fail(c, http.StatusBadRequest, fmt.Errorf("非法的分片序号"))
@@ -208,27 +552,55 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			fail(c, http.StatusBadRequest, fmt.Errorf("非法的分片序号"))
 			return
 		}
+		if !chunkSessionAcceptsWrites(session) {
+			fail(c, http.StatusNotFound, fmt.Errorf("上传会话不存在或已过期，请重新导入"))
+			return
+		}
 		// 单片限长（期望长度 + 少量余量），超长直接中断，避免内存/磁盘被恶意占用。
 		body := http.MaxBytesReader(c.Writer, c.Request.Body, expected+chunkUploadSlackBytes)
-		dst, err := os.OpenFile(session.chunkPath(index), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		dst, err := os.CreateTemp(session.Dir, fmt.Sprintf(".chunk-%d-*.tmp", index))
 		if err != nil {
 			failService(c, err)
 			return
 		}
+		tempPath := dst.Name()
+		keepTemp := true
+		defer func() {
+			if keepTemp {
+				_ = os.Remove(tempPath)
+			}
+		}()
 		written, copyErr := io.CopyN(dst, body, expected)
+		syncErr := dst.Sync()
 		closeErr := dst.Close()
 		var probe [1]byte
 		extra, readErr := body.Read(probe[:])
-		if copyErr != nil || closeErr != nil {
-			_ = os.Remove(session.chunkPath(index))
+		if copyErr != nil {
 			fail(c, http.StatusBadRequest, fmt.Errorf("分片 %d 上传不完整，请重试", index))
 			return
 		}
+		if syncErr != nil {
+			failService(c, syncErr)
+			return
+		}
+		if closeErr != nil {
+			failService(c, closeErr)
+			return
+		}
 		if readErr == nil || extra > 0 {
-			_ = os.Remove(session.chunkPath(index))
 			fail(c, http.StatusBadRequest, fmt.Errorf("分片 %d 超过大小限制", index))
 			return
 		}
+		published, publishErr := publishChunkFile(session, index, tempPath)
+		if publishErr != nil {
+			failService(c, publishErr)
+			return
+		}
+		if !published {
+			fail(c, http.StatusNotFound, fmt.Errorf("上传会话不存在或已过期，请重新导入"))
+			return
+		}
+		keepTemp = false
 		_ = written
 		ok(c, gin.H{"index": index})
 	})
@@ -240,11 +612,24 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		id := c.Param("id")
-		session := takeChunkSession(id)
-		if session == nil || session.UserID != user.ID {
+		session, beginResult := beginChunkComplete(id, user.ID)
+		switch beginResult {
+		case chunkCompleteBeginNotFound:
 			fail(c, http.StatusNotFound, fmt.Errorf("上传会话不存在或已过期，请重新导入"))
 			return
+		case chunkCompleteBeginBusy:
+			fail(c, http.StatusConflict, fmt.Errorf("上传会话仍在写入或合并中，请稍后重试"))
+			return
 		}
+		terminal := false
+		defer func() {
+			if terminal {
+				retireChunkSession(id, session, chunkUploadSessionCompleted)
+				releaseChunkSessionOperation(session, false)
+				return
+			}
+			reopenChunkSession(session)
+		}()
 		if !session.hasAllChunks() {
 			fail(c, http.StatusBadRequest, fmt.Errorf("上传文件不完整，请重新导入"))
 			return
@@ -277,7 +662,7 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		if total != session.Size {
-			dropChunkSession(id)
+			terminal = true
 			fail(c, http.StatusBadRequest, fmt.Errorf("上传文件不完整，请重新导入"))
 			return
 		}
@@ -287,13 +672,30 @@ func RegisterChunkedUploadRoutes(r *gin.RouterGroup, svc *service.Service) {
 			return
 		}
 		defer fh.Close()
+		// 一旦把完整文件交给资源服务，后续失败也结束本次会话，避免重复提交同一临时文件。
+		terminal = true
 		resource, svcErr := svc.UploadResourceFile(user.ID, session.FileName, session.Size, session.Kind, session.Width, session.Height, session.DurationMs, fh, session.IdempotencyKey)
-		// 无论成败都结束会话：失败时前端会整传重试，不需要保留残片。
-		dropChunkSession(id)
 		if svcErr != nil {
 			failService(c, svcErr)
 			return
 		}
 		ok(c, gin.H{"resource": resource})
+	})
+
+	r.DELETE("/resources/uploads/:id", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		switch cancelChunkSession(c.Param("id"), user.ID) {
+		case chunkCancelAccepted:
+			ok(c, gin.H{"cancelled": true})
+		case chunkCancelCompletionOwns:
+			ok(c, gin.H{"cancelled": false})
+		default:
+			// 不存在、过期、已完成和他人会话统一 404，避免泄露 uploadId 归属。
+			fail(c, http.StatusNotFound, fmt.Errorf("上传会话不存在或已过期"))
+		}
 	})
 }

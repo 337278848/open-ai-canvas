@@ -28,6 +28,10 @@ func TestCloudAgentReadArgumentsRejectBeforeReadingCanvas(t *testing.T) {
 		{"negative offset", `{"offset":-1}`, "非负整数"},
 		{"negative storyboard offset", `{"storyboardOffset":-1}`, "非负整数"},
 		{"too many nodes", `{"nodeIds":["1","2","3","4","5","6","7","8","9"]}`, "最多包含8个"},
+		{"null depth", `{"focusNodeIds":["1"],"depth":null}`, "不能为 null"},
+		{"null includeRelated", `{"focusNodeIds":["1"],"includeRelated":null}`, "不能为 null"},
+		{"null maxItems", `{"maxItems":null}`, "不能为 null"},
+		{"maxItems with focus", `{"maxItems":2,"focusNodeIds":["1"]}`, "不能与 focusNodeIds 同传"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			call := cloudAgentCall{ID: "read-1"}
@@ -40,6 +44,34 @@ func TestCloudAgentReadArgumentsRejectBeforeReadingCanvas(t *testing.T) {
 				t.Fatalf("expected correctable %q error, got %v", tt.message, err)
 			}
 		})
+	}
+}
+
+func TestCloudAgentCanvasReadAcceptsLegacyMaxItemsWithNodeIDs(t *testing.T) {
+	s, db, canvasID, _ := creationTestService(t)
+	canvas := model.CanvasProject{
+		ID:          canvasID,
+		UserID:      "user",
+		PayloadJSON: `{"nodes":[{"id":"note","type":"text","content":"saved content"}]}`,
+	}
+	if err := db.Create(&canvas).Error; err != nil {
+		t.Fatal(err)
+	}
+	state := &cloudAgentRuntime{Request: CloudAgentRequest{CanvasID: canvasID}}
+	call := cloudAgentCall{ID: "legacy-read"}
+	call.Function.Name = "canvas_get_state"
+	call.Function.Arguments = `{"maxItems":1,"nodeIds":["note"]}`
+	result, err := cloudAgentReadTool(s.repo, "user", state, call)
+	if err != nil {
+		t.Fatalf("legacy maxItems+nodeIds call was rejected: %v", err)
+	}
+	body, ok := result.(map[string]any)
+	if !ok || body["snapshotHash"] == nil {
+		t.Fatalf("legacy maxItems+nodeIds call returned an unexpected result: %#v", result)
+	}
+	nodes, ok := body["nodes"].([]any)
+	if !ok || len(nodes) != 1 {
+		t.Fatalf("legacy maxItems+nodeIds call returned unexpected nodes: %#v", body["nodes"])
 	}
 }
 
@@ -143,7 +175,7 @@ func TestCloudAgentCanvasReadArgumentRepairContinuesRun(t *testing.T) {
 				t.Fatalf("lost strict schema after checkpoint: %#v", result)
 			}
 			properties, _ := schema["properties"].(map[string]any)
-			if len(properties) != 5 || properties["offset"] == nil || properties["nodeIds"] == nil || properties["storyboardOffset"] == nil || properties["connectionOffset"] == nil || properties["maxItems"] == nil {
+			if len(properties) != 8 || properties["offset"] == nil || properties["nodeIds"] == nil || properties["focusNodeIds"] == nil || properties["depth"] == nil || properties["includeRelated"] == nil || properties["storyboardOffset"] == nil || properties["connectionOffset"] == nil || properties["maxItems"] == nil {
 				t.Fatalf("wrong repair schema: %#v", properties)
 			}
 		} else if result["error"] != nil || result["snapshotHash"] == nil || !strings.Contains(last["content"].(string), "saved content") {

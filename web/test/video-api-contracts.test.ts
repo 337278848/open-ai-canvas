@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { defaultConfig } from "../src/stores/use-config-store";
+import { createVideoGenerationsTask } from "../src/services/api/video-provider-newapi";
 import { createSeedanceTask } from "../src/services/api/video-provider-seedance";
 import { createMiniMaxVideoTask } from "../src/services/api/video-provider-minimax";
 import type { VideoProviderDeps } from "../src/services/api/video-provider-deps";
@@ -96,6 +97,24 @@ describe("Volcengine Ark full-modal references", () => {
         ]);
     });
 
+    test("does not request provider-input credentials for backend resources", async () => {
+        const deps = {
+            transport: { post: async () => { throw new Error("transport must not run"); } },
+            response: videoResponseTools,
+        } as unknown as VideoProviderDeps;
+        await expect(
+            createSeedanceTask(
+                deps,
+                config as never,
+                model,
+                "使用后端资源",
+                [{ id: "resource-image", name: "image.png", type: "image/png", storageKey: "resource:resource-image" }],
+                [],
+                [],
+            ),
+        ).rejects.toThrow("不能直接使用后端资源");
+    });
+
     test("拒绝纯音频和文本加音频", async () => {
         const deps = { transport: {}, response: videoResponseTools } as unknown as VideoProviderDeps;
         await expect(createSeedanceTask(deps, config as never, model, "跟随节奏", [], [], [{ id: "audio-1", name: "audio.mp3", type: "audio/mpeg", url: "https://cdn.example.com/audio.mp3" }])).rejects.toThrow("不支持纯音频或文本+音频");
@@ -127,6 +146,37 @@ describe("Volcengine Ark full-modal references", () => {
             image_url: { url: "https://cdn.example.com/character.png" },
             role: "reference_image",
         });
+    });
+});
+
+describe("NewAPI Video Generations resource security", () => {
+    test("does not request provider-input credentials for backend resources", async () => {
+        const config = {
+            ...defaultConfig,
+            baseUrl: "https://newapi.example.com/v1",
+            apiKey: "test-key",
+            interfaceType: "newapi-channel-2",
+            model: "video-model",
+            videoModel: "video-model",
+            videoSeconds: "6",
+            size: "16:9",
+            vquality: "720p",
+        };
+        const deps = {
+            transport: { post: async () => { throw new Error("transport must not run"); } },
+            response: videoResponseTools,
+        } as unknown as VideoProviderDeps;
+        await expect(
+            createVideoGenerationsTask(
+                deps,
+                config as never,
+                "video-model",
+                "使用后端资源",
+                [{ id: "resource-image", name: "image.png", type: "image/png", storageKey: "resource:resource-image" }],
+                [],
+                [],
+            ),
+        ).rejects.toThrow("不能直接使用后端资源");
     });
 });
 

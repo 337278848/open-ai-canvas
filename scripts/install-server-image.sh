@@ -7,11 +7,14 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
 REQUESTED_IMAGE_TAG="${CANVAS_IMAGE_TAG:-}"
 CANVAS_IMAGE_TAG="${REQUESTED_IMAGE_TAG#v}"
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/ddcat-ai/open-ai-canvas}"
+DEFAULT_IMAGE_REPOSITORY="ghcr.io/ddcat-ai/open-ai-canvas"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-$DEFAULT_IMAGE_REPOSITORY}"
 CANVAS_BACKEND_IMAGE=""
 CANVAS_WEB_IMAGE=""
+REQUESTED_UPDATER_SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-}"
 COMPOSE_FILE="docker-compose.deploy.yml"
-COMPOSE_URL="${COMPOSE_URL:-https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${REPOSITORY_REF}/${COMPOSE_FILE}}"
+COMPOSE_REF="${COMPOSE_REF:-}"
+COMPOSE_URL="${COMPOSE_URL:-}"
 UPDATER_INSTALL_URL="${UPDATER_INSTALL_URL:-https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${REPOSITORY_REF}/scripts/install-host-updater.sh}"
 
 step() {
@@ -23,11 +26,82 @@ fail() {
     exit 1
 }
 
+validate_compose_image_contract() {
+    local compose_path="$1"
+    awk '
+        function indent(line,    prefix) {
+            prefix = line
+            sub(/[^ \t].*/, "", prefix)
+            return length(prefix)
+        }
+        function uses_image_variable(line, variable,    value, prefix, next_char) {
+            value = line
+            sub(/^[ \t]*image:[ \t]*/, "", value)
+            sub(/^["\047]/, "", value)
+            prefix = "${" variable
+            if (index(value, prefix) != 1) {
+                return 0
+            }
+            next_char = substr(value, length(prefix) + 1, 1)
+            return next_char == "}" || next_char == ":" || next_char == "?" || next_char == "-" || next_char == "+"
+        }
+        {
+            current_indent = indent($0)
+            trimmed = $0
+            sub(/^[ \t]*/, "", trimmed)
+            sub(/[ \t]*$/, "", trimmed)
+            if (trimmed == "" || trimmed ~ /^#/) {
+                next
+            }
+            if (!in_services) {
+                if (trimmed == "services:") {
+                    in_services = 1
+                    services_indent = current_indent
+                }
+                next
+            }
+            if (current_indent <= services_indent) {
+                in_services = 0
+                service = ""
+                next
+            }
+            if (service != "" && current_indent <= service_indent) {
+                service = ""
+            }
+            if (service == "" && current_indent == services_indent + 2 && trimmed ~ /^[^:]+:[ \t]*(#.*)?$/) {
+                service = trimmed
+                sub(/[ \t]*#.*/, "", service)
+                sub(/:.*/, "", service)
+                service_indent = current_indent
+                next
+            }
+            if (service != "" && current_indent == service_indent + 2 && trimmed ~ /^image:[ \t]*/) {
+                if (service == "backend" && uses_image_variable($0, "CANVAS_BACKEND_IMAGE")) {
+                    found_backend = 1
+                }
+                if (service == "migrate" && uses_image_variable($0, "CANVAS_BACKEND_IMAGE")) {
+                    found_migrate = 1
+                }
+                if (service == "web" && uses_image_variable($0, "CANVAS_WEB_IMAGE")) {
+                    found_web = 1
+                }
+            }
+        }
+        END {
+            if (!found_backend || !found_migrate || !found_web) {
+                exit 1
+            }
+        }
+    ' "$compose_path" ||
+        fail "部署 Compose 的 services.backend、services.migrate、services.web 必须分别使用对应镜像变量，已拒绝旧格式"
+}
+
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
         fail "请使用 README 中带 sudo 的一键安装命令"
     fi
     [[ "$(uname -s)" == "Linux" ]] || fail "一键部署脚本仅支持 Linux 服务器"
+    [[ "$IMAGE_REPOSITORY" == "$DEFAULT_IMAGE_REPOSITORY" ]] || fail "当前版本仅支持 GHCR 镜像仓库 ${DEFAULT_IMAGE_REPOSITORY}；不支持自定义 IMAGE_REPOSITORY"
     [[ "$CANVAS_HTTP_PORT" =~ ^[0-9]+$ ]] || fail "CANVAS_HTTP_PORT 必须是 1 到 65535 的数字"
     ((CANVAS_HTTP_PORT >= 1 && CANVAS_HTTP_PORT <= 65535)) || fail "CANVAS_HTTP_PORT 必须是 1 到 65535 的数字"
     if [[ -n "$CANVAS_IMAGE_TAG" ]]; then
@@ -121,6 +195,7 @@ prepare_environment() {
         set_env_value .env CANVAS_IMAGE_TAG "$CANVAS_IMAGE_TAG"
         set_env_value .env CANVAS_BACKEND_IMAGE "$CANVAS_BACKEND_IMAGE"
         set_env_value .env CANVAS_WEB_IMAGE "$CANVAS_WEB_IMAGE"
+        resolve_updater_socket_dir
         return
     fi
 
@@ -145,6 +220,7 @@ CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
 CANVAS_CORS_ORIGINS=
 EOF
+    resolve_updater_socket_dir
 }
 
 set_env_value() {
@@ -163,11 +239,40 @@ set_env_value() {
     mv "$temporary" "$path"
 }
 
+resolve_updater_socket_dir() {
+    local configured_socket_dir
+    configured_socket_dir="$(sed -n 's/^CANVAS_UPDATER_SOCKET_DIR=//p' .env | tail -n 1)"
+    if [[ -n "$REQUESTED_UPDATER_SOCKET_DIR" ]]; then
+        CANVAS_UPDATER_SOCKET_DIR="$REQUESTED_UPDATER_SOCKET_DIR"
+        set_env_value .env CANVAS_UPDATER_SOCKET_DIR "$CANVAS_UPDATER_SOCKET_DIR"
+    elif [[ -n "$configured_socket_dir" ]]; then
+        CANVAS_UPDATER_SOCKET_DIR="$configured_socket_dir"
+    else
+        CANVAS_UPDATER_SOCKET_DIR="/run/open-ai-canvas-updater"
+    fi
+    [[ "$CANVAS_UPDATER_SOCKET_DIR" == /* ]] || fail "CANVAS_UPDATER_SOCKET_DIR 必须是绝对路径"
+}
+
+resolve_compose_url() {
+    [[ -n "$COMPOSE_URL" ]] && return
+    local compose_ref="$COMPOSE_REF"
+    if [[ -z "$compose_ref" ]]; then
+        if [[ -n "$CANVAS_IMAGE_TAG" ]]; then
+            compose_ref="v${CANVAS_IMAGE_TAG}"
+        else
+            compose_ref="$REPOSITORY_REF"
+        fi
+    fi
+    COMPOSE_URL="https://raw.githubusercontent.com/ddcat-ai/open-ai-canvas/${compose_ref}/${COMPOSE_FILE}"
+}
+
 download_compose() {
-    step "下载 GHCR 镜像部署配置"
+    resolve_compose_url
+    step "下载与镜像 Release 匹配的 GHCR 部署配置"
     local temporary_file
     temporary_file="$(mktemp "${INSTALL_DIR}/.docker-compose.deploy.XXXXXX")"
     curl -fsSL "$COMPOSE_URL" -o "$temporary_file"
+    validate_compose_image_contract "$temporary_file"
     mv "$temporary_file" "$COMPOSE_FILE"
 }
 
@@ -176,12 +281,12 @@ install_host_updater() {
     local installer
     installer="$(mktemp)"
     curl -fsSL "$UPDATER_INSTALL_URL" -o "$installer"
-    INSTALL_DIR="$INSTALL_DIR" bash "$installer"
+    INSTALL_DIR="$INSTALL_DIR" CANVAS_UPDATER_SOCKET_DIR="$CANVAS_UPDATER_SOCKET_DIR" bash "$installer"
     rm -f "$installer"
 }
 
-start_services() {
-    step "拉取并启动 GHCR 网页与后端镜像"
+pull_and_pin_images() {
+    step "拉取并固定 GHCR 网页与后端镜像 digest"
     if ! docker compose --env-file .env -f "$COMPOSE_FILE" pull; then
         fail "GHCR 镜像拉取失败；如果容器包尚未公开，请通过 GHCR_USERNAME 和 GHCR_TOKEN 登录后重试"
     fi
@@ -192,6 +297,10 @@ start_services() {
     [[ "$web_digest" =~ ^${IMAGE_REPOSITORY//\//\/}-web@sha256:[a-f0-9]{64}$ ]] || fail "Web 镜像未返回可验证的仓库 digest"
     set_env_value .env CANVAS_BACKEND_IMAGE "$backend_digest"
     set_env_value .env CANVAS_WEB_IMAGE "$web_digest"
+}
+
+start_services() {
+    step "启动 GHCR 网页与后端镜像"
     docker compose --env-file .env -f "$COMPOSE_FILE" up -d --remove-orphans --wait --wait-timeout 600
 }
 
@@ -215,8 +324,9 @@ main() {
     login_ghcr
     prepare_environment
     download_compose
-    start_services
+    pull_and_pin_images
     install_host_updater
+    start_services
     print_result
 }
 

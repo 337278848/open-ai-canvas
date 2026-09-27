@@ -30,16 +30,20 @@ async function generateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSi
     throwIfAborted(signal);
     if (!captured.poster) return null;
     const localUrl = URL.createObjectURL(captured.poster);
-    const persisted = uploadImage(captured.poster)
-        .then((preview) => ({
-            content: preview.url,
-            storageKey: preview.storageKey,
-            width: preview.width,
-            height: preview.height,
-            bytes: preview.bytes,
-            mimeType: preview.mimeType,
-        }))
+    const persisted = uploadImage(captured.poster, undefined, signal)
+        .then((preview) => {
+            throwIfAborted(signal);
+            return {
+                content: preview.url,
+                storageKey: preview.storageKey,
+                width: preview.width,
+                height: preview.height,
+                bytes: preview.bytes,
+                mimeType: preview.mimeType,
+            };
+        })
         .catch((error) => {
+            if (signal?.aborted || isAbortError(error)) return null;
             // 首帧已经在本地可见；预览图持久化失败只影响后续刷新，不阻断视频节点。
             console.warn("视频首帧持久化失败，保留本地首帧", { nodeId: node.id, error });
             return null;
@@ -50,7 +54,7 @@ async function generateCanvasVideoPreview(node: CanvasNodeData, signal?: AbortSi
 function waitForBrowserIdle(signal?: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
         if (signal?.aborted) {
-            reject(abortError());
+            reject(abortError(signal));
             return;
         }
         let idleId: number | undefined;
@@ -70,7 +74,7 @@ function waitForBrowserIdle(signal?: AbortSignal) {
         };
         const handleAbort = () => {
             cleanup();
-            reject(abortError());
+            reject(abortError(signal));
         };
         signal?.addEventListener("abort", handleAbort, { once: true });
         if (idleWindow.requestIdleCallback) idleId = idleWindow.requestIdleCallback(finish, { timeout: 1_000 });
@@ -79,9 +83,15 @@ function waitForBrowserIdle(signal?: AbortSignal) {
 }
 
 function throwIfAborted(signal?: AbortSignal) {
-    if (signal?.aborted) throw abortError();
+    if (signal?.aborted) throw abortError(signal);
 }
 
-function abortError() {
+function isAbortError(error: unknown) {
+    return error instanceof Error && error.name === "AbortError";
+}
+
+function abortError(signal?: AbortSignal) {
+    if (signal?.reason instanceof DOMException && signal.reason.name === "AbortError") return signal.reason;
+    if (signal?.reason instanceof Error && signal.reason.name === "AbortError") return signal.reason;
     return new DOMException("Canvas video preview hydration aborted", "AbortError");
 }

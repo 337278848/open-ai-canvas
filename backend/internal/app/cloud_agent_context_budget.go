@@ -62,9 +62,9 @@ func cloudAgentContextBudgetFor(contextWindow, maxOutput int, source string) clo
 }
 
 // cloudAgentContextBudgetForRequest resolves the capability contract that will
-// actually execute the next text turn. Logical models use the safe intersection
-// of every eligible text route so route selection cannot choose a smaller window
-// after the context was assembled.
+// actually execute the next text turn. Logical models use the most restrictive
+// per-route input budget so route selection cannot choose a smaller budget after
+// the context was assembled.
 func (s *Service) cloudAgentContextBudgetForRequest(req CloudAgentRequest) cloudAgentContextBudget {
 	if s == nil || s.repo == nil {
 		return defaultCloudAgentContextBudget()
@@ -72,24 +72,8 @@ func (s *Service) cloudAgentContextBudgetForRequest(req CloudAgentRequest) cloud
 	if req.LogicalModelID != "" {
 		if snapshot, err := s.routeCatalogSnapshot(); err == nil {
 			if cached, ok := snapshot.Models[req.LogicalModelID]; ok {
-				contextWindow, maxOutput := 0, 0
-				for _, route := range cached.Routes {
-					if normalizeCapability(route.CapabilitySpec.Capability) != "text" {
-						continue
-					}
-					capability, err := normalizedChannelModelCapability(&route.ChannelModel)
-					if err != nil || capability == nil || capability.Text == nil {
-						continue
-					}
-					if contextWindow == 0 || capability.Text.ContextWindowTokens < contextWindow {
-						contextWindow = capability.Text.ContextWindowTokens
-					}
-					if maxOutput == 0 || capability.Text.MaxOutputTokens < maxOutput {
-						maxOutput = capability.Text.MaxOutputTokens
-					}
-				}
-				if contextWindow > 0 && maxOutput > 0 {
-					return cloudAgentContextBudgetFor(contextWindow, maxOutput, "logical-route-intersection")
+				if budget, ok := cloudAgentLogicalRouteContextBudget(cached.Routes); ok {
+					return budget
 				}
 			}
 		}
@@ -101,6 +85,31 @@ func (s *Service) cloudAgentContextBudgetForRequest(req CloudAgentRequest) cloud
 		}
 	}
 	return defaultCloudAgentContextBudget()
+}
+
+func cloudAgentLogicalRouteContextBudget(routes []cachedLogicalRoute) (cloudAgentContextBudget, bool) {
+	var selected cloudAgentContextBudget
+	found := false
+	for _, route := range routes {
+		if normalizeCapability(route.CapabilitySpec.Capability) != "text" {
+			continue
+		}
+		capability, err := normalizedChannelModelCapability(&route.ChannelModel)
+		if err != nil || capability == nil || capability.Text == nil ||
+			capability.Text.ContextWindowTokens <= 0 || capability.Text.MaxOutputTokens <= 0 {
+			continue
+		}
+		candidate := cloudAgentContextBudgetFor(
+			capability.Text.ContextWindowTokens,
+			capability.Text.MaxOutputTokens,
+			"logical-route-intersection",
+		)
+		if !found || candidate.InputBudgetTokens < selected.InputBudgetTokens {
+			selected = candidate
+			found = true
+		}
+	}
+	return selected, found
 }
 
 // cloudAgentChannelTextCapability resolves the text capability of the channel

@@ -80,6 +80,8 @@ test("auth scene consumes resolved appearance instead of hardcoded media constan
     // 登录页不再硬编码深色主题，改为跟随全局主题 store；这里验证新合同，而不是回退旧断言。
     expect(source).toContain("useThemeStore");
     expect(source).not.toContain('theme="dark"');
+    expect(source).toContain("useThemeStore((state) => state.theme)");
+    expect(source).toContain("theme={theme}");
     expect(source).not.toContain("让一个故事，");
     expect(source).not.toContain("AUTH_VIDEO_URL");
     expect(source).not.toContain("AUTH_VIDEO_POSTER");

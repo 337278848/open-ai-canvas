@@ -1,4 +1,5 @@
 import { getActiveUserScope } from "@/lib/user-scope";
+import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { http, apiBaseURL, ApiError } from "@/services/api/request";
 import type { OSSConnectionTestInput, OSSConnectionTestResult, OSSProvider, S3Preset } from "@/lib/oss-settings";
 
@@ -102,7 +103,7 @@ export class ResourceUploadError extends Error {
 const resourceCache = new Map<string, RemoteResource>();
 const resourceRequests = new Map<string, Promise<RemoteResource>>();
 const missingResourceIds = new Set<string>();
-export type ResourceAccessPurpose = "display" | "copy" | "download" | "browser-process" | "provider-input";
+export type ResourceAccessPurpose = "display" | "copy" | "download" | "browser-process";
 export type ResourceAccessVariant = "original" | "playback";
 export type ResourceAccess = {
     resourceId: string;
@@ -117,8 +118,56 @@ export type ResourceAccess = {
     fallbackReason?: string;
 };
 
-const accessCache = new Map<string, { value: ResourceAccess; expiresAt: number }>();
+type ResourceAccessBatchItem = { resourceId: string; access?: ResourceAccess; error?: { msg?: string } };
+type CachedResourceAccess = { value: ResourceAccess; expiresAt: number };
+const accessCache = new Map<string, CachedResourceAccess>();
 const accessRequests = new Map<string, Promise<ResourceAccess>>();
+const PERSISTED_DISPLAY_ACCESS_PREFIX = "resource-access-v1:";
+
+function persistedDisplayAccessKey(resourceId: string, variant: ResourceAccessVariant) {
+    return `${PERSISTED_DISPLAY_ACCESS_PREFIX}${resourceId}:${variant}`;
+}
+
+function shouldPersistDisplayAccess(value: ResourceAccess) {
+    // 只跨页面缓存 OSS/CDN 直连地址；平台本地/代理地址仍只在内存中保留，避免把平台签名凭据落到持久存储。
+    return value.delivery === "cdn" || value.delivery === "origin";
+}
+
+function resourceAccessCacheExpiry(value: ResourceAccess, now = Date.now()) {
+    const expiresAt = value.expiresAt ? new Date(value.expiresAt).getTime() : Number.NaN;
+    if (Number.isFinite(expiresAt) && expiresAt <= now + 1_000) return now;
+    const refreshAt = value.refreshAt ? new Date(value.refreshAt).getTime() : Number.NaN;
+    const candidates = [Number.isFinite(refreshAt) && refreshAt > now ? refreshAt : Number.POSITIVE_INFINITY, Number.isFinite(expiresAt) && expiresAt > now ? expiresAt - 15_000 : Number.POSITIVE_INFINITY].filter(Number.isFinite);
+    if (candidates.length) return Math.max(now, Math.min(...candidates));
+    return now + 5 * 60_000;
+}
+
+async function readPersistedDisplayAccess(scope: string, resourceId: string, variant: ResourceAccessVariant): Promise<CachedResourceAccess | undefined> {
+    try {
+        const raw = await localForageStorageForScope(scope).getItem(persistedDisplayAccessKey(resourceId, variant));
+        if (!raw) return undefined;
+        const parsed = JSON.parse(raw) as Partial<CachedResourceAccess>;
+        if (!parsed.value?.url || !shouldPersistDisplayAccess(parsed.value) || typeof parsed.expiresAt !== "number") return undefined;
+        const actualExpiresAt = parsed.value.expiresAt ? new Date(parsed.value.expiresAt).getTime() : Number.NaN;
+        if (parsed.expiresAt <= Date.now() || (Number.isFinite(actualExpiresAt) && actualExpiresAt <= Date.now() + 1_000)) {
+            await localForageStorageForScope(scope).removeItem(persistedDisplayAccessKey(resourceId, variant));
+            return undefined;
+        }
+        return parsed as CachedResourceAccess;
+    } catch {
+        // 签名地址缓存只是性能优化，存储不可用或数据损坏时继续走后端签发。
+        return undefined;
+    }
+}
+
+async function persistDisplayAccess(scope: string, resourceId: string, variant: ResourceAccessVariant, entry: CachedResourceAccess) {
+    if (!shouldPersistDisplayAccess(entry.value) || entry.expiresAt <= Date.now()) return;
+    try {
+        await localForageStorageForScope(scope).setItem(persistedDisplayAccessKey(resourceId, variant), JSON.stringify(entry));
+    } catch {
+        // 不把本地缓存失败升级为资源访问失败。
+    }
+}
 let accessGeneration = 0;
 
 /**
@@ -175,13 +224,15 @@ export function isResourceUrl(url?: string) {
 const CHUNK_UPLOAD_THRESHOLD = 50 << 20;
 const CHUNK_UPLOAD_RETRIES = 2;
 
-export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta, onProgress?: (uploadedBytes: number, totalBytes: number) => void): Promise<RemoteResource> {
+export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "audio" | "file", meta?: ResourceUploadMeta, onProgress?: (uploadedBytes: number, totalBytes: number) => void, signal?: AbortSignal): Promise<RemoteResource> {
+    throwIfAborted(signal);
     const name = meta?.fileName || (file instanceof File ? file.name : `${kind}.${extensionFromMime(file.type, kind)}`);
     // 分片与 multipart 两条路径的失败都要归一成 ResourceUploadError，
     // 否则调用方只能靠文案猜测该重试还是该报错。
     try {
         if (file.size > CHUNK_UPLOAD_THRESHOLD) {
-            const resource = await uploadFileInChunks(file, name, kind, meta, onProgress);
+            const resource = await uploadFileInChunks(file, name, kind, meta, onProgress, signal);
+            throwIfAborted(signal);
             resourceCache.set(resourceCacheKey(resource.id), resource);
             return resource;
         }
@@ -192,41 +243,49 @@ export async function uploadResourceFile(file: Blob, kind: "image" | "video" | "
         if (meta?.height) formData.append("height", String(Math.round(meta.height)));
         if (meta?.durationMs) formData.append("durationMs", String(Math.round(meta.durationMs)));
         const data = await http.post<{ resource: RemoteResource }>("/resources", formData, {
-            ...uploadRequestConfig(meta?.idempotencyKey),
+            ...uploadRequestConfig(meta?.idempotencyKey, signal),
             onUploadProgress: onProgress
                 ? ({ loaded, total }) => {
-                      if (total && total > 0) onProgress(Math.min(file.size, (file.size * loaded) / total), file.size);
+                      if (!signal?.aborted && total && total > 0) onProgress(Math.min(file.size, (file.size * loaded) / total), file.size);
                   }
                 : undefined,
         });
+        throwIfAborted(signal);
         resourceCache.set(resourceCacheKey(data.resource.id), data.resource);
         return data.resource;
     } catch (error) {
+        if (signal?.aborted) throw toUploadAbortError(error, signal);
         throw normalizeUploadError(error);
     }
 }
 
 // 分片上传：POST 开始会话 → 逐片 PUT 原始二进制（每片 8MB）→ POST 合并落库。
 // 单请求体积小、可断点续传/失败重试；单文件不再受 50MB 限制（仅日/总量配额约束）。
-async function uploadFileInChunks(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
+async function uploadFileInChunks(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void, signal?: AbortSignal) {
     // 片级失败通常意味着会话过期/网络抖动：整体重开一次会话重传（整传重试）。
     for (let attempt = 0; attempt < CHUNK_UPLOAD_RETRIES; attempt++) {
+        throwIfAborted(signal);
         try {
-            return await runChunkedUpload(file, name, kind, meta, onProgress);
+            return await runChunkedUpload(file, name, kind, meta, onProgress, signal);
         } catch (error) {
+            if (signal?.aborted) throw toUploadAbortError(error, signal);
+            if (isAbortError(error)) throw error;
             if (attempt === CHUNK_UPLOAD_RETRIES - 1) throw error;
         }
     }
     throw new Error("上传失败");
 }
 
-async function runChunkedUpload(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void) {
+async function runChunkedUpload(file: Blob, name: string, kind: "image" | "video" | "audio" | "file", meta: ResourceUploadMeta | undefined, onProgress?: (uploadedBytes: number, totalBytes: number) => void, signal?: AbortSignal) {
+    throwIfAborted(signal);
     const session = await http.post<{ uploadId: string; chunkSize: number; chunkCount: number }>(
         "/resources/uploads",
         { fileName: name, kind, size: file.size, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs },
-        uploadRequestConfig(meta?.idempotencyKey),
+        uploadRequestConfig(meta?.idempotencyKey, signal),
     );
+    throwIfAborted(signal);
     for (let index = 0; index < session.chunkCount; index++) {
+        throwIfAborted(signal);
         const start = index * session.chunkSize;
         const end = Math.min(file.size, start + session.chunkSize);
         const blob = file.slice(start, end);
@@ -235,11 +294,19 @@ async function runChunkedUpload(file: Blob, name: string, kind: "image" | "video
         // raw 二进制直传，与后端按裸 body 逐片落盘对齐（勿设手动 Content-Type，让 axios 处理）。
         await http.put<{ index: number }>(`/resources/uploads/${encodeURIComponent(session.uploadId)}/chunks/${index}`, blob, {
             headers: { "Content-Type": "application/octet-stream" },
-            onUploadProgress: onProgress ? ({ loaded }) => onProgress(start + Math.min(loaded, blob.size), file.size) : undefined,
+            signal,
+            onUploadProgress: onProgress
+                ? ({ loaded }) => {
+                      if (!signal?.aborted) onProgress(start + Math.min(loaded, blob.size), file.size);
+                  }
+                : undefined,
         });
+        throwIfAborted(signal);
         onProgress?.(Math.min(end, file.size), file.size);
     }
-    const complete = await http.post<{ resource: RemoteResource }>(`/resources/uploads/${encodeURIComponent(session.uploadId)}/complete`);
+    throwIfAborted(signal);
+    const complete = await http.post<{ resource: RemoteResource }>(`/resources/uploads/${encodeURIComponent(session.uploadId)}/complete`, undefined, { signal });
+    throwIfAborted(signal);
     return complete.resource;
 }
 
@@ -248,9 +315,8 @@ async function runChunkedUpload(file: Blob, name: string, kind: "image" | "video
 // 差别只有一处：没有拿到任何 HTTP 响应（断网、超时）时 retryable 为 false，
 // 但这种失败恰恰是最该退回本机等待重传的，因此单独按瞬时处理。
 function normalizeUploadError(error: unknown): ResourceUploadError {
+    if (isAbortError(error)) throw error;
     if (error instanceof ResourceUploadError) return error;
-    // 请求取消不是上传失败，保持原始语义交给调用方。
-    if (error instanceof DOMException && error.name === "AbortError") throw error;
     if (error instanceof ApiError) {
         const status = error.status;
         const permanent = status !== undefined && !error.retryable;
@@ -264,15 +330,34 @@ function normalizeUploadError(error: unknown): ResourceUploadError {
     return new ResourceUploadError(error instanceof Error ? error.message : "上传失败", { permanent: false, cause: error });
 }
 
-export async function importResourceFromUrl(url: string, kind: "image" | "video" | "audio" | "file", meta?: Omit<ResourceUploadMeta, "fileName">) {
-    const data = await http.post<{ resource: RemoteResource }>("/resources/import", { url, kind, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs }, uploadRequestConfig(meta?.idempotencyKey));
+export async function importResourceFromUrl(url: string, kind: "image" | "video" | "audio" | "file", meta?: Omit<ResourceUploadMeta, "fileName">, signal?: AbortSignal) {
+    throwIfAborted(signal);
+    const data = await http.post<{ resource: RemoteResource }>("/resources/import", { url, kind, width: meta?.width, height: meta?.height, durationMs: meta?.durationMs }, uploadRequestConfig(meta?.idempotencyKey, signal));
+    throwIfAborted(signal);
     resourceCache.set(resourceCacheKey(data.resource.id), data.resource);
     return data.resource;
 }
 
-function uploadRequestConfig(idempotencyKey?: string) {
+function uploadRequestConfig(idempotencyKey?: string, signal?: AbortSignal) {
     const value = idempotencyKey?.trim();
-    return value ? { headers: { "X-Idempotency-Key": value } } : undefined;
+    return {
+        ...(value ? { headers: { "X-Idempotency-Key": value } } : {}),
+        ...(signal ? { signal } : {}),
+    };
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+    if (signal?.aborted) throw toUploadAbortError(signal.reason, signal);
+}
+
+function isAbortError(error: unknown) {
+    return typeof error === "object" && error !== null && "name" in error && (error as { name?: unknown }).name === "AbortError";
+}
+
+function toUploadAbortError(error: unknown, signal?: AbortSignal) {
+    if (signal?.aborted && isAbortError(signal.reason)) return signal.reason;
+    if (isAbortError(error)) return error;
+    return new DOMException("资源上传已取消", "AbortError");
 }
 
 export function getResource(id: string): Promise<RemoteResource> {
@@ -323,6 +408,9 @@ function assertResourceRequestCurrent(generation: number, scope: string) {
 }
 
 export async function getResourceAccess(storageKey: string | undefined, purpose: ResourceAccessPurpose = "display", variant: ResourceAccessVariant = "original", downloadName = "") {
+    if ((purpose as string) === "provider-input") {
+        throw new Error("浏览器端不支持 provider-input 资源访问，请改用后端生成任务");
+    }
     const id = resourceIdFromStorageKey(storageKey);
     if (!id) throw new Error("当前媒体尚未上传到后端资源存储");
     const scope = getActiveUserScope();
@@ -335,15 +423,27 @@ export async function getResourceAccess(storageKey: string | undefined, purpose:
     let request!: Promise<ResourceAccess>;
     request = (async () => {
         try {
-            const data = await http.post<{ items: Array<{ resourceId: string; access?: ResourceAccess; error?: { msg?: string } }> }>("/resources/access", [{ resourceId: id, purpose, variant, ...(downloadName ? { downloadName } : {}) }]);
+            // 只跨页面复用普通展示地址。下载和模型输入地址可能包含更敏感的权限/文件名，仍只保留内存缓存。
+            if (purpose === "display") {
+                const persisted = await readPersistedDisplayAccess(scope, id, variant);
+                assertResourceRequestCurrent(generation, scope);
+                if (persisted) {
+                    accessCache.set(key, persisted);
+                    return persisted.value;
+                }
+            }
+            const data = await http.post<{ items: ResourceAccessBatchItem[] }>("/resources/access", [{ resourceId: id, purpose, variant, ...(downloadName ? { downloadName } : {}) }]);
             if (generation !== accessGeneration || scope !== getActiveUserScope()) {
                 throw new DOMException("资源访问请求已因账号切换失效", "AbortError");
             }
             const item = data.items?.[0];
             if (!item?.access?.url) throw new Error(item?.error?.msg || "后端未返回资源访问地址");
             const value = item.access;
-            const ttl = value.expiresAt ? Math.max(10_000, new Date(value.expiresAt).getTime() - Date.now() - 15_000) : 5 * 60_000;
-            accessCache.set(key, { value, expiresAt: Date.now() + ttl });
+            const entry = { value, expiresAt: resourceAccessCacheExpiry(value) } satisfies CachedResourceAccess;
+            if (entry.expiresAt > Date.now()) {
+                accessCache.set(key, entry);
+                if (purpose === "display") await persistDisplayAccess(scope, id, variant, entry);
+            }
             return value;
         } catch (error) {
             if (error instanceof ApiError) throw new Error(error.message || "获取对象存储地址失败");
@@ -354,11 +454,6 @@ export async function getResourceAccess(storageKey: string | undefined, purpose:
     })();
     accessRequests.set(key, request);
     return request;
-}
-
-/** 模型上游读取资源使用更长 TTL，但仍走统一资源访问合同。 */
-export async function getResourceInputURL(storageKey?: string) {
-    return (await getResourceAccess(storageKey, "provider-input")).url;
 }
 
 /**

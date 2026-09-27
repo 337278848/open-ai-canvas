@@ -11,10 +11,11 @@ import (
 	"infinite-canvas/backend/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 39
+const CurrentSchemaVersion int64 = 42
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -34,11 +35,26 @@ const legacyChannelModelTagsChecksum = "sha256:channel-model-tags-v32"
 const lxmoneH3CapabilityChecksum = "sha256:lxmone-h3-capability-v34-20260922"
 const providerRequestIDReconciliationChecksum = "sha256:provider-request-id-reconciliation-v35-20260922"
 const reconciliationFollowupChecksum = "sha256:capability-provider-reconciliation-followup-v36-20260922"
-// Versions 37-39 are appended after the local 32-36 lineage. Upstream used
-// 33-35 for these features, but those numbers are already published locally.
+
+// Versions 37-42 are appended after the local 32-36 lineage. Upstream used
+// 33-38 for these features, but those numbers are already published locally.
 const oauthStateAcceptedTermsChecksum = "sha256:oauth-state-accepted-terms-v37-20260925"
 const taskMediaRecoveryChecksum = "sha256:task-media-recovery-v38-20260925"
 const authNotificationsChecksum = "sha256:auth-notifications-v39-20260925"
+const cloudAgentGeminiCacheChecksum = "sha256:cloud-agent-gemini-cache-v40-20260926"
+const cloudAgentGeminiCacheIdentityChecksum = "sha256:cloud-agent-gemini-cache-identity-v41-20260926"
+const prefixedIDSequenceReconcileChecksum = "sha256:prefixed-id-sequence-reconcile-v42-20260926"
+
+// Upstream main consumed versions 32-38 for a different suffix. These
+// historical checksums are accepted only when the upstream lineage is
+// detected; the canonical target lineage keeps the local versions 32-39 and
+// appends the upstream features as 40-42.
+const legacyOAuthStateAcceptedTermsChecksum = "sha256:oauth-state-accepted-terms-v33"
+const legacyTaskMediaRecoveryChecksum = "sha256:task-media-recovery-v34"
+const legacyAuthNotificationsChecksum = "sha256:auth-notifications-v35-20260924"
+const legacyCloudAgentGeminiCacheChecksum = "sha256:cloud-agent-gemini-cache-v36-20260924"
+const legacyCloudAgentGeminiCacheIdentityChecksum = "sha256:cloud-agent-gemini-cache-identity-v37-20260925"
+const legacyPrefixedIDSequenceReconcileChecksum = "sha256:prefixed-id-sequence-reconcile-v38-20260926"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -122,6 +138,9 @@ var schemaMigrations = []migration{
 	{version: 37, name: "oauth_state_accepted_terms", checksum: oauthStateAcceptedTermsChecksum, apply: migrateOAuthStateAcceptedTerms},
 	{version: 38, name: "task_media_recovery", checksum: taskMediaRecoveryChecksum, apply: migrateTaskMediaRecovery},
 	{version: 39, name: "auth_notifications", checksum: authNotificationsChecksum, apply: migrateSchemaV35},
+	{version: 40, name: "cloud_agent_gemini_cache", checksum: cloudAgentGeminiCacheChecksum, apply: migrateCloudAgentGeminiCache},
+	{version: 41, name: "cloud_agent_gemini_cache_identity", checksum: cloudAgentGeminiCacheIdentityChecksum, apply: migrateCloudAgentGeminiCacheIdentity},
+	{version: 42, name: "prefixed_id_sequence_reconcile", checksum: prefixedIDSequenceReconcileChecksum, apply: migratePrefixedIDSequenceReconcile},
 }
 
 func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {
@@ -138,6 +157,65 @@ func migrateTaskMediaRecovery(tx *gorm.DB) error {
 		}
 		if err := tx.Migrator().AddColumn(&model.Task{}, field); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func migrateCloudAgentGeminiCache(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.CloudAgentGeminiCache{}); err != nil {
+		return fmt.Errorf("创建 Gemini 缓存表：%w", err)
+	}
+	return nil
+}
+
+func migratePrefixedIDSequenceReconcile(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.IDSequence{}); err != nil {
+		return fmt.Errorf("创建可读 ID 序列表：%w", err)
+	}
+	return reconcilePrefixedIDSequences(tx)
+}
+
+func migrateCloudAgentGeminiCacheIdentity(tx *gorm.DB) error {
+	// Older upstream databases may contain a global cache_key index even
+	// though cache identity is scoped by user. Drop both historical names
+	// before AutoMigrate recreates the composite (user_id, cache_key) index.
+	for _, name := range []string{"idx_cloud_agent_gemini_caches_cache_key", "idx_cloud_agent_gemini_cache_cache_key"} {
+		if tx.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, name) {
+			// GORM's PostgreSQL DropIndex implementation in v1.6.2 renders
+			// CURRENT_SCHEMA() as an identifier, producing invalid SQL
+			// (DROP INDEX CURRENT_SCHEMA()."index"). Use a quoted identifier
+			// through GORM so this remains valid for PostgreSQL and SQLite.
+			if err := tx.Exec("DROP INDEX IF EXISTS ?", clause.Column{Name: name}).Error; err != nil {
+				return fmt.Errorf("删除 Gemini 缓存旧唯一索引 %s：%w", name, err)
+			}
+		}
+	}
+	return tx.AutoMigrate(&model.CloudAgentGeminiCache{})
+}
+
+// migrateUpstreamLineageConvergence repairs local-only schema work that an
+// upstream v32-v38 database never recorded, then reapplies the upstream
+// feature migrations idempotently. It is attached to canonical v40 so the
+// historical upstream rows remain untouched while the database still reaches
+// the same physical schema as a local v39 database.
+func migrateUpstreamLineageConvergence(tx *gorm.DB) error {
+	for _, step := range []struct {
+		name  string
+		apply func(*gorm.DB) error
+	}{
+		{name: "工具与资源中继结构", apply: migrateToolSchemaReconciliation},
+		{name: "渠道模型标签", apply: migrateChannelModelTags},
+		{name: "能力与 Provider ID 回填", apply: migrateCapabilityProviderReconciliationFollowup},
+		{name: "注册协议字段", apply: migrateOAuthStateAcceptedTerms},
+		{name: "任务媒体恢复字段", apply: migrateTaskMediaRecovery},
+		{name: "认证通知结构", apply: migrateSchemaV35},
+		{name: "Gemini 缓存表", apply: migrateCloudAgentGeminiCache},
+		{name: "Gemini 缓存身份", apply: migrateCloudAgentGeminiCacheIdentity},
+		{name: "可读 ID 序列", apply: migratePrefixedIDSequenceReconcile},
+	} {
+		if err := step.apply(tx); err != nil {
+			return fmt.Errorf("收敛 upstream 历史迁移（%s）：%w", step.name, err)
 		}
 	}
 	return nil
@@ -674,7 +752,32 @@ func migrateChannelPresentation(tx *gorm.DB) error {
 	return nil
 }
 
+type migrationPlanMode uint8
+
+const (
+	migrationPlanForExecution migrationPlanMode = iota
+	migrationPlanForValidation
+)
+
 func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
+	return migrationsForDatabaseWithMode(db, migrationPlanForExecution)
+}
+
+func migrationsForValidation(db *gorm.DB) ([]migration, error) {
+	plan, err := migrationsForDatabaseWithMode(db, migrationPlanForValidation)
+	if err != nil {
+		return nil, err
+	}
+	// Validation only needs migration metadata. Do not expose executable
+	// callbacks to read-only callers, so future validation changes cannot
+	// accidentally perform schema or data repairs.
+	for index := range plan {
+		plan[index].apply = nil
+	}
+	return plan, nil
+}
+
+func migrationsForDatabaseWithMode(db *gorm.DB, mode migrationPlanMode) ([]migration, error) {
 	plan := append([]migration(nil), schemaMigrations...)
 
 	var applied schemaMigration
@@ -782,7 +885,7 @@ func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
 			version:  32,
 			name:     "channel_model_tags",
 			checksum: legacyChannelModelTagsChecksum,
-			apply:    func(*gorm.DB) error { return nil },
+			apply:    migrateChannelModelTags,
 		}
 		if err := validateMigrationRecord(v32, legacyTags); err != nil {
 			return nil, err
@@ -793,8 +896,125 @@ func migrationsForDatabase(db *gorm.DB) ([]migration, error) {
 				break
 			}
 		}
+		var compatibilityErr error
+		plan, compatibilityErr = applyUpstreamLineageCompatibility(db, plan, mode == migrationPlanForExecution)
+		if compatibilityErr != nil {
+			return nil, compatibilityErr
+		}
 	}
 	return plan, nil
+}
+
+type upstreamMigrationAlias struct {
+	version  int64
+	name     string
+	checksum string
+	apply    func(*gorm.DB) error
+}
+
+func applyUpstreamLineageCompatibility(db *gorm.DB, plan []migration, allowConvergence bool) ([]migration, error) {
+	// The v32 record is the lineage discriminator. Even if the later upstream
+	// suffix is only partially recorded, the physical schema still needs the
+	// full idempotent convergence pass.
+	aliases := []upstreamMigrationAlias{
+		{version: 33, name: "oauth_state_accepted_terms", checksum: legacyOAuthStateAcceptedTermsChecksum, apply: migrateOAuthStateAcceptedTerms},
+		{version: 34, name: "task_media_recovery", checksum: legacyTaskMediaRecoveryChecksum, apply: migrateTaskMediaRecovery},
+		{version: 35, name: "auth_notifications", checksum: legacyAuthNotificationsChecksum, apply: migrateSchemaV35},
+		{version: 36, name: "cloud_agent_gemini_cache", checksum: legacyCloudAgentGeminiCacheChecksum, apply: migrateCloudAgentGeminiCache},
+		{version: 37, name: "cloud_agent_gemini_cache_identity", checksum: legacyCloudAgentGeminiCacheIdentityChecksum, apply: migrateCloudAgentGeminiCacheIdentity},
+		{version: 38, name: "prefixed_id_sequence_reconcile", checksum: legacyPrefixedIDSequenceReconcileChecksum, apply: migratePrefixedIDSequenceReconcile},
+	}
+	for _, alias := range aliases {
+		legacy := migration{
+			version:  alias.version,
+			name:     alias.name,
+			checksum: alias.checksum,
+			apply:    alias.apply,
+		}
+		canonical, ok := migrationByVersion(plan, alias.version)
+		if !ok {
+			return nil, fmt.Errorf("迁移计划缺少版本 %d", alias.version)
+		}
+		var applied schemaMigration
+		err := db.First(&applied, "version = ?", alias.version).Error
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("读取 upstream 数据库迁移 %d：%w", alias.version, err)
+		}
+		if err == nil {
+			switch {
+			case applied.Name == legacy.name && applied.Checksum == legacy.checksum:
+				// Keep the historical upstream implementation for this
+				// occupied version, without rewriting its record.
+				plan = replaceMigration(plan, legacy)
+			case applied.Name == canonical.name && applied.Checksum == canonical.checksum:
+				// A partially merged database may already contain the local
+				// meaning at this version. Preserve that valid local record.
+			default:
+				return nil, fmt.Errorf(
+					"upstream 历史迁移 %d 不受支持：记录为 %s/%s，程序期望 %s/%s 或 %s/%s",
+					alias.version,
+					applied.Name,
+					applied.Checksum,
+					legacy.name,
+					legacy.checksum,
+					canonical.name,
+					canonical.checksum,
+				)
+			}
+			continue
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("读取 upstream 数据库迁移 %d：%w", alias.version, err)
+		}
+		// A missing row is not historical evidence that the upstream suffix
+		// was applied. Leave the canonical local migration in place; its
+		// idempotent operation, followed by v40 convergence, repairs a
+		// partially recorded or mixed-lineage database without inventing a
+		// legacy record.
+	}
+
+	if allowConvergence {
+		// The local-only work between v32 and v39 cannot be recorded in the
+		// occupied upstream version slots. Run it idempotently as part of the new
+		// canonical v40 migration, without rewriting any historical row. If a
+		// previous build already recorded canonical v40, the normal migration loop
+		// would skip its apply function, so run the same idempotent pass now.
+		plan = replaceMigration(plan, migration{
+			version:  40,
+			name:     "cloud_agent_gemini_cache",
+			checksum: cloudAgentGeminiCacheChecksum,
+			apply:    migrateUpstreamLineageConvergence,
+		})
+		var appliedV40 schemaMigration
+		err := db.First(&appliedV40, "version = ?", 40).Error
+		if err == nil && appliedV40.Name == "cloud_agent_gemini_cache" && appliedV40.Checksum == cloudAgentGeminiCacheChecksum {
+			if err := migrateUpstreamLineageConvergence(db); err != nil {
+				return nil, fmt.Errorf("收敛已记录 v40 的 upstream 历史迁移：%w", err)
+			}
+		} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("读取 upstream 数据库迁移 40：%w", err)
+		}
+	}
+	return plan, nil
+}
+
+func migrationByVersion(plan []migration, version int64) (migration, bool) {
+	for _, item := range plan {
+		if item.version == version {
+			return item, true
+		}
+	}
+	return migration{}, false
+}
+
+func replaceMigration(plan []migration, replacement migration) []migration {
+	for index, item := range plan {
+		if item.version == replacement.version {
+			plan[index] = replacement
+			break
+		}
+	}
+	return plan
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {
@@ -1012,7 +1232,7 @@ func ReadSchemaStatus(db *gorm.DB) (SchemaStatus, error) {
 }
 
 func validateMigrationRecords(db *gorm.DB) error {
-	plan, err := migrationsForDatabase(db)
+	plan, err := migrationsForValidation(db)
 	if err != nil {
 		return err
 	}

@@ -108,6 +108,9 @@ func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("目标 Compose 文件为空")
 	}
+	if err := validateComposeImageContract(data); err != nil {
+		return "", fmt.Errorf("目标 Compose 不兼容：%w", err)
+	}
 	path := filepath.Join(m.config.StateDir, "compose-"+strings.TrimPrefix(targetVersion, "v")+".next.yml")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("保存目标 Compose：%w", err)
@@ -121,6 +124,12 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	}
 	if _, err := os.Stat(m.envPath()); err != nil {
 		return fmt.Errorf("读取部署环境：%w", err)
+	}
+	if err := validateComposeImageFile(m.composePath(), "当前"); err != nil {
+		return err
+	}
+	if err := validateComposeImageFile(composePath, "目标"); err != nil {
+		return err
 	}
 	if m.config.SelfUpdate {
 		if strings.TrimSpace(m.config.BinaryPath) == "" {
@@ -142,6 +151,76 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	}
 	if err := m.checkHealthOnce(m.healthURL(), current); err != nil {
 		return fmt.Errorf("当前运行版本与部署配置不一致或服务未就绪：%w", err)
+	}
+	return nil
+}
+
+func validateComposeImageContract(data []byte) error {
+	required := map[string]string{
+		"backend": "CANVAS_BACKEND_IMAGE",
+		"migrate": "CANVAS_BACKEND_IMAGE",
+		"web":     "CANVAS_WEB_IMAGE",
+	}
+	found := make(map[string]bool, len(required))
+	servicesIndent := -1
+	currentService := ""
+	currentServiceIndent := -1
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		rawLine = strings.TrimSuffix(rawLine, "\r")
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indent := len(rawLine) - len(strings.TrimLeft(rawLine, " \t"))
+		if servicesIndent < 0 {
+			if trimmed == "services:" {
+				servicesIndent = indent
+			}
+			continue
+		}
+		if indent <= servicesIndent {
+			currentService = ""
+			currentServiceIndent = -1
+			continue
+		}
+		if currentService != "" && indent <= currentServiceIndent {
+			currentService = ""
+			currentServiceIndent = -1
+		}
+		if currentService == "" && indent == servicesIndent+2 && strings.HasSuffix(trimmed, ":") {
+			currentService = strings.TrimSuffix(trimmed, ":")
+			currentServiceIndent = indent
+			continue
+		}
+		if currentService == "" || indent != currentServiceIndent+2 || !strings.HasPrefix(trimmed, "image:") {
+			continue
+		}
+		variable, ok := required[currentService]
+		if !ok {
+			continue
+		}
+		value := strings.TrimLeft(strings.TrimSpace(strings.TrimPrefix(trimmed, "image:")), "\"'")
+		prefix := "${" + variable
+		if strings.HasPrefix(value, prefix) && len(value) > len(prefix) &&
+			strings.ContainsRune("}:?-+", rune(value[len(prefix)])) {
+			found[currentService] = true
+		}
+	}
+	for service, variable := range required {
+		if !found[service] {
+			return fmt.Errorf("services.%s 的 image 字段必须使用 ${%s} 镜像变量", service, variable)
+		}
+	}
+	return nil
+}
+
+func validateComposeImageFile(path, label string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取%s Compose：%w", label, err)
+	}
+	if err := validateComposeImageContract(data); err != nil {
+		return fmt.Errorf("%s Compose 不兼容：%w", label, err)
 	}
 	return nil
 }

@@ -24,6 +24,76 @@ fail() {
     exit 1
 }
 
+validate_compose_image_contract() {
+    local compose_path="$1"
+    awk '
+        function indent(line,    prefix) {
+            prefix = line
+            sub(/[^ \t].*/, "", prefix)
+            return length(prefix)
+        }
+        function uses_image_variable(line, variable,    value, prefix, next_char) {
+            value = line
+            sub(/^[ \t]*image:[ \t]*/, "", value)
+            sub(/^["\047]/, "", value)
+            prefix = "${" variable
+            if (index(value, prefix) != 1) {
+                return 0
+            }
+            next_char = substr(value, length(prefix) + 1, 1)
+            return next_char == "}" || next_char == ":" || next_char == "?" || next_char == "-" || next_char == "+"
+        }
+        {
+            current_indent = indent($0)
+            trimmed = $0
+            sub(/^[ \t]*/, "", trimmed)
+            sub(/[ \t]*$/, "", trimmed)
+            if (trimmed == "" || trimmed ~ /^#/) {
+                next
+            }
+            if (!in_services) {
+                if (trimmed == "services:") {
+                    in_services = 1
+                    services_indent = current_indent
+                }
+                next
+            }
+            if (current_indent <= services_indent) {
+                in_services = 0
+                service = ""
+                next
+            }
+            if (service != "" && current_indent <= service_indent) {
+                service = ""
+            }
+            if (service == "" && current_indent == services_indent + 2 && trimmed ~ /^[^:]+:[ \t]*(#.*)?$/) {
+                service = trimmed
+                sub(/[ \t]*#.*/, "", service)
+                sub(/:.*/, "", service)
+                service_indent = current_indent
+                next
+            }
+            if (service != "" && current_indent == service_indent + 2 && trimmed ~ /^image:[ \t]*/) {
+                if (service == "backend" && uses_image_variable($0, "CANVAS_BACKEND_IMAGE")) {
+                    found_backend = 1
+                }
+                if (service == "migrate" && uses_image_variable($0, "CANVAS_BACKEND_IMAGE")) {
+                    found_migrate = 1
+                }
+                if (service == "web" && uses_image_variable($0, "CANVAS_WEB_IMAGE")) {
+                    found_web = 1
+                }
+            }
+        }
+        END {
+            if (!found_backend || !found_migrate || !found_web) {
+                exit 1
+            }
+        }
+    ' "$compose_path" ||
+        fail "部署 Compose 的 services.backend、services.migrate、services.web 必须分别使用对应镜像变量，已拒绝旧格式"
+}
+
 require_root() {
     if [[ "${EUID}" -ne 0 ]]; then
         fail "请使用 README 中带 sudo 的一键安装命令"
@@ -98,6 +168,9 @@ prepare_environment() {
         if ! grep -Eq '^CANVAS_WEB_IMAGE=.+$' .env; then
             printf 'CANVAS_WEB_IMAGE=%s\n' "$SOURCE_BUILD_WEB_IMAGE" >>.env
         fi
+        if ! grep -Eq '^GOPROXY=.+$' .env; then
+            printf 'GOPROXY=%s\n' "$SOURCE_BUILD_GOPROXY" >>.env
+        fi
         local configured_http_port
         configured_http_port="$(sed -n 's/^CANVAS_HTTP_PORT=//p' .env | tail -n 1)"
         if [[ -n "$configured_http_port" ]]; then
@@ -157,6 +230,7 @@ main() {
     install_packages
     install_docker
     sync_source
+    validate_compose_image_contract "$COMPOSE_FILE"
     prepare_environment
     start_services
     print_result
