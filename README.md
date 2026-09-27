@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="web/public/logo.svg" width="88" alt="影策 logo">
+  <img src="web/public/logo.svg" width="88" alt="拼好布 logo">
 </p>
 
-<h1 align="center">影策</h1>
+<h1 align="center">拼好布</h1>
 
 <p align="center">让一个故事，从文字走向银幕</p>
 
@@ -13,13 +13,15 @@
   <a href="SECURITY.md">安全策略</a>
 </p>
 
-影策是一个 AI 影视与短剧创作工作台：用自由画布组织创作，用结构化工作流管理剧本、角色、场景和分镜，并通过统一的任务系统完成图片、视频、音频与文本生成。
+拼好布是一个 AI 影视与短剧创作工作台：用自由画布组织创作，用结构化工作流管理剧本、角色、场景和分镜，并通过统一的任务系统完成图片、视频、音频与文本生成。
 
 > 项目仍在快速开发，数据结构和外部接口可能调整。默认适合个人、本地或可信环境部署；未经安全配置，不要直接作为公网多人服务使用。
 
+在线演示：[http://tv.pinhaoai.help/](http://tv.pinhaoai.help/)
+
 ## 赞助商
 
-感谢以下赞助商对影策项目的支持：
+感谢以下赞助商对拼好布项目的支持：
 
 | LOGO | 类型 | 赞助商名称 | 说明 | 网站 |
 | --- | --- | --- | --- | --- |
@@ -194,10 +196,10 @@ cd docs && bun run types:check
 
 ## 许可证和上游
 
-本项目采用 [MIT](LICENSE) 协议。影策基于 [basketikun/infinite-canvas](https://github.com/basketikun/infinite-canvas) 的早期版本进行二次开发，上游作者和贡献者保留其对应代码的权利与署名。
+本项目采用 [MIT](LICENSE) 协议。基于 [basketikun/infinite-canvas](https://github.com/basketikun/infinite-canvas) 的早期版本进行二次开发，上游作者和贡献者保留其对应代码的权利与署名。
 
 ---
 
 ## 产品团队
 
-影策由产品、工程、创作与测试团队持续维护。团队成员信息按内部渠道维护，不在产品仓库中公开联系方式。
+拼好布由产品、工程、创作与测试团队持续维护。团队成员信息按内部渠道维护，不在产品仓库中公开联系方式。
