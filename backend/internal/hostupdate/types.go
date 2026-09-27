@@ -36,7 +36,7 @@ type Release struct {
 	Version     string    `json:"version"`
 	Name        string    `json:"name"`
 	Body        string    `json:"body"`
-	URL         string    `json:"url"`
+	URL         string    `json:"-"`
 	PublishedAt time.Time `json:"publishedAt"`
 	Prerelease  bool      `json:"prerelease"`
 }
@@ -80,7 +80,7 @@ type Operation struct {
 type Status struct {
 	Supported       bool      `json:"supported"`
 	Connected       bool      `json:"connected"`
-	Repository      string    `json:"repository"`
+	Repository      string    `json:"-"`
 	Deployment      string    `json:"deployment"`
 	CurrentVersion  string    `json:"currentVersion"`
 	LatestRelease   *Release  `json:"latestRelease,omitempty"`

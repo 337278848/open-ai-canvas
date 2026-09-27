@@ -582,7 +582,7 @@ function InfiniteCanvasPage() {
             }
             modal.confirm({
                 title: "取消生成任务？",
-                content: "任务会立即停止本地执行；如果已经提交到上游，系统会继续核对取消结果和积分状态。",
+                content: "任务会立即停止本地执行；如果已经提交，系统会继续核对取消结果和积分状态。",
                 okText: "取消任务",
                 okButtonProps: { danger: true },
                 cancelText: "继续等待",
@@ -2828,7 +2828,17 @@ function InfiniteCanvasPage() {
 
                             <div className={versions.open ? "hidden" : "contents"}>
                             <CanvasCloudAgentPanel canvasId={projectId} domainProjectId={currentProject?.projectId} nodeCount={nodes.length} selectedNodeIds={Array.from(selectedNodeIds)} references={agentMentionReferences} prefillPrompt={agentPrefillPrompt} open={assistantOpen} onOpen={openAgent} onCollapse={closeAgent} onFocusNode={(nodeId) => {
-                                if (!nodesRef.current.some((node) => node.id === nodeId)) { message.info("该节点已删除或尚未同步到画布"); return; }
+                                const currentNodes = nodesRef.current;
+                                const target = currentNodes.find((node) => node.id === nodeId);
+                                if (!target) { message.info("该节点已删除或尚未同步到画布"); return; }
+
+                                const parent = target.parentId ? currentNodes.find((node) => node.id === target.parentId) : null;
+                                if (parent?.metadata?.frame?.collapsed) toggleFrameCollapsed(parent.id);
+
+                                const batchRootId = target.metadata?.batchRootId;
+                                const batchRoot = batchRootId ? currentNodes.find((node) => node.id === batchRootId) : null;
+                                if (batchRoot && isHiddenBatchChild(target, currentNodes) && !batchRoot.metadata?.imageBatchExpanded) toggleBatchExpanded(batchRoot.id);
+
                                 focusCanvasNode(nodeId);
                             }} />
                             </div>

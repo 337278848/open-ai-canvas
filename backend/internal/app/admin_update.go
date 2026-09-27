@@ -25,11 +25,11 @@ func (s *Service) AdminUpdateStatus(ctx context.Context, actor *model.User) (hos
 		return hostupdate.Status{}, err
 	}
 	if s.updateManager == nil {
-		return unsupportedUpdateStatus("当前部署未安装 Host Updater"), nil
+		return unsupportedUpdateStatus("当前部署未安装在线更新服务"), nil
 	}
 	status, err := s.updateManager.Status(ctx)
 	if err != nil {
-		return unsupportedUpdateStatus("Host Updater 当前不可连接"), nil
+		return unsupportedUpdateStatus("在线更新服务当前不可连接"), nil
 	}
 	return status, nil
 }
@@ -39,7 +39,7 @@ func (s *Service) AdminCheckUpdate(ctx context.Context, actor *model.User) (host
 		return hostupdate.Status{}, err
 	}
 	if s.updateManager == nil {
-		return hostupdate.Status{}, NewAppError(http.StatusServiceUnavailable, "当前部署未安装 Host Updater")
+		return hostupdate.Status{}, NewAppError(http.StatusServiceUnavailable, "当前部署未安装在线更新服务")
 	}
 	status, err := s.updateManager.Check(ctx)
 	if err != nil {
@@ -53,7 +53,7 @@ func (s *Service) AdminStartUpdate(ctx context.Context, actor *model.User, targe
 		return hostupdate.Status{}, err
 	}
 	if s.updateManager == nil {
-		return hostupdate.Status{}, NewAppError(http.StatusServiceUnavailable, "当前部署未安装 Host Updater")
+		return hostupdate.Status{}, NewAppError(http.StatusServiceUnavailable, "当前部署未安装在线更新服务")
 	}
 	targetVersion = strings.TrimSpace(targetVersion)
 	if targetVersion == "" {
@@ -71,7 +71,7 @@ func (s *Service) AdminRollbackUpdate(ctx context.Context, actor *model.User, re
 		return hostupdate.Status{}, err
 	}
 	if s.updateManager == nil {
-		return hostupdate.Status{}, NewAppError(http.StatusServiceUnavailable, "当前部署未安装 Host Updater")
+		return hostupdate.Status{}, NewAppError(http.StatusServiceUnavailable, "当前部署未安装在线更新服务")
 	}
 	if strings.TrimSpace(reason) == "" {
 		return hostupdate.Status{}, NewAppError(http.StatusBadRequest, "请填写回退原因")
@@ -88,7 +88,7 @@ func unsupportedUpdateStatus(detail string) hostupdate.Status {
 		Supported:  false,
 		Connected:  false,
 		Deployment: "unsupported",
-		Checks:     []hostupdate.Check{{Key: "updater", Label: "Host Updater", Status: "failed", Detail: detail, Blocking: true}},
+		Checks:     []hostupdate.Check{{Key: "updater", Label: "在线更新服务", Status: "failed", Detail: detail, Blocking: true}},
 		Operation:  hostupdate.Operation{Phase: hostupdate.PhaseIdle, Logs: []hostupdate.LogEntry{}},
 	}
 }

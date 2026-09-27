@@ -26,8 +26,8 @@ type systemStatusSnapshot struct {
 	Started           bool                  `json:"started"`
 	Draining          bool                  `json:"draining"`
 	ActiveWorkerTasks int64                 `json:"activeWorkerTasks"`
-	Build             buildinfo.Info        `json:"build"`
-	Schema            database.SchemaStatus `json:"schema"`
+	Build             buildinfo.Info        `json:"-"`
+	Schema            database.SchemaStatus `json:"-"`
 	Checks            systemStatusChecks    `json:"checks"`
 }
 
@@ -84,7 +84,7 @@ func (s *systemStatus) snapshot(ctx context.Context) systemStatusSnapshot {
 
 func registerSystemStatusRoutes(api *gin.RouterGroup, status *systemStatus) {
 	api.GET("/health/live", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"status": "ok", "build": buildinfo.Current()}, "msg": "ok"})
+		c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"status": "ok"}, "msg": "ok"})
 	})
 	startup := func(c *gin.Context) {
 		snapshot := status.snapshot(c.Request.Context())
@@ -106,7 +106,6 @@ func registerSystemStatusRoutes(api *gin.RouterGroup, status *systemStatus) {
 	api.GET("/health/ready", ready)
 	api.GET("/health", ready)
 	api.GET("/system/version", func(c *gin.Context) {
-		snapshot := status.snapshot(c.Request.Context())
-		c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"build": snapshot.Build, "schema": snapshot.Schema}, "msg": "ok"})
+		c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"status": "ok"}, "msg": "ok"})
 	})
 }

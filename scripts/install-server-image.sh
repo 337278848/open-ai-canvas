@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 REPOSITORY_REF="${REPOSITORY_REF:-main}"
-REPOSITORY="${REPOSITORY:-ddcat-ai/open-ai-canvas}"
+REPOSITORY="${REPOSITORY:-337278848/open-ai-canvas}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 CANVAS_HTTP_PORT="${CANVAS_HTTP_PORT:-3000}"
 REQUESTED_IMAGE_TAG="${CANVAS_IMAGE_TAG:-}"

@@ -22,7 +22,6 @@ export type SystemUpdateRelease = {
     version: string;
     name: string;
     body: string;
-    url: string;
     publishedAt: string;
     prerelease: boolean;
 };
@@ -66,7 +65,6 @@ export type SystemUpdateOperation = {
 export type SystemUpdateStatus = {
     supported: boolean;
     connected: boolean;
-    repository: string;
     deployment: string;
     currentVersion: string;
     latestRelease?: SystemUpdateRelease;

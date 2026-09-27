@@ -67,7 +67,7 @@ func (c *Client) request(ctx context.Context, method, path string, payload any) 
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
-		return hostupdate.Status{}, fmt.Errorf("连接 Host Updater：%w", err)
+		return hostupdate.Status{}, fmt.Errorf("连接在线更新服务：%w", err)
 	}
 	defer response.Body.Close()
 	limited := io.LimitReader(response.Body, 2<<20)
@@ -77,13 +77,13 @@ func (c *Client) request(ctx context.Context, method, path string, payload any) 
 			Data  hostupdate.Status `json:"data"`
 		}
 		if err := json.NewDecoder(limited).Decode(&failure); err == nil && failure.Error != "" {
-			return failure.Data, fmt.Errorf("Host Updater：%s", failure.Error)
+			return failure.Data, fmt.Errorf("在线更新服务：%s", failure.Error)
 		}
-		return hostupdate.Status{}, fmt.Errorf("Host Updater 返回 HTTP %d", response.StatusCode)
+		return hostupdate.Status{}, fmt.Errorf("在线更新服务返回 HTTP %d", response.StatusCode)
 	}
 	var status hostupdate.Status
 	if err := json.NewDecoder(limited).Decode(&status); err != nil {
-		return hostupdate.Status{}, fmt.Errorf("解析 Host Updater 响应：%w", err)
+		return hostupdate.Status{}, fmt.Errorf("解析在线更新服务响应：%w", err)
 	}
 	return status, nil
 }

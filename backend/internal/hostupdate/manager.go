@@ -71,7 +71,7 @@ type Manager struct {
 func NewManager(config Config) (*Manager, error) {
 	config.Repository = strings.TrimSpace(config.Repository)
 	if config.Repository == "" {
-		config.Repository = "ddcat-ai/open-ai-canvas"
+		config.Repository = "337278848/open-ai-canvas"
 	}
 	if strings.TrimSpace(config.ImageRepository) == "" {
 		config.ImageRepository = strings.TrimSpace(os.Getenv("CANVAS_UPDATER_IMAGE_REPOSITORY"))
@@ -136,7 +136,7 @@ func (m *Manager) Check(ctx context.Context) (Status, error) {
 	}
 	m.state.Operation.Phase = PhaseChecking
 	m.state.Operation.Error = ""
-	m.appendLogLocked(PhaseChecking, "正在读取 GitHub Release")
+	m.appendLogLocked(PhaseChecking, "正在检查可用版本")
 	_ = m.saveStateLocked()
 	m.mu.Unlock()
 
@@ -184,7 +184,7 @@ func (m *Manager) StartUpdate(targetVersion string) (Status, error) {
 		return m.snapshotLocked(), errors.New("目标版本与最近一次检查结果不一致，请重新检查更新")
 	}
 	if isLegacyReleaseVersion(targetVersion) {
-		return m.snapshotLocked(), errors.New("目标 Release 使用 tag-based legacy Compose/Host Updater，已拒绝静默更新；请先部署带 digest contract 的版本")
+		return m.snapshotLocked(), errors.New("目标版本使用旧部署格式，已拒绝静默更新；请先部署新的版本")
 	}
 	current, err := m.currentVersion()
 	if err != nil {
@@ -351,8 +351,8 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 			now := time.Now().UTC()
 			m.state.Operation.Phase = PhaseManualIntervention
 			m.state.Operation.FinishedAt = &now
-			m.state.Operation.Error = "应用已更新，但 Host Updater 自更新失败：" + safeOperationError(err)
-			m.appendLogLocked(PhaseManualIntervention, "应用版本已切换，更新器二进制需要人工更新")
+			m.state.Operation.Error = "应用已更新，但在线更新组件同步失败：" + safeOperationError(err)
+			m.appendLogLocked(PhaseManualIntervention, "应用版本已切换，在线更新组件需要人工处理")
 			_ = m.saveStateLocked()
 			m.mu.Unlock()
 			return
@@ -365,7 +365,7 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 	m.state.Operation.Error = ""
 	m.appendLogLocked(PhaseSucceeded, fmt.Sprintf("已成功更新到 %s", targetVersion))
 	if updaterBinary != "" {
-		m.appendLogLocked(PhaseSucceeded, "Host Updater 二进制已同步到目标 Release")
+		m.appendLogLocked(PhaseSucceeded, "在线更新组件已同步")
 	}
 	_ = m.saveStateLocked()
 	m.mu.Unlock()
@@ -465,7 +465,7 @@ func (m *Manager) snapshotLocked() Status {
 
 func (m *Manager) checks(current string, currentErr error) []Check {
 	items := []Check{
-		{Key: "updater", Label: "Host Updater", Status: "passed", Detail: runtime.GOOS + "/" + runtime.GOARCH, Blocking: true},
+		{Key: "updater", Label: "在线更新服务", Status: "passed", Detail: runtime.GOOS + "/" + runtime.GOARCH, Blocking: true},
 		{Key: "version", Label: "当前版本", Status: "passed", Detail: current, Blocking: true},
 		{Key: "backup", Label: "数据库备份 ZIP", Status: "pending", Detail: "开始更新后自动创建并校验", Blocking: true},
 		{Key: "images", Label: "目标镜像", Status: "pending", Detail: "拉取后校验仓库摘要", Blocking: true},

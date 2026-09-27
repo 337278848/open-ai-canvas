@@ -1,12 +1,22 @@
 const hiddenReleaseNotePatterns = [
     /PR\s*#/i,
     /原作者/,
+    /作者/,
+    /贡献者/,
+    /主分支/,
+    /上游/,
+    /\bfork\b/i,
+    /开源/,
     /github\.com\//i,
     /ghcr\.io\//i,
+    /github/i,
+    /ghcr/i,
     /官方\s*main/i,
     /本地定制/,
-    /主分支设计/,
-    /项目贡献者/,
+    /Host\s*Updater/i,
+    /更新组件/,
+    /仓库/,
+    /发布源/,
 ];
 
 /**
@@ -16,7 +26,6 @@ const hiddenReleaseNotePatterns = [
  */
 export function publicReleaseNotes(source: string) {
     return source
-        .replace(/GitHub Release/gi, "发布版本")
         .split(/\r?\n/)
         .filter((line) => !hiddenReleaseNotePatterns.some((pattern) => pattern.test(line)))
         .join("\n")

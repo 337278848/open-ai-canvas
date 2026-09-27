@@ -9,7 +9,13 @@ describe("public changelog", () => {
         for (const forbidden of [
             /PR\s*#/i,
             /原作者/,
+            /主分支/,
+            /上游/,
+            /fork/i,
+            /开源/,
             /GitHub Release/i,
+            /GitHub 预发布/i,
+            /Host Updater/i,
             /github\.com\//i,
             /ghcr\.io\//i,
             /官方 main/,

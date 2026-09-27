@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 42
+const CurrentSchemaVersion int64 = 44
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -45,10 +45,18 @@ const cloudAgentGeminiCacheChecksum = "sha256:cloud-agent-gemini-cache-v40-20260
 const cloudAgentGeminiCacheIdentityChecksum = "sha256:cloud-agent-gemini-cache-identity-v41-20260926"
 const prefixedIDSequenceReconcileChecksum = "sha256:prefixed-id-sequence-reconcile-v42-20260926"
 
-// Upstream main consumed versions 32-38 for a different suffix. These
-// historical checksums are accepted only when the upstream lineage is
-// detected; the canonical target lineage keeps the local versions 32-39 and
-// appends the upstream features as 40-42.
+// Local lineage has already published v39-v42 for authentication, Gemini
+// cache and readable IDs. The upstream v1.5.8 skill migrations therefore use
+// the next local slots and remain idempotent for databases from either lineage.
+const skillLibraryCategoriesChecksum = "sha256:skill-library-categories-v43-20260927-local-lineage"
+const builtinSkillTombstonesChecksum = "sha256:builtin-skill-tombstones-v44-20260927-local-lineage"
+const legacySkillLibraryCategoriesChecksum = "sha256:skill-library-categories-v39-20260926"
+const legacyBuiltinSkillTombstonesChecksum = "sha256:builtin-skill-tombstones-v40-20260927"
+
+// The other lineage consumed versions 32-40 for a different suffix. These
+// historical checksums are accepted only when that lineage is detected; the
+// canonical target lineage keeps the local versions 32-42 and appends the
+// skill-library features as 43-44.
 const legacyOAuthStateAcceptedTermsChecksum = "sha256:oauth-state-accepted-terms-v33"
 const legacyTaskMediaRecoveryChecksum = "sha256:task-media-recovery-v34"
 const legacyAuthNotificationsChecksum = "sha256:auth-notifications-v35-20260924"
@@ -141,6 +149,8 @@ var schemaMigrations = []migration{
 	{version: 40, name: "cloud_agent_gemini_cache", checksum: cloudAgentGeminiCacheChecksum, apply: migrateCloudAgentGeminiCache},
 	{version: 41, name: "cloud_agent_gemini_cache_identity", checksum: cloudAgentGeminiCacheIdentityChecksum, apply: migrateCloudAgentGeminiCacheIdentity},
 	{version: 42, name: "prefixed_id_sequence_reconcile", checksum: prefixedIDSequenceReconcileChecksum, apply: migratePrefixedIDSequenceReconcile},
+	{version: 43, name: "skill_library_categories", checksum: skillLibraryCategoriesChecksum, apply: migrateSkillLibraryCategories},
+	{version: 44, name: "builtin_skill_tombstones", checksum: builtinSkillTombstonesChecksum, apply: migrateBuiltinSkillTombstones},
 }
 
 func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {
@@ -167,6 +177,14 @@ func migrateCloudAgentGeminiCache(tx *gorm.DB) error {
 		return fmt.Errorf("创建 Gemini 缓存表：%w", err)
 	}
 	return nil
+}
+
+func migrateSkillLibraryCategories(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.SkillLibraryCategory{}, &model.UserSkillState{})
+}
+
+func migrateBuiltinSkillTombstones(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.BuiltinSkillTombstone{})
 }
 
 func migratePrefixedIDSequenceReconcile(tx *gorm.DB) error {
@@ -924,6 +942,13 @@ func applyUpstreamLineageCompatibility(db *gorm.DB, plan []migration, allowConve
 		{version: 37, name: "cloud_agent_gemini_cache_identity", checksum: legacyCloudAgentGeminiCacheIdentityChecksum, apply: migrateCloudAgentGeminiCacheIdentity},
 		{version: 38, name: "prefixed_id_sequence_reconcile", checksum: legacyPrefixedIDSequenceReconcileChecksum, apply: migratePrefixedIDSequenceReconcile},
 	}
+	// v1.5.8 occupies v39/v40 with skill migrations. Those rows are valid
+	// historical work, but the local lineage uses those slots for auth/Gemini;
+	// accept them as no-ops and install the same tables again at v43/v44.
+	aliases = append(aliases,
+		upstreamMigrationAlias{version: 39, name: "skill_library_categories", checksum: legacySkillLibraryCategoriesChecksum, apply: migrateSkillLibraryCategories},
+		upstreamMigrationAlias{version: 40, name: "builtin_skill_tombstones", checksum: legacyBuiltinSkillTombstonesChecksum, apply: migrateBuiltinSkillTombstones},
+	)
 	for _, alias := range aliases {
 		legacy := migration{
 			version:  alias.version,
@@ -968,31 +993,30 @@ func applyUpstreamLineageCompatibility(db *gorm.DB, plan []migration, allowConve
 		}
 		// A missing row is not historical evidence that the upstream suffix
 		// was applied. Leave the canonical local migration in place; its
-		// idempotent operation, followed by v40 convergence, repairs a
+		// idempotent operation, followed by v42 convergence, repairs a
 		// partially recorded or mixed-lineage database without inventing a
 		// legacy record.
 	}
 
 	if allowConvergence {
-		// The local-only work between v32 and v39 cannot be recorded in the
-		// occupied upstream version slots. Run it idempotently as part of the new
-		// canonical v40 migration, without rewriting any historical row. If a
-		// previous build already recorded canonical v40, the normal migration loop
-		// would skip its apply function, so run the same idempotent pass now.
+		// The local-only work between v32 and v42 cannot be recorded in the
+		// occupied upstream version slots. Run it idempotently as part of the
+		// canonical v42 migration, without rewriting historical rows. v43/v44
+		// then install the new skill tables on both lineages.
 		plan = replaceMigration(plan, migration{
-			version:  40,
-			name:     "cloud_agent_gemini_cache",
-			checksum: cloudAgentGeminiCacheChecksum,
+			version:  42,
+			name:     "prefixed_id_sequence_reconcile",
+			checksum: prefixedIDSequenceReconcileChecksum,
 			apply:    migrateUpstreamLineageConvergence,
 		})
-		var appliedV40 schemaMigration
-		err := db.First(&appliedV40, "version = ?", 40).Error
-		if err == nil && appliedV40.Name == "cloud_agent_gemini_cache" && appliedV40.Checksum == cloudAgentGeminiCacheChecksum {
+		var appliedV42 schemaMigration
+		err := db.First(&appliedV42, "version = ?", 42).Error
+		if err == nil && appliedV42.Name == "prefixed_id_sequence_reconcile" && appliedV42.Checksum == prefixedIDSequenceReconcileChecksum {
 			if err := migrateUpstreamLineageConvergence(db); err != nil {
-				return nil, fmt.Errorf("收敛已记录 v40 的 upstream 历史迁移：%w", err)
+				return nil, fmt.Errorf("收敛已记录 v42 的 upstream 历史迁移：%w", err)
 			}
 		} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("读取 upstream 数据库迁移 40：%w", err)
+			return nil, fmt.Errorf("读取 upstream 数据库迁移 42：%w", err)
 		}
 	}
 	return plan, nil

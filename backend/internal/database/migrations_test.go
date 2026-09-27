@@ -24,7 +24,7 @@ func TestCurrentSchemaVersionMatchesMigrationPlan(t *testing.T) {
 	}
 }
 
-func TestSchema42MigrationSuffixPreservesPublishedMetadata(t *testing.T) {
+func TestSchemaMigrationSuffixPreservesPublishedMetadata(t *testing.T) {
 	expected := map[int64]struct {
 		name     string
 		checksum string
@@ -40,6 +40,8 @@ func TestSchema42MigrationSuffixPreservesPublishedMetadata(t *testing.T) {
 		40: {"cloud_agent_gemini_cache", "sha256:cloud-agent-gemini-cache-v40-20260926"},
 		41: {"cloud_agent_gemini_cache_identity", "sha256:cloud-agent-gemini-cache-identity-v41-20260926"},
 		42: {"prefixed_id_sequence_reconcile", "sha256:prefixed-id-sequence-reconcile-v42-20260926"},
+		43: {"skill_library_categories", "sha256:skill-library-categories-v43-20260927-local-lineage"},
+		44: {"builtin_skill_tombstones", "sha256:builtin-skill-tombstones-v44-20260927-local-lineage"},
 	}
 	for _, item := range schemaMigrations {
 		want, ok := expected[item.version]
@@ -305,7 +307,7 @@ func TestMigrateSchemaPostgresV38To42ReplacesGlobalGeminiCacheIndex(t *testing.T
 	}
 
 	if err := MigrateSchema(db); err != nil {
-		t.Fatalf("upgrade PostgreSQL schema v38 to v42: %v", err)
+		t.Fatalf("upgrade PostgreSQL schema v38 to current: %v", err)
 	}
 	status, err := ReadSchemaStatus(db)
 	if err != nil {
@@ -380,7 +382,7 @@ func TestMigrateSchemaV42ReconcilesPrefixedIDSequences(t *testing.T) {
 }
 
 func TestMigrateSchemaConvergesUpstreamSchema38Lineage(t *testing.T) {
-	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-upstream-schema-38-to-42?mode=memory&cache=shared"})
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-upstream-schema-38-to-44?mode=memory&cache=shared"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,10 +429,10 @@ func TestMigrateSchemaConvergesUpstreamSchema38Lineage(t *testing.T) {
 		}
 		record(item.version, item.name, item.checksum)
 	}
-	// Simulate a partially merged build that recorded the canonical v40 row
-	// after creating only the cache table. The compatibility pass must still
-	// repair local-only schema work when the normal v40 loop skips this row.
-	record(40, "cloud_agent_gemini_cache", cloudAgentGeminiCacheChecksum)
+	// Simulate a partially merged build that recorded the canonical v42 row
+	// after creating only the readable-ID table. The compatibility pass must
+	// still repair local-only schema work when the normal v42 loop skips it.
+	record(42, "prefixed_id_sequence_reconcile", prefixedIDSequenceReconcileChecksum)
 
 	var historyBefore [7]schemaMigration
 	for index, version := range []int64{32, 33, 34, 35, 36, 37, 38} {
@@ -462,7 +464,7 @@ func TestMigrateSchemaConvergesUpstreamSchema38Lineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Ready || status.Current != 42 {
+	if !status.Ready || status.Current != CurrentSchemaVersion {
 		t.Fatalf("unexpected converged status: %+v", status)
 	}
 
@@ -478,7 +480,8 @@ func TestMigrateSchemaConvergesUpstreamSchema38Lineage(t *testing.T) {
 		}
 	}
 	for _, item := range []migration{
-		schemaMigrations[38], schemaMigrations[39], schemaMigrations[40], schemaMigrations[41],
+		schemaMigrations[38], schemaMigrations[39], schemaMigrations[40],
+		schemaMigrations[41], schemaMigrations[42], schemaMigrations[43],
 	} {
 		var applied schemaMigration
 		if err := db.First(&applied, "version = ?", item.version).Error; err != nil {
@@ -490,21 +493,21 @@ func TestMigrateSchemaConvergesUpstreamSchema38Lineage(t *testing.T) {
 	}
 	if !db.Migrator().HasColumn(&model.Resource{}, "relay_url") ||
 		!db.Migrator().HasColumn(&model.Resource{}, "relay_expires_at") {
-		t.Fatal("v40 convergence did not restore local relay columns")
+		t.Fatal("v42 convergence did not restore local relay columns")
 	}
 	if !db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_cache_user_key") ||
 		db.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, "idx_cloud_agent_gemini_caches_cache_key") {
-		t.Fatal("v40 convergence did not restore user-scoped Gemini cache identity")
+		t.Fatal("v42 convergence did not restore user-scoped Gemini cache identity")
 	}
 	var sequence model.IDSequence
 	if err := db.First(&sequence, "name = ?", "id:CHANNEL").Error; err != nil {
 		t.Fatal(err)
 	}
 	if sequence.Value != 321 {
-		t.Fatalf("v40 convergence sequence = %d, want 321", sequence.Value)
+		t.Fatalf("v42 convergence sequence = %d, want 321", sequence.Value)
 	}
 	if err := migrateUpstreamLineageConvergence(db); err != nil {
-		t.Fatalf("repeated v40 convergence is not idempotent: %v", err)
+		t.Fatalf("repeated v42 convergence is not idempotent: %v", err)
 	}
 	if err := MigrateSchema(db); err != nil {
 		t.Fatalf("converged upstream schema is not idempotent: %v", err)

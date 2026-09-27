@@ -208,6 +208,7 @@ func (s *Service) AdminAPICallLogs(actor *model.User, query APICallLogQuery) (*A
 		// 原始报文只允许通过详情接口按单条读取。
 		logs[index].RequestBody = ""
 		logs[index].ResponseBody = ""
+		logs[index] = sanitizeAdminAPICallLog(logs[index])
 	}
 	page, limit := query.Page, query.Limit
 	if page <= 0 {
@@ -381,6 +382,7 @@ func (s *Service) AdminAPICallLog(actor *model.User, id string) (*model.ApiCallL
 	if err := s.decorateAPICallLogs(logs); err != nil {
 		return nil, err
 	}
+	logs[0] = sanitizeAdminAPICallLog(logs[0])
 	return &logs[0], nil
 }
 
@@ -428,6 +430,7 @@ func (s *Service) AdminAPICallLogsCSV(actor *model.User, query APICallLogQuery) 
 		if log.CostAvailable {
 			upstreamCost = strconv.FormatInt(log.EstimatedCostMicros, 10)
 		}
+		log = sanitizeAdminAPICallLog(log)
 		_ = writer.Write([]string{startedAt.UTC().Format(time.RFC3339), log.UserDisplayName, log.UserAccount, log.ChannelName, log.Model, log.Capability, string(log.Status), strconv.Itoa(log.PollCount), strconv.FormatInt(log.DurationMs, 10), strconv.FormatInt(log.InputTokens, 10), strconv.FormatInt(log.OutputTokens, 10), strconv.FormatInt(log.CachedTokens, 10), billingAmount, billingStatus, creditCost, upstreamCost, log.Currency, log.ErrorCode, log.Error})
 	}
 	writer.Flush()
@@ -435,6 +438,25 @@ func (s *Service) AdminAPICallLogsCSV(actor *model.User, query APICallLogQuery) 
 		return nil, err
 	}
 	return buffer.Bytes(), nil
+}
+
+// sanitizeAdminAPICallLog prevents provider identity and raw transport data
+// from crossing the admin API boundary. The complete record remains available
+// to backend recovery and billing code, but the management UI receives only
+// product-facing execution and accounting information.
+func sanitizeAdminAPICallLog(log model.ApiCallLog) model.ApiCallLog {
+	rawError := log.Error
+	log.Source = ""
+	log.APIFormat = ""
+	log.Path = "平台内部请求"
+	log.ProviderStatus = ""
+	log.ProviderRequestID = ""
+	log.UpstreamURL = ""
+	log.RequestBody = ""
+	log.ResponseBody = ""
+	log.ErrorCode = redactDiagnosticText(log.ErrorCode, 120)
+	log.Error = providerErrorDetail(rawError)
+	return log
 }
 
 func (s *Service) AdminAnalyticsCSV(actor *model.User, query AnalyticsQuery) ([]byte, error) {

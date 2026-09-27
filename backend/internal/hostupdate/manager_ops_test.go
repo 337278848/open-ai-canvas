@@ -135,6 +135,24 @@ func TestDeploymentImageRepositoryPreservesCustomRepositoryName(t *testing.T) {
 	}
 }
 
+func TestSanitizeReleaseBodyKeepsFeaturesAndRemovesProvenance(t *testing.T) {
+	body := sanitizeReleaseBody(`## v1.5.9
+
+- 新增多镜头预演。
+- 合并 PR #700（原作者 @someone），来自 GitHub 预发布。
+- 主分支已合入新的技能库。
+- 修复任务恢复。`)
+
+	if !strings.Contains(body, "新增多镜头预演") || !strings.Contains(body, "修复任务恢复") {
+		t.Fatalf("产品功能说明被错误删除：%q", body)
+	}
+	for _, forbidden := range []string{"PR #", "原作者", "GitHub", "主分支", "技能库"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("来源信息未被清理：%q", body)
+		}
+	}
+}
+
 func TestManagerUsesConfiguredCustomImageRepository(t *testing.T) {
 	manager := &Manager{config: Config{
 		Repository:      "ddcat-ai/open-ai-canvas",
@@ -170,7 +188,7 @@ func TestStartUpdateRejectsLegacyReleaseBeforeStateWrite(t *testing.T) {
 		},
 	}
 	before := manager.state.Operation
-	if _, err := manager.StartUpdate("v1.5.7.1"); err == nil || !strings.Contains(err.Error(), "tag-based legacy") {
+	if _, err := manager.StartUpdate("v1.5.7.1"); err == nil || !strings.Contains(err.Error(), "旧部署格式") {
 		t.Fatalf("legacy update was not rejected clearly: %v", err)
 	}
 	if manager.state.Operation.Phase != before.Phase ||

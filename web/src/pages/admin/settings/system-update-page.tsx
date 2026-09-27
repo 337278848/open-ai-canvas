@@ -165,12 +165,12 @@ export default function SystemUpdatePage() {
         >
             <div className="admin-settings-stack admin-system-update">
                 {loadError && !status ? <UpdateAlert tone="error" title="无法读取更新状态" detail={loadError} /> : null}
-                {!status?.supported ? <UpdateAlert tone="warning" title="当前部署不支持后台在线更新" detail="请先在服务器安装 Host Updater，并重建 backend 容器挂载 Unix Socket。此状态下不会执行任何更新操作。" /> : null}
-                {reconnecting ? <UpdateAlert tone="warning" title="服务正在切换，等待重新连接" detail="更新器运行在宿主机，后台页面暂时断线不会中止更新。连接恢复后会继续显示最终结果。" /> : null}
+                {!status?.supported ? <UpdateAlert tone="warning" title="当前部署不支持在线更新" detail="请先在服务器安装在线更新服务，并重建 backend 容器挂载本地更新接口。此状态下不会执行任何更新操作。" /> : null}
+                {reconnecting ? <UpdateAlert tone="warning" title="服务正在切换，等待重新连接" detail="在线更新服务运行在宿主机，后台页面暂时断线不会中止更新。连接恢复后会继续显示最终结果。" /> : null}
                 {status?.operation.phase === "manual_intervention" ? <UpdateAlert
                     tone="error"
-                    title={status.operation.rollbackError ? "自动回退未完成，需要人工介入" : "应用已更新，Host Updater 需要人工处理"}
-                    detail={status.operation.rollbackError || status.operation.error || "请检查 Host Updater 和容器日志。"}
+                    title={status.operation.rollbackError ? "自动回退未完成，需要人工介入" : "应用已更新，需要处理更新服务"}
+                    detail={status.operation.rollbackError || status.operation.error || "请检查在线更新服务和容器日志。"}
                 /> : null}
 
                 <div className="admin-system-update-grid">
@@ -224,7 +224,7 @@ export default function SystemUpdatePage() {
                         </div>
                     </SettingsSectionCard>
 
-                    <SettingsSectionCard layout="stacked" icon={<ShieldCheck className="size-4" />} title="更新前检查" description="所有阻断项通过后才允许切换服务。" status={{ label: status?.connected ? "更新器已连接" : "更新器未连接", color: status?.connected ? "success" : "error" }}>
+                    <SettingsSectionCard layout="stacked" icon={<ShieldCheck className="size-4" />} title="更新前检查" description="所有阻断项通过后才允许切换服务。" status={{ label: status?.connected ? "在线更新服务已连接" : "在线更新服务未连接", color: status?.connected ? "success" : "error" }}>
                         <div className="admin-system-update-checks">
                             {(status?.checks || []).map((check) => <UpdateCheckRow key={check.key} check={check} />)}
                         </div>

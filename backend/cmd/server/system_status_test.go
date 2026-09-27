@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"infinite-canvas/backend/internal/database"
@@ -47,6 +48,32 @@ func TestSystemReadinessRejectsMissingSchemaVersion(t *testing.T) {
 	router := gin.New()
 	registerSystemStatusRoutes(router.Group("/api"), status)
 	assertStatus(t, router, "/api/health/ready", http.StatusServiceUnavailable)
+}
+
+func TestSystemStatusDoesNotExposeBuildOrSchemaDetails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := database.Open(database.Config{Driver: "sqlite", DSN: "file:system-status-public?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := database.MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(repository.New(db), t.TempDir())
+	status := newSystemStatus(db, svc)
+	status.markStarted()
+	router := gin.New()
+	registerSystemStatusRoutes(router.Group("/api"), status)
+
+	for _, path := range []string{"/api/health/live", "/api/health/ready", "/api/system/version"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		body := recorder.Body.String()
+		if strings.Contains(body, `"build"`) || strings.Contains(body, `"schema"`) || strings.Contains(body, `"commit"`) {
+			t.Fatalf("GET %s exposes internal build/schema details: %s", path, body)
+		}
+	}
 }
 
 func assertStatus(t *testing.T, handler http.Handler, path string, want int) {

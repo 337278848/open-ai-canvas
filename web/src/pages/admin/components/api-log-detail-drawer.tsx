@@ -37,10 +37,10 @@ export function ApiLogDetailDrawer({ logId, onClose, onLogUpdated }: { logId: st
             onLogUpdated?.(refreshed.log);
             if (result.recovered) {
                 window.dispatchEvent(new CustomEvent("wallet:updated"));
-                if (result.billingSettled) message.success("已获取上游视频，任务已恢复并完成结算");
-                else message.warning("已获取上游视频，任务已恢复，计费状态待核对");
+                if (result.billingSettled) message.success("已获取视频，任务已恢复并完成结算");
+                else message.warning("已获取视频，任务已恢复，计费状态待核对");
             } else {
-                message.info(`上游任务仍在处理中${result.providerStatus ? `（${result.providerStatus}）` : ""}`);
+                message.info(`任务仍在处理中${result.providerStatus ? `（${result.providerStatus}）` : ""}`);
             }
         } catch (error) {
             message.error(error instanceof Error ? error.message : "查询上游任务失败");
@@ -123,11 +123,9 @@ function LogDetail({ log, querying, onQueryProviderTask }: { log: ApiCallLog; qu
         ["请求 Content-Type", log.requestContentType ? <code className="text-sm text-foreground/70">{log.requestContentType}</code> : <span className="text-foreground/35">--</span>],
         ["HTTP 状态", log.statusCode ? <span className="tabular-nums">{log.statusCode}</span> : <span className="text-foreground/35">--</span>],
         ["任务 ID", log.taskId ? <code className="font-mono text-sm text-foreground/70">{log.taskId}</code> : <span className="text-foreground/35">--</span>],
-        ["供应商任务 ID", log.providerRequestId ? <code className="font-mono text-sm text-foreground/70">{log.providerRequestId}</code> : <span className="text-foreground/35">--</span>],
-        ["上游地址", log.upstreamUrl ? <code className="break-all text-sm text-foreground/70">{log.upstreamUrl}</code> : <span className="text-foreground/35">--</span>],
     ].map(([label, children], index) => ({ key: String(index), label, children }));
 
-    const canQueryProviderTask = !log.mediaStage && log.capability === "video" && log.taskStatus === "failed" && Boolean(log.taskId && log.providerRequestId);
+    const canQueryProviderTask = !log.mediaStage && log.capability === "video" && log.taskStatus === "failed" && Boolean(log.taskId);
 
     return (
         <div className="space-y-6">

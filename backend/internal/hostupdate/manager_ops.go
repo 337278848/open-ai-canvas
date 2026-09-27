@@ -30,7 +30,8 @@ type githubRelease struct {
 	Prerelease  bool      `json:"prerelease"`
 }
 
-const defaultDeploymentImageRepository = "ghcr.io/ddcat-ai/open-ai-canvas"
+const defaultDeploymentImageRepository = "ghcr.io/337278848/open-ai-canvas"
+const legacyDeploymentImageRepository = "ghcr.io/ddcat-ai/open-ai-canvas"
 
 func isLegacyReleaseVersion(version string) bool {
 	switch strings.TrimPrefix(strings.TrimSpace(version), "v") {
@@ -55,17 +56,17 @@ func (m *Manager) latestRelease(ctx context.Context) (*Release, error) {
 	}
 	response, err := m.httpClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("请求 GitHub Release：%w", err)
+		return nil, fmt.Errorf("请求版本服务：%w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		return nil, fmt.Errorf("GitHub Release 返回 HTTP %d", response.StatusCode)
+		return nil, fmt.Errorf("版本服务返回 HTTP %d", response.StatusCode)
 	}
 	var releases []githubRelease
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxReleaseResponseBytes))
 	if err := decoder.Decode(&releases); err != nil {
-		return nil, fmt.Errorf("解析 GitHub Release：%w", err)
+		return nil, fmt.Errorf("解析版本信息：%w", err)
 	}
 	filtered := make([]githubRelease, 0, len(releases))
 	for _, release := range releases {
@@ -74,11 +75,37 @@ func (m *Manager) latestRelease(ctx context.Context) (*Release, error) {
 		}
 	}
 	if len(filtered) == 0 {
-		return nil, errors.New("GitHub 尚未发布可用 Release")
+		return nil, errors.New("暂未发布可用版本")
 	}
 	sort.SliceStable(filtered, func(i, j int) bool { return CompareVersions(filtered[i].TagName, filtered[j].TagName) > 0 })
 	latest := filtered[0]
-	return &Release{Version: latest.TagName, Name: latest.Name, Body: latest.Body, URL: latest.HTMLURL, PublishedAt: latest.PublishedAt, Prerelease: latest.Prerelease}, nil
+	return &Release{Version: latest.TagName, Name: latest.Name, Body: sanitizeReleaseBody(latest.Body), URL: latest.HTMLURL, PublishedAt: latest.PublishedAt, Prerelease: latest.Prerelease}, nil
+}
+
+// sanitizeReleaseBody keeps only product-facing feature notes. Remote release
+// text is not trusted because the update source may contain engineering,
+// repository or contributor metadata that must not reach the admin UI.
+func sanitizeReleaseBody(source string) string {
+	forbidden := []string{
+		"pr #", "原作者", "作者：", "贡献者", "主分支", "上游", "fork",
+		"github", "ghcr", "开源", "repository", "仓库", "host updater",
+	}
+	lines := strings.Split(strings.ReplaceAll(source, "\r\n", "\n"), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		lower := strings.ToLower(line)
+		blocked := false
+		for _, pattern := range forbidden {
+			if strings.Contains(lower, strings.ToLower(pattern)) {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			kept = append(kept, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 func (m *Manager) currentVersion() (string, error) {
@@ -157,10 +184,10 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	}
 	if m.config.SelfUpdate {
 		if strings.TrimSpace(m.config.BinaryPath) == "" {
-			return errors.New("检查 Host Updater 安装目录：二进制路径为空")
+			return errors.New("检查在线更新服务安装目录：二进制路径为空")
 		}
 		if err := checkWritableDirectory(filepath.Dir(m.config.BinaryPath)); err != nil {
-			return fmt.Errorf("检查 Host Updater 安装目录：%w", err)
+			return fmt.Errorf("检查在线更新服务安装目录：%w", err)
 		}
 	}
 	if err := checkBackupDiskSpace(m.config.BackupDir); err != nil {
@@ -433,16 +460,17 @@ func usesComposeImageVariable(value, variable string) bool {
 }
 
 func isLegacyComposeImage(value, imageRepository, component string) bool {
-	prefix := imageRepository + "-" + component + ":"
-	if !strings.HasPrefix(value, prefix) {
-		return false
+	for _, repository := range []string{imageRepository, defaultDeploymentImageRepository, legacyDeploymentImageRepository} {
+		prefix := repository + "-" + component + ":"
+		if !strings.HasPrefix(value, prefix) {
+			continue
+		}
+		switch strings.TrimPrefix(value, prefix) {
+		case "${CANVAS_IMAGE_TAG}", "${CANVAS_IMAGE_TAG:-latest}":
+			return true
+		}
 	}
-	switch strings.TrimPrefix(value, prefix) {
-	case "${CANVAS_IMAGE_TAG}", "${CANVAS_IMAGE_TAG:-latest}":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func deploymentImageRepository(repository string) (string, error) {
@@ -618,7 +646,7 @@ func writeAtomicFile(path string, data []byte, mode os.FileMode) error {
 func checkWritableDirectory(directory string) error {
 	directory = strings.TrimSpace(directory)
 	if directory == "" {
-		return errors.New("Host Updater 二进制路径为空")
+		return errors.New("在线更新服务二进制路径为空")
 	}
 	temporary, err := os.CreateTemp(directory, ".updater-write-test-*")
 	if err != nil {
@@ -640,16 +668,16 @@ func (m *Manager) prepareUpdaterBinary(targetVersion string) (string, error) {
 		return "", nil
 	}
 	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
-		return "", fmt.Errorf("Host Updater 自更新不支持 %s/%s", runtime.GOOS, runtime.GOARCH)
+		return "", fmt.Errorf("在线更新服务自更新不支持 %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
 	if strings.TrimSpace(m.config.BinaryPath) == "" {
-		return "", errors.New("未配置 Host Updater 二进制路径")
+		return "", errors.New("未配置在线更新服务二进制路径")
 	}
 	baseURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/", m.config.Repository, targetVersion)
 	asset := "open-ai-canvas-host-updater-linux-" + runtime.GOARCH
 	checksums, err := m.downloadReleaseAsset(baseURL+"SHA256SUMS", 1<<20)
 	if err != nil {
-		return "", fmt.Errorf("下载 Host Updater 校验清单：%w", err)
+		return "", fmt.Errorf("下载在线更新服务校验清单：%w", err)
 	}
 	expected := ""
 	for _, line := range strings.Split(string(checksums), "\n") {
@@ -664,12 +692,12 @@ func (m *Manager) prepareUpdaterBinary(targetVersion string) (string, error) {
 	}
 	binary, err := m.downloadReleaseAsset(baseURL+asset, 128<<20)
 	if err != nil {
-		return "", fmt.Errorf("下载目标 Host Updater：%w", err)
+		return "", fmt.Errorf("下载目标在线更新服务：%w", err)
 	}
 	hash := sha256.Sum256(binary)
 	actual := hex.EncodeToString(hash[:])
 	if actual != expected {
-		return "", fmt.Errorf("Host Updater 校验失败：期望 %s，实际 %s", expected, actual)
+		return "", fmt.Errorf("在线更新服务校验失败：期望 %s，实际 %s", expected, actual)
 	}
 	path := filepath.Join(m.config.StateDir, asset+"-"+strings.TrimPrefix(targetVersion, "v")+".next")
 	if err := os.WriteFile(path, binary, 0o700); err != nil {

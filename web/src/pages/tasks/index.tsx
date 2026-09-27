@@ -325,7 +325,7 @@ export default function TasksPage() {
             const result = await queryFailedVideoProviderTask(task.id);
             if (!result.recovered) {
                 setTaskLogs(await listTaskLogs(task.id));
-                message.info(`上游任务仍在处理中${result.providerStatus ? `（${result.providerStatus}）` : ""}`);
+                message.info(`任务仍在处理中${result.providerStatus ? `（${result.providerStatus}）` : ""}`);
                 return;
             }
             setDetailTask(result.task);
@@ -334,10 +334,10 @@ export default function TasksPage() {
             await syncGenerationTaskToCanvasStore(result.task);
             window.dispatchEvent(new CustomEvent("wallet:updated"));
             void loadTasks(false);
-            if (result.billingSettled) message.success("已获取上游视频，任务已恢复并完成结算");
-            else message.warning("已获取上游视频，任务已恢复，计费状态待管理员核对");
+            if (result.billingSettled) message.success("已获取视频，任务已恢复并完成结算");
+            else message.warning("已获取视频，任务已恢复，计费状态待管理员核对");
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "查询上游任务失败");
+            message.error(error instanceof Error ? error.message : "查询任务失败");
         } finally {
             setActingId("");
         }
@@ -496,7 +496,7 @@ export default function TasksPage() {
                             <InfoItem label="开始时间" value={formatDate(detailTask.startedAt)} />
                             <InfoItem label="完成时间" value={formatDate(detailTask.completedAt)} />
                             <InfoItem label="耗时" value={formatTaskDuration(detailTask)} />
-                            {detailTask.providerCancelStatus ? <InfoItem label="上游取消" value={providerCancelStatusLabel(detailTask)} /> : null}
+                            {detailTask.providerCancelStatus ? <InfoItem label="取消状态" value={providerCancelStatusLabel(detailTask)} /> : null}
                             {detailTask.providerCancelRequestedAt ? <InfoItem label="请求取消时间" value={formatDate(detailTask.providerCancelRequestedAt)} /> : null}
                         </div>
                         <div className="flex flex-wrap justify-end gap-2">
