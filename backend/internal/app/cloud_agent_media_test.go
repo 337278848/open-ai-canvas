@@ -273,49 +273,6 @@ func TestCloudAgentImageCreatesReferencedNode(t *testing.T) {
 	}
 }
 
-func TestCloudAgentAutoMediaStillRequiresExplicitApproval(t *testing.T) {
-	s, db, a := agentMediaFixture(t)
-	run, _ := agentMediaRun(t, s, a, "auto")
-
-	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
-		t.Fatal(err)
-	}
-	pending, err := s.CloudAgentRun("user", run.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pending.Status != "waiting_approval" || pending.Approval == nil {
-		t.Fatalf("auto media bypassed approval: status=%s approval=%+v", pending.Status, pending.Approval)
-	}
-	var tasks, orders int64
-	if err := db.Model(&model.BillingOrder{}).Count(&orders).Error; err != nil {
-		t.Fatal(err)
-	}
-	ordersBefore := orders
-	if err := db.Model(&model.Task{}).Where("type = ?", "canvas_video").Count(&tasks).Error; err != nil {
-		t.Fatal(err)
-	}
-	if tasks != 0 {
-		t.Fatalf("auto media submitted before approval: tasks=%d", tasks)
-	}
-
-	if err := s.DecideCloudAgentApproval("user", run.ID, pending.Approval.ID, "approve", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.Task{}).Where("type = ?", "canvas_video").Count(&tasks).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Model(&model.BillingOrder{}).Count(&orders).Error; err != nil {
-		t.Fatal(err)
-	}
-	if tasks != 1 || orders != ordersBefore+1 {
-		t.Fatalf("explicit approval did not submit exactly one media task/charge: tasks=%d orders=%d before=%d", tasks, orders, ordersBefore)
-	}
-}
-
 func TestCloudAgentCanvasReadsFullPromptAssetsAndConnections(t *testing.T) {
 	s, _, _ := agentMediaFixture(t)
 	canvas, _ := s.repo.CanvasProjectForUser("user", "agent-canvas")

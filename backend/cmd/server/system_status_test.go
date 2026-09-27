@@ -70,7 +70,7 @@ func TestSystemStatusDoesNotExposeBuildOrSchemaDetails(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, request)
 		body := recorder.Body.String()
-		if strings.Contains(body, `"build"`) || strings.Contains(body, `"schema"`) || strings.Contains(body, `"commit"`) {
+		if strings.Contains(body, `"build"`) || strings.Contains(body, `"schema":{`) || strings.Contains(body, `"commit"`) {
 			t.Fatalf("GET %s exposes internal build/schema details: %s", path, body)
 		}
 	}

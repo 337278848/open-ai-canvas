@@ -16,7 +16,7 @@ func TestWavespeedImageEditConformance(t *testing.T) {
 	allowLoopbackProviderTest(t)
 	manifest := []byte(`{
 		"apiVersion":"yingce.plugin/v2",
-		"id":"test-wavespeed-image-edit","version":"1.0.0","name":"WaveSpeed Image Edit","author":"WaveSpeed / 影策","documentation":"# WaveSpeed Image Edit",
+		"id":"test-wavespeed-image-edit","version":"1.0.0","name":"WaveSpeed Image Edit","author":"WaveSpeed / 拼好布","documentation":"# WaveSpeed Image Edit",
 		"permissions":["generation.run","media.read"],
 		"configuration":{"fields":[{"name":"apiKey","type":"secret","label":"WaveSpeed API Key","required":true}]},
 		"contributes":{"providers":[{
@@ -135,7 +135,7 @@ func TestWavespeedImageEditPollFailure(t *testing.T) {
 	allowLoopbackProviderTest(t)
 	manifest := []byte(`{
 		"apiVersion":"yingce.plugin/v2",
-		"id":"test-wavespeed-image-edit","version":"1.0.0","name":"WaveSpeed Image Edit","author":"WaveSpeed / 影策","documentation":"# WaveSpeed Image Edit",
+		"id":"test-wavespeed-image-edit","version":"1.0.0","name":"WaveSpeed Image Edit","author":"WaveSpeed / 拼好布","documentation":"# WaveSpeed Image Edit",
 		"permissions":["generation.run","media.read"],
 		"configuration":{"fields":[{"name":"apiKey","type":"secret","label":"WaveSpeed API Key","required":true}]},
 		"contributes":{"providers":[{
