@@ -6,30 +6,16 @@ const changelog = readFileSync(new URL("../../CHANGELOG.md", import.meta.url), "
 
 describe("public changelog", () => {
     test("uses product release language instead of source-control provenance", () => {
-        for (const forbidden of [
-            /PR\s*#/i,
-            /原作者/,
-            /主分支/,
-            /上游/,
-            /fork/i,
-            /开源/,
-            /GitHub Release/i,
-            /GitHub 预发布/i,
-            /Host Updater/i,
-            /github\.com\//i,
-            /ghcr\.io\//i,
-            /官方 main/,
-            /本地定制/,
-            /项目贡献者列表/,
-        ]) {
+        for (const forbidden of [/PR\s*#/i, /原作者/, /主分支/, /上游/, /fork/i, /开源/, /GitHub Release/i, /GitHub 预发布/i, /Host Updater/i, /github\.com\//i, /ghcr\.io\//i, /官方 main/, /本地定制/, /项目贡献者列表/]) {
             expect(changelog).not.toMatch(forbidden);
         }
     });
 
     test("keeps the current release notes available to the in-app dialog", () => {
-        expect(changelog).toContain("## v1.5.7");
-        expect(changelog).toContain("动态多维表格");
-        expect(changelog).toContain("Wan3");
+        expect(changelog).toContain("## v1.5.9");
+        expect(changelog).toContain("拼好布");
+        expect(changelog).not.toContain("## v1.5.8");
+        expect(changelog).not.toContain("## v1.5.7");
     });
 
     test("filters provenance from remote or stale release notes at render time", () => {
