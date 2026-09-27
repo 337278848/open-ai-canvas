@@ -1,3 +1,4 @@
+import { sha256Hex } from "@/lib/secure-digest";
 import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
@@ -296,8 +297,7 @@ async function normalizePersistedAsset(asset: Asset): Promise<Asset> {
 }
 
 async function generationAssetId(effectKey: string) {
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(effectKey));
-    return `generation_${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    return `generation_${await sha256Hex(effectKey)}`;
 }
 
 export const useAssetStore = create<AssetStore>()(

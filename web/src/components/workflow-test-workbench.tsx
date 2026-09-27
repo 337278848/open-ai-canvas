@@ -5,6 +5,7 @@ import { FileAudio, FileImage, Film, Grip, Play, RotateCcw, Square, Upload, Wand
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
 import { generationErrorMessage } from "@/lib/generation-error";
+import { createSecureId } from "@/lib/client-id";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { runBackendGenerationTask, type BackendGenerationResult } from "@/services/api/generation-task";
 import { useConfigStore, type AiConfig, type RunningHubCapability, type WorkflowFieldMapping } from "@/stores/use-config-store";
@@ -112,7 +113,7 @@ export function WorkflowTestWorkbench({ provider, workflowId, workflowKind = "wo
         const limit = Math.max(1, slots[kind]);
         const next = Array.from(selected)
             .slice(0, limit)
-            .map((file) => ({ id: crypto.randomUUID(), file, url: URL.createObjectURL(file) }));
+        .map((file) => ({ id: createSecureId(), file, url: URL.createObjectURL(file) }));
         setFiles((current) => {
             current[kind].forEach((item) => URL.revokeObjectURL(item.url));
             return { ...current, [kind]: next };

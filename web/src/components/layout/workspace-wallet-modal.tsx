@@ -10,6 +10,7 @@ import { closePaymentOrder, createPaymentOrder, getPaymentOrder, listPaymentProv
 import { getWallet, redeemCredits, type CreditLedgerEntry, type WalletSummary } from "@/services/api/wallet";
 import { cn } from "@/lib/utils";
 import { openWorkspaceWallet, WORKSPACE_WALLET_OPEN_EVENT, type WorkspaceWalletOpenDetail } from "@/lib/workspace-wallet";
+import { createSecureId } from "@/lib/client-id";
 import { useUserStore } from "@/stores/use-user-store";
 
 type WalletModalTab = "topup" | "history";
@@ -196,7 +197,7 @@ export function WorkspaceWalletModal({
         }
         setPaymentCreating(true);
         try {
-            if (!idempotencyKey.current) idempotencyKey.current = crypto.randomUUID();
+        if (!idempotencyKey.current) idempotencyKey.current = createSecureId();
             const result = await createPaymentOrder({ productId: selectedProduct.id, providerId: selectedProvider.id, idempotencyKey: idempotencyKey.current });
             idempotencyKey.current = "";
             setPaymentOrder(result.order);

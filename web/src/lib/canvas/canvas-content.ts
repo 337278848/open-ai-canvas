@@ -1,3 +1,4 @@
+import { sha256Hex } from "@/lib/secure-digest";
 import { canonicalize } from "json-canonicalize";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 
@@ -43,6 +44,5 @@ async function hashContent(content: ContentSnapshot) {
     // a lossy checksum could incorrectly discard an unsaved draft during login.
     if (!globalThis.crypto?.subtle) return `json:${serialized}`;
     const bytes = new TextEncoder().encode(serialized);
-    const digest = await crypto.subtle.digest("SHA-256", bytes);
-    return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+    return await sha256Hex(bytes);
 }

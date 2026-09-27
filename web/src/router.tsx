@@ -210,7 +210,7 @@ export const router = createBrowserRouter([
                     { path: "settings/ark-private-assets", element: <ArkPrivateAssetsSettingsPage /> },
                     { path: "settings/response-interception", element: <ResponseInterceptionSettingsPage /> },
                     { path: "settings/third-party", element: <ThirdPartySettingsPage /> },
-                    { path: "settings/system-update", element: <SystemUpdatePage /> },
+                    { path: "settings/system-update", element: deferred(<SystemUpdatePage />) },
                     { path: "settings/system-performance", element: <SystemPerformancePage /> },
                     { path: "settings/libtv", element: <Navigate to="/admin/settings/third-party" replace /> },
                 ],

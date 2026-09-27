@@ -1,3 +1,4 @@
+import { sha256Hex } from "@/lib/secure-digest";
 import { getMediaBlob } from "@/services/file-storage";
 import { getImageBlob } from "@/services/image-storage";
 import { deleteRemoteAssets, deleteRemoteCanvasProject, getRemoteAsset, getRemoteAssetsByIds, getRemoteCanvasProject, getRemoteUserDataSnapshot, listRemoteAssetsPage, restoreRemoteCanvasHistory, upsertRemoteAsset, upsertRemoteCanvasProject } from "@/services/api/user-data";
@@ -932,8 +933,7 @@ async function uploadInlineDataUrl(dataUrl: string, identity: string) {
 }
 
 async function inlineMediaUploadIdentity(dataUrl: string) {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(dataUrl));
-    return `inline:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    return `inline:${await sha256Hex(dataUrl)}`;
 }
 
 async function uploadLocalStorageKey(storageKey: string, payload: Record<string, unknown>) {

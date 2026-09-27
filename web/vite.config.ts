@@ -40,6 +40,9 @@ export default defineConfig({
         },
     },
     build: {
+        // Keep production bundles usable from plain-HTTP LAN/IP deployments and
+        // older evergreen browsers; Vite's default target is newer than tsconfig.
+        target: "es2018",
         rolldownOptions: {
             output: {
                 strictExecutionOrder: true,

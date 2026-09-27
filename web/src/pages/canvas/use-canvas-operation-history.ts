@@ -203,9 +203,8 @@ export async function consumeCanvasGenerationContinuation(
 }
 
 async function canvasGenerationContinuationId(nodeId: string, context?: CanvasGenerationContext) {
-    const seed = new TextEncoder().encode(`canvas-operation-generation\0${context?.source || ""}\0${context?.conversationId || ""}\0${context?.messageId || ""}\0${nodeId}`);
-    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", seed));
-    return `agent:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    const { sha256Hex } = await import("@/lib/secure-digest");
+    return `agent:${await sha256Hex(`canvas-operation-generation\0${context?.source || ""}\0${context?.conversationId || ""}\0${context?.messageId || ""}\0${nodeId}`)}`;
 }
 
 export function useCanvasOperationHistory({

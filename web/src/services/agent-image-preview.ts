@@ -1,3 +1,4 @@
+import { sha256Hex } from "@/lib/secure-digest";
 import { imageToDataUrl } from "@/services/image-storage";
 import { resourceIdFromStorageKey, resourceStorageKey, uploadResourceFile } from "@/services/api/resources";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -55,8 +56,7 @@ export async function inspectAgentImage(source: Parameters<typeof imageToDataUrl
     const response = await fetch(dataUrl);
     if (!response.ok) throw new Error("读取看图素材失败");
     const blob = await response.blob();
-    const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
-    const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    const hash = await sha256Hex(await blob.arrayBuffer());
     if (scope !== getActiveUserScope()) throw new DOMException("账号已切换", "AbortError");
     const resource = await uploadResourceFile(blob, "image", { fileName: `agent-inspect-${hash.slice(0, 12)}.${blob.type === "image/png" ? "png" : "jpg"}`, idempotencyKey: `agent-inspect:${hash}` });
     if (scope !== getActiveUserScope()) throw new DOMException("账号已切换", "AbortError");
