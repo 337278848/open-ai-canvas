@@ -34,6 +34,8 @@ jobs:
       CANVAS_TEST_POSTGRES_DSN: postgres://postgres:canvas_test@127.0.0.1:5432/canvas_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
@@ -46,7 +48,24 @@ jobs:
           sudo apt-get install -y -qq redis-server
           sudo systemctl stop redis-server || true
       - name: Check formatting
-        run: test -z "$(gofmt -l .)"
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          base="$BASE_SHA"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          mapfile -d '' files < <(git diff --name-only -z --diff-filter=ACMR "$base" HEAD -- backend | grep -zE '\.go$' || true)
+          if ((${#files[@]} == 0)); then
+            exit 0
+          fi
+          unformatted="$(gofmt -l "${files[@]}")"
+          if [[ -n "$unformatted" ]]; then
+            printf 'Go files need gofmt:\n%s\n' "$unformatted" >&2
+            exit 1
+          fi
       - name: Run Go tests
         shell: bash
         run: |
