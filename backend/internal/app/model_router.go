@@ -1407,6 +1407,9 @@ func routeFailureCode(err error) string {
 	if code, _ := ChannelSlotFailureDetails(err); code != "" {
 		return code
 	}
+	if OutboundRequestWasNotSent(err) {
+		return "upstream_not_submitted"
+	}
 	var upstream providerHTTPError
 	if errors.As(err, &upstream) {
 		return fmt.Sprintf("upstream_%d", upstream.StatusCode)
@@ -1419,6 +1422,9 @@ func safeRouteRejection(err error) bool {
 		return false
 	}
 	if code, _ := ChannelSlotFailureDetails(err); code != "" {
+		return true
+	}
+	if OutboundRequestWasNotSent(err) {
 		return true
 	}
 	var upstream providerHTTPError

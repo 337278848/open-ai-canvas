@@ -984,6 +984,12 @@ func TestProviderUserFacingErrorMessageClassifiesRejectedRequestBodies(t *testin
 			want:       "请检查模型和参数",
 		},
 		{
+			name:       "image provider generation rejection suggests retry or route switch",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"message":"本次未能生成图片，请调整提示词或更换参考图后重试"}}`,
+			want:       "可直接重试；若反复出现请切换模型或渠道",
+		},
+		{
 			name:       "thinking mode rejects forced tool choice",
 			statusCode: http.StatusBadRequest,
 			body:       `{"error":{"message":"Thinking mode does not support this tool_choice","request_id":"secret"}}`,

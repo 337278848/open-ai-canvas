@@ -51,6 +51,27 @@ var (
 	}
 )
 
+type requestNotSentError struct {
+	err error
+}
+
+func (e *requestNotSentError) Error() string { return e.err.Error() }
+func (e *requestNotSentError) Unwrap() error { return e.err }
+
+// MarkRequestNotSent records that the transport failed before an HTTP request
+// could be written to the upstream connection.
+func MarkRequestNotSent(err error) error {
+	if err == nil || RequestWasNotSent(err) {
+		return err
+	}
+	return &requestNotSentError{err: err}
+}
+
+func RequestWasNotSent(err error) bool {
+	var target *requestNotSentError
+	return errors.As(err, &target)
+}
+
 func ValidateOutboundURL(rawURL string) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed.Hostname() == "" {
@@ -262,7 +283,11 @@ func newOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, e
 			}
 			// 代理地址由部署者通过环境变量配置；目标 URL 仍在请求前经过 SSRF 校验。
 			if configuredProxyHost(host) {
-				return dialer.DialContext(ctx, network, address)
+				conn, dialErr := dialer.DialContext(ctx, network, address)
+				if dialErr != nil {
+					return nil, MarkRequestNotSent(dialErr)
+				}
+				return conn, nil
 			}
 			addresses, err := resolveHost(ctx, host)
 			if err != nil {
@@ -292,7 +317,7 @@ func dialOutboundAddressWithRetry(ctx context.Context, dial func(context.Context
 		}
 		lastErr = err
 		if ctx.Err() != nil || !outboundDialTimeout(err) || attempt+1 >= outboundDialAttempts {
-			return nil, err
+			return nil, MarkRequestNotSent(err)
 		}
 		timer := time.NewTimer(outboundDialRetryDelay)
 		select {
@@ -300,11 +325,11 @@ func dialOutboundAddressWithRetry(ctx context.Context, dial func(context.Context
 			if !timer.Stop() {
 				<-timer.C
 			}
-			return nil, ctx.Err()
+			return nil, MarkRequestNotSent(ctx.Err())
 		case <-timer.C:
 		}
 	}
-	return nil, lastErr
+	return nil, MarkRequestNotSent(lastErr)
 }
 
 func outboundDialTimeout(err error) bool {

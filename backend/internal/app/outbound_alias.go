@@ -70,6 +70,10 @@ func AllowedPrivateUpstreamHost(host string) bool {
 	return outbound.AllowedPrivateUpstreamHost(host)
 }
 
+func OutboundRequestWasNotSent(err error) bool {
+	return outbound.RequestWasNotSent(err)
+}
+
 func mapOutboundError(err error) error {
 	if err == nil {
 		return nil

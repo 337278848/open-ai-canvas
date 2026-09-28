@@ -52,6 +52,23 @@ func TestDialOutboundAddressDoesNotRetryNonTimeoutFailure(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("attempts=%d, want 1", attempts)
 	}
+	if !RequestWasNotSent(err) {
+		t.Fatal("dial failure must be marked as not submitted")
+	}
+}
+
+func TestDialOutboundAddressMarksExhaustedTimeoutAsNotSent(t *testing.T) {
+	attempts := 0
+	_, err := dialOutboundAddressWithRetry(context.Background(), func(_ context.Context, _, _ string) (net.Conn, error) {
+		attempts++
+		return nil, timeoutDialError{}
+	}, "tcp", "203.0.113.10:443")
+	if err == nil || !RequestWasNotSent(err) {
+		t.Fatalf("error=%v, want request-not-sent timeout", err)
+	}
+	if attempts != outboundDialAttempts {
+		t.Fatalf("attempts=%d, want %d", attempts, outboundDialAttempts)
+	}
 }
 
 func TestOutboundTransportUsesEnvironmentProxyAndHonorsNoProxy(t *testing.T) {

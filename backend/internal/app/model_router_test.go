@@ -1,12 +1,14 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/outbound"
 )
 
 func TestSafeRouteRejectionTreatsMethodNotAllowedAsNoJob(t *testing.T) {
@@ -15,6 +17,16 @@ func TestSafeRouteRejectionTreatsMethodNotAllowedAsNoJob(t *testing.T) {
 	}
 	if safeRouteRejection(providerHTTPError{StatusCode: http.StatusServiceUnavailable}) {
 		t.Fatal("HTTP 503 must remain submission_unknown")
+	}
+}
+
+func TestSafeRouteRejectionTreatsDialFailureAsNoJob(t *testing.T) {
+	err := outbound.MarkRequestNotSent(errors.New("dial tcp: connection refused"))
+	if !safeRouteRejection(err) {
+		t.Fatal("a transport failure before request submission should allow a backup route")
+	}
+	if got := routeFailureCode(err); got != "upstream_not_submitted" {
+		t.Fatalf("routeFailureCode() = %q, want upstream_not_submitted", got)
 	}
 }
 

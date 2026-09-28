@@ -111,6 +111,9 @@ func billingFailureUncertain(err error) bool {
 	if err == nil {
 		return false
 	}
+	if OutboundRequestWasNotSent(err) {
+		return false
+	}
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{"524", "timeout", "超时", "deadline exceeded", "context canceled", "connection reset", "unexpected eof", "broken pipe"} {
 		if strings.Contains(message, marker) {

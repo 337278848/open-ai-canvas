@@ -50,7 +50,7 @@ function runWithBrowserStorageLock<T>(scope: string, operation: () => Promise<T>
     const locks = typeof window !== "undefined" && typeof navigator !== "undefined" ? (navigator.locks as AsyncStorageLock | undefined) : undefined;
     if (locks) return locks.request(`${ASSET_STORAGE_LOCK_PREFIX}${scope}`, operation);
     if (options.requireCrossRealmLock && typeof window !== "undefined" && typeof document !== "undefined") {
-        throw new Error("当前浏览器不支持跨标签存储锁，已停止生成素材持久化");
+        throw new Error(window.isSecureContext ? "当前环境不支持跨标签存储锁，已停止生成素材持久化" : "当前站点未启用 HTTPS，已停止生成素材持久化");
     }
     return operation();
 }
@@ -83,7 +83,7 @@ export function withGenerationArtifactCommitLock<T>(scope: string, operation: ()
             const locks = typeof window !== "undefined" && typeof navigator !== "undefined" ? (navigator.locks as AsyncStorageLock | undefined) : undefined;
             if (locks) return locks.request(`${ARTIFACT_COMMIT_LOCK_PREFIX}${scope}`, operation);
             if (options.requireCrossRealmLock && typeof window !== "undefined" && typeof document !== "undefined") {
-                throw new Error("当前浏览器不支持跨标签存储锁，已停止生成文件提交");
+                throw new Error(window.isSecureContext ? "当前环境不支持跨标签存储锁，已停止生成文件提交" : "当前站点未启用 HTTPS，已停止生成文件提交");
             }
             return operation();
         });

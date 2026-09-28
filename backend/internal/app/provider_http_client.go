@@ -471,6 +471,9 @@ func providerRequestErrorDetails(err error) (string, string) {
 	if err == nil {
 		return "", ""
 	}
+	if OutboundRequestWasNotSent(err) {
+		return "upstream_not_submitted", "连接模型服务失败，请检查渠道地址和服务器网络"
+	}
 	if errors.Is(err, context.Canceled) {
 		return "request_cancelled", "任务取消，中断上游请求"
 	}

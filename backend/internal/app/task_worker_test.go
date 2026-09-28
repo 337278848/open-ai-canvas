@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -41,6 +42,24 @@ func TestTaskLeaseRenewContextSurvivesExecutionDeadline(t *testing.T) {
 	cancelParent2()
 	if err := renew2.Err(); err != nil {
 		t.Fatalf("父 context 取消不该连带取消续租 context：%v", err)
+	}
+}
+
+func TestNormalizeTaskExecutionTimeoutKeepsUpstreamDeadlineWhenWorkerIsActive(t *testing.T) {
+	upstream := fmt.Errorf("provider connect: %w", context.DeadlineExceeded)
+	task := &model.Task{Type: "canvas_image_generate"}
+	if got := normalizeTaskExecutionTimeout(context.Background(), task, upstream); !errors.Is(got, upstream) {
+		t.Fatalf("normalizeTaskExecutionTimeout() = %v, want original upstream error", got)
+	}
+}
+
+func TestNormalizeTaskExecutionTimeoutUsesTaskMessageWhenWorkerDeadlineExpires(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	task := &model.Task{Type: "canvas_image_generate"}
+	got := normalizeTaskExecutionTimeout(ctx, task, errors.New("provider still waiting"))
+	if got == nil || got.Error() != "图片生成等待超时，请稍后重试。" {
+		t.Fatalf("normalizeTaskExecutionTimeout() = %v", got)
 	}
 }
 

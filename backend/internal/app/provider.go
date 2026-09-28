@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"infinite-canvas/backend/internal/kernel"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -269,6 +270,13 @@ func providerUserFacingErrorMessage(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "模型请求已取消"
 	}
+	if OutboundRequestWasNotSent(err) {
+		var networkErr net.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkErr) && networkErr.Timeout()) {
+			return "连接模型服务超时，请检查渠道地址和服务器网络后重试"
+		}
+		return "连接模型服务失败，请检查渠道地址和服务器网络"
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "模型服务响应超时，请稍后重试"
 	}
@@ -296,6 +304,7 @@ var providerErrorCategories = []string{
 	"模型服务响应超时，请稍后重试",
 	"当前模型为思考/推理模式，不支持强制工具调用（tool_choice=required），请改用自动工具选择或更换非思考模式模型",
 	"模型服务拒绝了请求，请检查模型和参数",
+	"模型服务本次未能生成图片，可直接重试；若反复出现请切换模型或渠道",
 }
 
 // providerPayloadErrorCategory 把上游失败正文归类为固定的用户可见原因。
@@ -316,6 +325,8 @@ func providerPayloadErrorCategory(raw string) (string, bool) {
 		}
 	}
 	switch {
+	case strings.Contains(strings.TrimSpace(raw), "本次未能生成图片，请调整提示词或更换参考图后重试"):
+		return "模型服务本次未能生成图片，可直接重试；若反复出现请切换模型或渠道", true
 	// 真人肖像类目只匹配供应商错误码里的稳定标识，不扫描自然语言。
 	// 正文常常回显用户提示词，"likeness"、"肖像"这类词单独出现并不能证明
 	// 上游是因为真人形象拒绝，按词判断会把普通参数错误误报成肖像问题。

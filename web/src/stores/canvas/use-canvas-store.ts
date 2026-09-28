@@ -93,7 +93,7 @@ function runWithBrowserCanvasStorageLock<T>(scope: string, operation: () => Prom
     const lockName = `${CANVAS_STORAGE_LOCK_PREFIX}${scope}`;
     if (locks) return locks.request(lockName, operation);
     if (options.requireCrossRealmLock && typeof window !== "undefined" && typeof document !== "undefined") {
-        throw new Error("当前浏览器不支持跨标签存储锁，已停止画布生成持久化");
+        throw new Error(window.isSecureContext ? "当前环境不支持跨标签存储锁，已停止画布生成持久化" : "当前站点未启用 HTTPS，已停止画布生成持久化");
     }
     return operation();
 }

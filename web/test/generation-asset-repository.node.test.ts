@@ -306,7 +306,7 @@ test("competing browser generation asset writes fail closed before entering stor
                 },
                 { requireCrossRealmLock: true },
             );
-        await Promise.all([assert.rejects(compete(), /跨标签存储锁/), assert.rejects(compete(), /跨标签存储锁/)]);
+        await Promise.all([assert.rejects(compete(), /未启用 HTTPS/), assert.rejects(compete(), /未启用 HTTPS/)]);
         assert.equal(entered, 0, "neither competing generation write may enter the critical section without a cross-tab lock");
     } finally {
         if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;

@@ -53,7 +53,9 @@ function effectStorage(scope: string): EffectStorage {
 function effectLock(): AsyncLock {
     if (typeof window !== "undefined") {
         const locks = navigator.locks;
-        if (!locks) throw new Error("当前浏览器不支持跨页面生成副作用互斥");
+        if (!locks) {
+            throw new Error(window.isSecureContext ? "当前环境不支持跨页面生成结果互斥" : "当前站点未启用 HTTPS，无法安全保存生成结果");
+        }
         return locks;
     }
     return {

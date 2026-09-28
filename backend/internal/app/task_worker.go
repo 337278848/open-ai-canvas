@@ -259,13 +259,12 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot 
 		_, err = s.finalizeCharacterTurnaroundTask(*task, result)
 	}
 	if err != nil {
-		channelSlotFailedBeforeRequest := false
+		requestFailedBeforeProviderSubmission := OutboundRequestWasNotSent(err)
 		if code, _ := ChannelSlotFailureDetails(err); code != "" {
-			channelSlotFailedBeforeRequest = true
+			requestFailedBeforeProviderSubmission = true
 		}
 		// 续租使用独立 context；执行超时不能覆盖真实租约失效，否则旧 worker
 		// 可能在新 worker 接管后继续结算或写入终态。
-		deadlineExpired := errors.Is(ctx.Err(), context.DeadlineExceeded)
 		select {
 		case leaseErr := <-leaseLost:
 			_ = s.log(task.UserID, task.ID, "warn", "任务租约失效，等待其他 worker 恢复", leaseErr.Error())
@@ -290,17 +289,9 @@ func (w *taskWorkerCoordinator) processClaimedTask(task *model.Task, globalSlot 
 		if newAPIChannel2TaskSyncExpired(*task, err, time.Now()) {
 			err = errors.New("上游任务长时间未同步，已停止自动查询，请确认渠道任务状态后重试。")
 		}
-		if errors.Is(err, context.DeadlineExceeded) || deadlineExpired {
-			// 画布 Agent 的单步超时是可恢复事件（运行期会关思考重试同一步），
-			// 因此必须与"任务执行超时"区分开，否则只能整轮判死。
-			if cloudAgentModelOperation(task) {
-				err = errors.New(cloudAgentStepTimeoutError + "，已中止这一步")
-			} else {
-				err = errors.New(taskTimeoutMessage(task.Type))
-			}
-		}
+		err = normalizeTaskExecutionTimeout(ctx, task, err)
 		s.noteAgentMemoryCompactTask(*task, nil, err)
-		return terminal.handleExecutionFailure(task, err, providerSucceeded, channelSlotFailedBeforeRequest)
+		return terminal.handleExecutionFailure(task, err, providerSucceeded, requestFailedBeforeProviderSubmission)
 	}
 	latest, err := s.repo.Task(task.ID)
 	if err != nil {
@@ -427,4 +418,16 @@ func taskTimeoutMessage(taskType string) string {
 		return "图片生成等待超时，请稍后重试。"
 	}
 	return "任务执行超时，请稍后重试。"
+}
+
+func normalizeTaskExecutionTimeout(ctx context.Context, task *model.Task, err error) error {
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return err
+	}
+	// 画布 Agent 的单步超时是可恢复事件（运行期会关思考重试同一步），
+	// 因此必须与"任务执行超时"区分开，否则只能整轮判死。
+	if cloudAgentModelOperation(task) {
+		return errors.New(cloudAgentStepTimeoutError + "，已中止这一步")
+	}
+	return errors.New(taskTimeoutMessage(task.Type))
 }

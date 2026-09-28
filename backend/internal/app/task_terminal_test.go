@@ -3,10 +3,12 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+	"infinite-canvas/backend/internal/outbound"
 	"infinite-canvas/backend/internal/repository"
 )
 
@@ -172,6 +174,25 @@ func TestTaskTerminalCoordinatorRefundsFailureBeforeProviderRequest(t *testing.T
 	}
 	if len(replay.statuses) != 1 || replay.statuses[0] != model.TaskStatusFailed {
 		t.Fatalf("unexpected replay statuses: %v", replay.statuses)
+	}
+}
+
+func TestTaskTerminalCoordinatorRefundsDialFailureBeforeProviderRequest(t *testing.T) {
+	task := &model.Task{ID: "task-1", UserID: "user-1", BillingOrderID: "order-1"}
+	repo := &taskTerminalRepositoryStub{task: task}
+	billing := &taskTerminalBillingStub{review: true}
+	coordinator := newTaskTerminalCoordinatorForTest(repo, billing, &taskTerminalReplayStub{}, &taskTerminalLoggerStub{}, &taskTerminalOutputStub{})
+	failure := outbound.MarkRequestNotSent(fmt.Errorf("dial tcp: %w", context.DeadlineExceeded))
+
+	if err := coordinator.handleExecutionFailure(task, failure, false, OutboundRequestWasNotSent(failure)); !errors.Is(err, failure) {
+		t.Fatalf("handleExecutionFailure() error = %v, want %v", err, failure)
+	}
+	if len(billing.refund) != 1 || len(billing.uncertain) != 0 {
+		t.Fatalf("unexpected billing actions: uncertain=%v refund=%v", billing.uncertain, billing.refund)
+	}
+	diagnostic := taskExecutionDiagnostic(task)
+	if diagnostic == nil || diagnostic.SubmissionOutcome != "not_submitted" {
+		t.Fatalf("diagnostic=%#v, want not_submitted", diagnostic)
 	}
 }
 
