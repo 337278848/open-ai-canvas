@@ -8,6 +8,20 @@ permissions:
   contents: read
 
 jobs:
+  changelog:
+    name: Changelog contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test changelog contract
+        run: python3 .github/scripts/test_check_changelog.py
+      - name: Require release notes for product changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 .github/scripts/check-changelog.py "$BASE_SHA" "$GITHUB_SHA"
+
   backend:
     name: Backend checks
     runs-on: ubuntu-latest

@@ -12,6 +12,8 @@ describe("public changelog", () => {
     });
 
     test("keeps the current release notes available to the in-app dialog", () => {
+        expect(changelog).toContain("## Unreleased");
+        expect(changelog).toContain("模型服务连接失败被误报为图片生成等待超时");
         expect(changelog).toContain("## v1.5.9");
         expect(changelog).toContain("拼好布");
         expect(changelog).not.toContain("## v1.5.8");
