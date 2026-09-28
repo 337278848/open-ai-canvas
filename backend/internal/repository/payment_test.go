@@ -245,6 +245,29 @@ func TestCreatePaymentProviderConfigVersionsAreMonotonic(t *testing.T) {
 	}
 }
 
+func TestLatestPaymentProviderConfigReturnsNewestAndPreservesNotFoundContract(t *testing.T) {
+	db := openPaymentTestDB(t)
+	repo := New(db)
+	if _, err := repo.LatestPaymentProviderConfig("missing-provider"); !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("missing config error = %v, want %v", err, gorm.ErrRecordNotFound)
+	}
+	first := &model.PaymentProviderConfig{ID: "latest-config-1", ProviderID: "wechat-native", PluginID: "plugin", CloseAfterMinutes: 30}
+	second := &model.PaymentProviderConfig{ID: "latest-config-2", ProviderID: "wechat-native", PluginID: "plugin", CloseAfterMinutes: 60}
+	if err := repo.CreatePaymentProviderConfig(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreatePaymentProviderConfig(second); err != nil {
+		t.Fatal(err)
+	}
+	latest, err := repo.LatestPaymentProviderConfig("wechat-native")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.ID != second.ID || latest.Version != 2 {
+		t.Fatalf("latest config = %#v, want id=%q version=2", latest, second.ID)
+	}
+}
+
 func TestClaimExpiredPaymentOrdersIncludesAmbiguousAndStaleClosingStates(t *testing.T) {
 	db := openPaymentTestDB(t)
 	repo := New(db)

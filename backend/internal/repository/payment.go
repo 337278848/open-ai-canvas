@@ -71,8 +71,14 @@ func (r *Repository) CreatePaymentProviderConfig(config *model.PaymentProviderCo
 
 func (r *Repository) LatestPaymentProviderConfig(providerID string) (*model.PaymentProviderConfig, error) {
 	var config model.PaymentProviderConfig
-	err := r.db.Where("provider_id = ?", strings.TrimSpace(providerID)).Order("version desc").First(&config).Error
-	return &config, err
+	result := r.db.Where("provider_id = ?", strings.TrimSpace(providerID)).Order("version desc").Limit(1).Find(&config)
+	if result.Error != nil {
+		return &config, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return &config, gorm.ErrRecordNotFound
+	}
+	return &config, nil
 }
 
 func (r *Repository) PaymentProviderConfig(id string) (*model.PaymentProviderConfig, error) {

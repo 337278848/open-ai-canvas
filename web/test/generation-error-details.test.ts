@@ -10,7 +10,13 @@ describe("safe upstream error details", () => {
     test("does not replace a safe upstream message with a generic HTTP hint", () => {
         const message = `模型服务暂时不可用（HTTP 500）；上游：${detail}`;
         expect(generationErrorMessage(message)).toBe(message);
-        expect(generationErrorMessage("模型服务暂时不可用（HTTP 500）")).toBe("网络异常。");
+        expect(generationErrorMessage("模型服务暂时不可用（HTTP 500）")).toBe("模型服务暂时不可用，请稍后重试。");
+        expect(generationErrorMessage("Request failed with status code 502")).toBe("模型服务暂时不可用，请稍后重试。");
+        expect(generationErrorMessage("模型服务响应超时（HTTP 504）")).toBe("模型服务响应超时，请稍后重试。");
+    });
+    test("keeps actual transport failures classified as network errors", () => {
+        expect(generationErrorMessage("dial tcp: connection refused")).toBe("网络异常。");
+        expect(generationErrorMessage("fetch failed")).toBe("网络异常。");
     });
     test("keeps details when moderation metadata is stored", () => {
         const message = `内容审核未通过；上游：${detail}`;

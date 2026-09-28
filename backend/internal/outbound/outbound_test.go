@@ -1,7 +1,9 @@
 package outbound
 
 import (
+	"context"
 	"encoding/base64"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,48 @@ import (
 	"testing"
 	"time"
 )
+
+type timeoutDialError struct{}
+
+func (timeoutDialError) Error() string   { return "dial timeout" }
+func (timeoutDialError) Timeout() bool   { return true }
+func (timeoutDialError) Temporary() bool { return true }
+
+func TestDialOutboundAddressRetriesConnectTimeoutBeforeSendingRequest(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	attempts := 0
+	conn, err := dialOutboundAddressWithRetry(context.Background(), func(_ context.Context, _, _ string) (net.Conn, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, timeoutDialError{}
+		}
+		return client, nil
+	}, "tcp", "203.0.113.10:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if conn != client || attempts != 2 {
+		t.Fatalf("conn=%v attempts=%d, want second dial connection", conn, attempts)
+	}
+}
+
+func TestDialOutboundAddressDoesNotRetryNonTimeoutFailure(t *testing.T) {
+	attempts := 0
+	want := errors.New("connection refused")
+	_, err := dialOutboundAddressWithRetry(context.Background(), func(_ context.Context, _, _ string) (net.Conn, error) {
+		attempts++
+		return nil, want
+	}, "tcp", "203.0.113.10:443")
+	if !errors.Is(err, want) {
+		t.Fatalf("error=%v, want %v", err, want)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts=%d, want 1", attempts)
+	}
+}
 
 func TestOutboundTransportUsesEnvironmentProxyAndHonorsNoProxy(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://172.24.176.1:10808")

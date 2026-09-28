@@ -4,6 +4,8 @@ export const CONTENT_MODERATION_MESSAGE = "内容审核未通过，本次平台�
 
 const DEFAULT_GENERATION_ERROR_MESSAGE = "生成失败，请稍后重试。";
 const NETWORK_ERROR_MESSAGE = "网络异常。";
+const UPSTREAM_SERVICE_ERROR_MESSAGE = "模型服务暂时不可用，请稍后重试。";
+const UPSTREAM_TIMEOUT_MESSAGE = "模型服务响应超时，请稍后重试。";
 
 export type GenerationFailureMetadata = {
     errorDetails: string;
@@ -36,7 +38,8 @@ export function generationErrorMessage(error: unknown) {
             if (hasHttpStatus(raw, 429)) return "服务当前繁忙，请稍后重试。";
             if (hasHttpStatus(raw, 401, 403)) return "生成服务鉴权失败，请检查渠道配置。";
             if (hasHttpStatus(raw, 404)) return "生成服务地址不可用，请检查渠道配置。";
-            if (hasHttpStatus(raw, 500, 502, 503, 504)) return NETWORK_ERROR_MESSAGE;
+            if (hasHttpStatus(raw, 504)) return UPSTREAM_TIMEOUT_MESSAGE;
+            if (hasHttpStatus(raw, 500, 502, 503)) return UPSTREAM_SERVICE_ERROR_MESSAGE;
         }
         if (containsInfrastructureDetails(raw)) return NETWORK_ERROR_MESSAGE;
     }

@@ -23,6 +23,8 @@ const (
 	maxOutboundRedirects     = 5
 	maxOutboundHeaderCount   = 32
 	maxOutboundHeaderBytes   = 16 << 10
+	outboundDialAttempts     = 2
+	outboundDialRetryDelay   = 250 * time.Millisecond
 	CustomRelayHeadersHeader = "X-Canvas-Upstream-Headers"
 	DefaultOutboundUserAgent = "CreativeStudio/1.0"
 )
@@ -266,7 +268,7 @@ func newOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, e
 			if err != nil {
 				return nil, err
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(addresses[0].String(), port))
+			return dialOutboundAddressWithRetry(ctx, dialer.DialContext, network, net.JoinHostPort(addresses[0].String(), port))
 		},
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          100,
@@ -275,6 +277,39 @@ func newOutboundTransport(resolveHost func(context.Context, string) ([]net.IP, e
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
+}
+
+// dialOutboundAddressWithRetry only retries a TCP connect timeout. At this
+// point no HTTP request bytes have been sent, so the retry cannot duplicate a
+// provider-side generation or payment. Application-level submission failures
+// remain subject to the existing uncertain-submission safeguards.
+func dialOutboundAddressWithRetry(ctx context.Context, dial func(context.Context, string, string) (net.Conn, error), network, address string) (net.Conn, error) {
+	var lastErr error
+	for attempt := 0; attempt < outboundDialAttempts; attempt++ {
+		conn, err := dial(ctx, network, address)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil || !outboundDialTimeout(err) || attempt+1 >= outboundDialAttempts {
+			return nil, err
+		}
+		timer := time.NewTimer(outboundDialRetryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil, lastErr
+}
+
+func outboundDialTimeout(err error) bool {
+	var networkErr net.Error
+	return errors.As(err, &networkErr) && networkErr.Timeout()
 }
 
 func outboundProxyFromEnvironment(req *http.Request) (*url.URL, error) {
