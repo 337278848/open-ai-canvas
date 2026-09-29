@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 45
+const CurrentSchemaVersion int64 = 47
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -158,6 +158,12 @@ var schemaMigrations = []migration{
 	{version: 43, name: "skill_library_categories", checksum: skillLibraryCategoriesChecksum, apply: migrateSkillLibraryCategories},
 	{version: 44, name: "builtin_skill_tombstones", checksum: builtinSkillTombstonesChecksum, apply: migrateBuiltinSkillTombstones},
 	{version: 45, name: "resource_thumbnail", checksum: resourceThumbnailChecksum, apply: migrateResourceThumbnail},
+	{version: 46, name: "cloud_agent_pi_sessions", checksum: "sha256:cloud-agent-pi-sessions-v46-20260929-local-lineage", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.CloudAgentPiSession{})
+	}},
+	{version: 47, name: "topup_sale_strategies", checksum: "sha256:topup-sale-strategies-v47-20260929-local-lineage", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.TopupProduct{}, &model.PaymentOrder{})
+	}},
 }
 
 func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {
@@ -953,7 +959,7 @@ func applyUpstreamLineageCompatibility(db *gorm.DB, plan []migration, allowConve
 		{version: 37, name: "cloud_agent_gemini_cache_identity", checksum: legacyCloudAgentGeminiCacheIdentityChecksum, apply: migrateCloudAgentGeminiCacheIdentity},
 		{version: 38, name: "prefixed_id_sequence_reconcile", checksum: legacyPrefixedIDSequenceReconcileChecksum, apply: migratePrefixedIDSequenceReconcile},
 	}
-	// v1.5.8 occupies v39/v40 with skill migrations. Those rows are valid
+	// v1.5.8 occupies v39/v40 with skill migrations and v42/v43 with Agent/payment migrations. Those rows are valid
 	// historical work, but the local lineage uses those slots for auth/Gemini;
 	// accept them as no-ops and install the same tables again at v43/v44.
 	aliases = append(aliases,
@@ -965,6 +971,12 @@ func applyUpstreamLineageCompatibility(db *gorm.DB, plan []migration, allowConve
 	// historical v41 thumbnail row and install the physical columns again at v45.
 	aliases = append(aliases,
 		upstreamMigrationAlias{version: 41, name: "resource_thumbnail", checksum: legacyResourceThumbnailChecksum, apply: migrateResourceThumbnail},
+		upstreamMigrationAlias{version: 42, name: "cloud_agent_pi_sessions", checksum: "sha256:cloud-agent-pi-sessions-v42-20260928", apply: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.CloudAgentPiSession{})
+		}},
+		upstreamMigrationAlias{version: 43, name: "topup_sale_strategies", checksum: "sha256:topup-sale-strategies-v43-20260929", apply: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.TopupProduct{}, &model.PaymentOrder{})
+		}},
 	)
 	for _, alias := range aliases {
 		legacy := migration{

@@ -439,7 +439,7 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 	add("ask_user",
 		"创作需求存在会显著影响结果的歧义时才调用本工具。本轮只问一次：简单单项决策使用 options；多个相关参数（题材、画幅、画风、模型偏好、补充说明等）使用 fields 返回一张带推荐值、可编辑、可跳过非必填项的紧凑表单。已指定方向、授权自主决定、存在安全默认值或明确说“直接开始”时不要问，直接执行。本轮就此收尾，用户提交后自动续轮；服务端最多允许 2 轮确认。",
 		map[string]any{
-			"question": str("要用户确认的主题"),
+			"question":   str("要用户确认的主题"),
 			"questionId": str("可选问题标识"),
 			"options": map[string]any{"type": "array", "minItems": 2, "maxItems": 6, "items": map[string]any{
 				"type":       "object",
@@ -450,8 +450,8 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 				"type": "object",
 				"properties": map[string]any{
 					"id": str("字段 ID，如 aspectRatio"), "title": str("字段名称"),
-					"type":    map[string]any{"type": "string", "enum": []string{"single_select", "segmented", "text", "textarea", "model_picker"}},
-					"options": map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "object", "properties": map[string]any{"id": str("ID"), "label": str("选项名称"), "detail": str("说明"), "recommended": map[string]any{"type": "boolean"}}, "required": []string{"label"}, "additionalProperties": false}},
+					"type":         map[string]any{"type": "string", "enum": []string{"single_select", "segmented", "text", "textarea", "model_picker"}},
+					"options":      map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "object", "properties": map[string]any{"id": str("ID"), "label": str("选项名称"), "detail": str("说明"), "recommended": map[string]any{"type": "boolean"}}, "required": []string{"label"}, "additionalProperties": false}},
 					"defaultValue": str("默认值"), "required": map[string]any{"type": "boolean"}, "allowCustom": map[string]any{"type": "boolean"}, "placeholder": str("提示"),
 				},
 				"required": []string{"id", "title", "type"}, "additionalProperties": false,
@@ -554,14 +554,14 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 			"y":            map[string]any{"type": "number"},
 		}, "snapshotHash", "nodeId", "title", "rows")
 		add("canvas_edit_storyboard", "追加、修改或删除分镜脚本中的单个镜头行。必须先用 canvas_read_storyboard 读取最新 snapshotHash 和真实 rowId；append 不传 rowId，update/remove 必须传。patch 只允许镜头文本与时长，不能修改素材绑定、媒体节点ID、任务状态、资源URL或任意 metadata。", map[string]any{
-			"snapshotHash": str("最近一次分镜读取返回的 snapshotHash"),
+			"snapshotHash": str("最近一次 canvas_read_storyboard 返回的 snapshotHash（这个分镜节点的版本；其它节点的改动不影响它）"),
 			"nodeId":       str("真实分镜脚本节点ID"),
 			"action":       map[string]any{"type": "string", "enum": []string{"append", "update", "remove"}},
 			"rowId":        str("update/remove 使用 canvas_read_storyboard 返回的真实 rowId；append 留空"),
 			"patch":        cloudAgentStoryboardPatchSchema(),
 		}, "snapshotHash", "nodeId", "action")
 		add("canvas_edit_batch_table", "操作批量创作表组件：追加、修改或删除任务行，切换批量换装/创意生图，设置1/5/10并发，新增或减少参考图列，或设置覆盖各任务的全局提示词。必须先用 canvas_read_batch_table 获取最新 snapshotHash 和真实 rowId。行 patch 仅允许 enabled、inputNodeIds、prompt；prompt 可使用读取结果中的 @参考图1、@参考图2 等 mentionToken 指代本行对应位置的图片。append 未传 inputNodeIds 时会继承上一行参考图；图片ID必须来自当前画布。不能写 outputNodeId、任务状态、URL、storageKey 或任意 metadata。本工具只编辑计划，不提交收费生成。", map[string]any{
-			"snapshotHash": str("最近一次批量创作表读取返回的 snapshotHash"),
+			"snapshotHash": str("最近一次 canvas_read_batch_table 返回的 snapshotHash（这个表节点的版本；其它节点的改动不影响它）"),
 			"nodeId":       str("真实批量创作表节点ID"),
 			"action":       map[string]any{"type": "string", "enum": []string{"append", "update", "remove", "set_operation", "set_concurrency", "add_reference_column", "remove_reference_column", "set_global_prompt"}},
 			"rowId":        str("update/remove 使用 canvas_read_batch_table 返回的真实 rowId；其他操作留空"),
@@ -1070,7 +1070,7 @@ func cloudAgentReadTool(repo *repository.Repository, userID string, state *cloud
 		if err != nil {
 			return nil, err
 		}
-		return cloudAgentStoryboardReadResult(view, args.NodeID)
+		return cloudAgentStoryboardReadResult(view, args.NodeID, cloudAgentNodeHash(doc, args.NodeID))
 	case "canvas_read_batch_table":
 		var args struct {
 			NodeID string `json:"nodeId"`
@@ -1097,7 +1097,7 @@ func cloudAgentReadTool(repo *repository.Repository, userID string, state *cloud
 		if err != nil {
 			return nil, err
 		}
-		return cloudAgentBatchTableReadResult(view, args.NodeID)
+		return cloudAgentBatchTableReadResult(view, args.NodeID, cloudAgentNodeHash(doc, args.NodeID))
 	case "image_text_detect":
 		var args struct {
 			NodeID string `json:"nodeId"`
