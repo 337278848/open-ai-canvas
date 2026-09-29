@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## Unreleased
+
+- 移除登录与品牌场景中遗留的旧英文品牌标识，统一显示为“PIN HAO BU STUDIO”。
+
 ## v1.6.0
 
 - 修复 Agent 审批恢复竞态，批准后的工具执行在旧会话收尾时仍能稳定恢复。

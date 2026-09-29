@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { appearanceLogoURL, normalizePublicAppearance } from "../src/stores/use-appearance-store";
+import { appearanceLogoURL, brandStudioLabel, normalizePublicAppearance } from "../src/stores/use-appearance-store";
 
 test("initial HTML stays brand neutral until the public appearance is resolved", async () => {
     const [html, mainSource] = await Promise.all([Bun.file(new URL("../index.html", import.meta.url)).text(), Bun.file(new URL("../src/main.tsx", import.meta.url)).text()]);
@@ -11,6 +11,10 @@ test("initial HTML stays brand neutral until the public appearance is resolved",
     expect(mainSource).toContain('import("./application")');
     expect(mainSource).toContain("void launchApplication()");
     expect(mainSource.indexOf("void launchApplication()")).toBeLessThan(mainSource.lastIndexOf("void bootstrapAppearance()"));
+});
+
+test("default 拼好布 appearance does not expose the previous brand label", () => {
+    expect(brandStudioLabel(normalizePublicAppearance({}))).toBe("PIN HAO BU STUDIO");
 });
 
 test("a custom login video never falls back to the built-in poster", () => {
