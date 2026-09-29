@@ -73,6 +73,17 @@ test("model editor presents protocols in a searchable inline radio browser inste
     expect(compactSource(css)).toContain(".admin-model-protocol-field { grid-column: 1 / -1;");
 });
 
+test("model editor keeps backend save failures visible and routes them to the likely section", async () => {
+    const source = compactSource(await Bun.file(new URL("../src/pages/admin/components/channel-model-editor.tsx", import.meta.url)).text());
+
+    expect(source).toContain("const [saveError, setSaveError] = useState(\"\")");
+    expect(source).toContain('title="模型保存失败，未写入任何修改"');
+    expect(source).toContain("description={saveError}");
+    expect(source).toContain("setActiveSection(sectionForSaveError(detail))");
+    expect(source).toContain('if (/价格|计费|成本|售价|规格|时长|分辨率|积分/.test(message)) return "pricing";');
+    expect(source).toContain('if (/能力|协议|引用|参考|音频|图片|视频/.test(message)) return "capabilities";');
+});
+
 test("channel model fetch requires explicit selection before import", async () => {
     const [componentSource, apiSource, adminCssSource] = await Promise.all([
         Bun.file(new URL("../src/pages/admin/components/channel-model-manager.tsx", import.meta.url)).text(),

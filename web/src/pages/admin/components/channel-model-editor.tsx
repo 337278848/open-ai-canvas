@@ -16,6 +16,12 @@ import { PriceTierFields } from "./channel-model-price-tier-fields";
 import { ChannelModelTagsEditor } from "./channel-model-tags-editor";
 import { changeChannelModelCapability, editorSectionForField, initialChannelModelValues, validateChannelModelPrices, validateChannelModelProtocol, type ChannelModelFormValues as FormValues, type EditorSection } from "./channel-model-editor-form";
 
+function sectionForSaveError(message: string): EditorSection {
+    if (/价格|计费|成本|售价|规格|时长|分辨率|积分/.test(message)) return "pricing";
+    if (/能力|协议|引用|参考|音频|图片|视频/.test(message)) return "capabilities";
+    return "identity";
+}
+
 export function ChannelModelEditor({
     channel,
     editing,
@@ -46,6 +52,7 @@ export function ChannelModelEditor({
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
     const [configurationChanged, setConfigurationChanged] = useState(false);
+    const [saveError, setSaveError] = useState("");
     const busyRef = useRef(false);
     const dirtyRef = useRef(false);
     const modelCapability = Form.useWatch("capability", form);
@@ -71,6 +78,7 @@ export function ChannelModelEditor({
 
     const handleFormValuesChange = (changed: Partial<FormValues>) => {
         dirtyRef.current = true;
+        if (saveError) setSaveError("");
         if (changed.capability) {
             form.setFieldsValue(changeChannelModelCapability(form.getFieldsValue(true), protocols));
             setConfigurationChanged(true);
@@ -132,7 +140,10 @@ export function ChannelModelEditor({
             onClose();
             message.success(editing ? "模型配置已更新" : "模型已添加");
         } catch (error) {
-            message.error(error instanceof Error ? error.message : "保存模型失败");
+            const detail = error instanceof Error ? error.message : "保存模型失败";
+            setSaveError(detail);
+            setActiveSection(sectionForSaveError(detail));
+            message.error(detail);
         } finally {
             busyRef.current = false;
             setSaving(false);
@@ -227,6 +238,16 @@ export function ChannelModelEditor({
                 <Form.Item name="enabled" noStyle>
                     <EnabledConfigField />
                 </Form.Item>
+                {saveError ? (
+                    <Alert
+                        type="error"
+                        showIcon
+                        closable
+                        title="模型保存失败，未写入任何修改"
+                        description={saveError}
+                        onClose={() => setSaveError("")}
+                    />
+                ) : null}
                 <Tabs
                     activeKey={activeSection}
                     onChange={(key) => setActiveSection(key as EditorSection)}
