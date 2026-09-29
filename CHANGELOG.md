@@ -3,6 +3,7 @@
 ## Unreleased
 
 - 移除登录与品牌场景中遗留的旧英文品牌标识，统一显示为“PIN HAO BU STUDIO”。
+- 修复 Agent 工具 Schema 超出预算，以及 PostgreSQL Gemini 缓存迁移未清理旧全局索引的问题。
 
 ## v1.6.0
 

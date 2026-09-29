@@ -216,14 +216,14 @@ func migrateCloudAgentGeminiCacheIdentity(tx *gorm.DB) error {
 	// though cache identity is scoped by user. Drop both historical names
 	// before AutoMigrate recreates the composite (user_id, cache_key) index.
 	for _, name := range []string{"idx_cloud_agent_gemini_caches_cache_key", "idx_cloud_agent_gemini_cache_cache_key"} {
-		if tx.Migrator().HasIndex(&model.CloudAgentGeminiCache{}, name) {
-			// GORM's PostgreSQL DropIndex implementation in v1.6.2 renders
-			// CURRENT_SCHEMA() as an identifier, producing invalid SQL
-			// (DROP INDEX CURRENT_SCHEMA()."index"). Use a quoted identifier
-			// through GORM so this remains valid for PostgreSQL and SQLite.
-			if err := tx.Exec("DROP INDEX IF EXISTS ?", clause.Column{Name: name}).Error; err != nil {
-				return fmt.Errorf("删除 Gemini 缓存旧唯一索引 %s：%w", name, err)
-			}
+		// Do not gate this on HasIndex: PostgreSQL can miss an index in a
+		// non-default search_path even though DROP INDEX can resolve it.
+		// GORM's PostgreSQL DropIndex implementation in v1.6.2 renders
+		// CURRENT_SCHEMA() as an identifier, producing invalid SQL
+		// (DROP INDEX CURRENT_SCHEMA()."index"). Use a quoted identifier
+		// through GORM so this remains valid for PostgreSQL and SQLite.
+		if err := tx.Exec("DROP INDEX IF EXISTS ?", clause.Column{Name: name}).Error; err != nil {
+			return fmt.Errorf("删除 Gemini 缓存旧唯一索引 %s：%w", name, err)
 		}
 	}
 	return tx.AutoMigrate(&model.CloudAgentGeminiCache{})
