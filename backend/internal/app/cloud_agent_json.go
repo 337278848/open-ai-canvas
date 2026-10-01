@@ -12,6 +12,17 @@ import (
 
 var errCloudAgentJSONSingleObject = errors.New("参数必须是单个 JSON 对象")
 
+// cloudAgentJSONFieldIsNull reports an explicit JSON null for a top-level
+// field. Optional pointers must reject null instead of silently defaulting.
+func cloudAgentJSONFieldIsNull(raw, field string) bool {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &object); err != nil {
+		return false
+	}
+	value, ok := object[field]
+	return ok && bytes.Equal(bytes.TrimSpace(value), []byte("null"))
+}
+
 // Only explicitly classified input errors may be repaired by the model;
 // authorization and unsupported mutations still fail before any write/approval.
 type cloudAgentArgumentError struct{ error }

@@ -222,13 +222,16 @@ validate_image_digest() {
 }
 
 validate_deployment_digests() {
-    local backend_image web_image
+    local backend_image web_image agent_image
     backend_image="$(sed -n 's/^CANVAS_BACKEND_IMAGE=//p' .env | tail -n 1)"
     web_image="$(sed -n 's/^CANVAS_WEB_IMAGE=//p' .env | tail -n 1)"
+    agent_image="$(sed -n 's/^CANVAS_YINGCE_AGENT_IMAGE=//p' .env | tail -n 1)"
     validate_image_digest "$backend_image" backend ||
         fail "CANVAS_BACKEND_IMAGE 必须固定为 ${IMAGE_REPOSITORY}-backend@sha256:<64位十六进制摘要>"
     validate_image_digest "$web_image" web ||
         fail "CANVAS_WEB_IMAGE 必须固定为 ${IMAGE_REPOSITORY}-web@sha256:<64位十六进制摘要>"
+    validate_image_digest "$agent_image" yingce-agent ||
+        fail "CANVAS_YINGCE_AGENT_IMAGE 必须固定为 ${IMAGE_REPOSITORY}-yingce-agent@sha256:<64位十六进制摘要>"
 }
 
 require_root() {
@@ -317,6 +320,16 @@ prepare_environment() {
             fail "请通过 CANVAS_IMAGE_TAG 指定具体 Release，例如 v1.5.7.1"
         fi
         resolve_updater_socket_dir
+        CANVAS_BACKEND_IMAGE="${IMAGE_REPOSITORY}-backend:${CANVAS_IMAGE_TAG}"
+        CANVAS_WEB_IMAGE="${IMAGE_REPOSITORY}-web:${CANVAS_IMAGE_TAG}"
+        CANVAS_YINGCE_AGENT_IMAGE="${IMAGE_REPOSITORY}-yingce-agent:${CANVAS_IMAGE_TAG}"
+        set_env_value .env CANVAS_IMAGE_TAG "$CANVAS_IMAGE_TAG"
+        set_env_value .env CANVAS_BACKEND_IMAGE "$CANVAS_BACKEND_IMAGE"
+        set_env_value .env CANVAS_WEB_IMAGE "$CANVAS_WEB_IMAGE"
+        set_env_value .env CANVAS_YINGCE_AGENT_IMAGE "$CANVAS_YINGCE_AGENT_IMAGE"
+        if ! grep -Eq '^YINGCE_AGENT_TOKEN=.{32,}$' .env; then
+            set_env_value .env YINGCE_AGENT_TOKEN "$(openssl rand -hex 32)"
+        fi
         return
     fi
 
@@ -337,6 +350,10 @@ POSTGRES_PASSWORD=${database_password}
 DATABASE_URL=postgresql://open_ai_canvas:${database_password}@postgres:5432/open_ai_canvas?sslmode=disable
 CANVAS_HTTP_PORT=${CANVAS_HTTP_PORT}
 CANVAS_IMAGE_TAG=${CANVAS_IMAGE_TAG}
+CANVAS_BACKEND_IMAGE=${IMAGE_REPOSITORY}-backend:${CANVAS_IMAGE_TAG}
+CANVAS_WEB_IMAGE=${IMAGE_REPOSITORY}-web:${CANVAS_IMAGE_TAG}
+CANVAS_YINGCE_AGENT_IMAGE=${IMAGE_REPOSITORY}-yingce-agent:${CANVAS_IMAGE_TAG}
+YINGCE_AGENT_TOKEN=$(openssl rand -hex 32)
 CANVAS_REGISTRATION_ENABLED=false
 CANVAS_ALLOW_PRIVATE_UPSTREAMS=false
 CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS=
@@ -450,20 +467,24 @@ pull_and_pin_images() {
     CANVAS_IMAGE_TAG="$CANVAS_IMAGE_TAG" \
         CANVAS_BACKEND_IMAGE="${IMAGE_REPOSITORY}-backend:${CANVAS_IMAGE_TAG}" \
         CANVAS_WEB_IMAGE="${IMAGE_REPOSITORY}-web:${CANVAS_IMAGE_TAG}" \
-        docker compose --env-file .env -f "$COMPOSE_FILE" pull backend web migrate || {
+        docker compose --env-file .env -f "$COMPOSE_FILE" pull backend web yingce-agent migrate || {
         fail "GHCR 镜像拉取失败；如果容器包尚未公开，请通过 GHCR_USERNAME 和 GHCR_TOKEN 登录后重试"
     }
-    local backend_digest web_digest
+    local backend_digest web_digest agent_digest
     CANVAS_BACKEND_IMAGE="${IMAGE_REPOSITORY}-backend:${CANVAS_IMAGE_TAG}"
     CANVAS_WEB_IMAGE="${IMAGE_REPOSITORY}-web:${CANVAS_IMAGE_TAG}"
+    CANVAS_YINGCE_AGENT_IMAGE="${IMAGE_REPOSITORY}-yingce-agent:${CANVAS_IMAGE_TAG}"
     backend_digest="$(docker image inspect "$CANVAS_BACKEND_IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v repository="${IMAGE_REPOSITORY}-backend" 'index($0, repository "@sha256:") == 1 && $0 ~ /@sha256:[a-f0-9]{64}$/ { print; exit }')"
     web_digest="$(docker image inspect "$CANVAS_WEB_IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v repository="${IMAGE_REPOSITORY}-web" 'index($0, repository "@sha256:") == 1 && $0 ~ /@sha256:[a-f0-9]{64}$/ { print; exit }')"
+    agent_digest="$(docker image inspect "$CANVAS_YINGCE_AGENT_IMAGE" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v repository="${IMAGE_REPOSITORY}-yingce-agent" 'index($0, repository "@sha256:") == 1 && $0 ~ /@sha256:[a-f0-9]{64}$/ { print; exit }')"
     validate_image_digest "$backend_digest" backend || fail "后端镜像未返回可验证的仓库 digest；拒绝继续使用可变 tag"
     validate_image_digest "$web_digest" web || fail "Web 镜像未返回可验证的仓库 digest；拒绝继续使用可变 tag"
+    validate_image_digest "$agent_digest" yingce-agent || fail "Agent 镜像未返回可验证的仓库 digest；拒绝继续使用可变 tag"
     set_env_values .env \
         CANVAS_IMAGE_TAG "$CANVAS_IMAGE_TAG" \
         CANVAS_BACKEND_IMAGE "$backend_digest" \
-        CANVAS_WEB_IMAGE "$web_digest"
+        CANVAS_WEB_IMAGE "$web_digest" \
+        CANVAS_YINGCE_AGENT_IMAGE "$agent_digest"
     validate_deployment_digests
 }
 

@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -40,14 +43,34 @@ func providerResponseBusinessFailure(responseBody []byte) (string, string, bool)
 	if len(responseBody) == 0 {
 		return "", "", false
 	}
-	var payload map[string]any
-	if json.Unmarshal(responseBody, &payload) != nil {
-		// 流式协议用 HTTP 200 承载业务失败：正文里是 SSE 帧，真正的错误在
-		// `event: error` 的 data 中。不解析它，这次调用就会被记成成功，
-		// 让任务失败原因在调用日志里消失，并把费用卡在"待核对"。
-		return providerStreamBusinessFailure(responseBody)
+	// 火山单向语音合成把多帧 JSON 直接拼在同一个 HTTP 200 里。只解析第一帧会把后面的业务失败当成成功。
+	decoder := json.NewDecoder(bytes.NewReader(responseBody))
+	decoder.UseNumber()
+	decoded := false
+	for {
+		var payload map[string]any
+		err := decoder.Decode(&payload)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			// 整体不是 JSON 流时，再尝试 SSE：流式协议会用 HTTP 200 承载业务失败，
+			// 真正的错误在 event: error 的 data 中。不解析它，这次调用会被记成成功，
+			// 让任务失败原因在调用日志里消失，并把费用卡在"待核对"。
+			if !decoded {
+				return providerStreamBusinessFailure(responseBody)
+			}
+			break
+		}
+		decoded = true
+		if payload == nil {
+			continue
+		}
+		if code, message, failed := providerPayloadBusinessFailure(payload); failed {
+			return code, message, true
+		}
 	}
-	return providerPayloadBusinessFailure(payload)
+	return "", "", false
 }
 
 // providerStreamBusinessFailure 从 SSE 正文里提取上游显式错误帧。
@@ -99,6 +122,16 @@ func providerStreamBusinessFailure(responseBody []byte) (string, string, bool) {
 }
 
 func providerPayloadBusinessFailure(payload map[string]any) (string, string, bool) {
+	if header, ok := payload["header"].(map[string]any); ok {
+		// 只认火山语音合成这种明确的资源拒绝。header.code 在别的协议里可能是 HTTP 状态，不能一律当成业务失败。
+		rawMessage := strings.TrimSpace(stringField(header, "message"))
+		if speechResourceDeniedUserMessage(rawMessage) != "" {
+			if code, message, failed := providerBusinessFailure(header); failed {
+				return code, message, true
+			}
+			return "resource_not_granted", rawMessage, true
+		}
+	}
 	if code, message, failed := providerBusinessFailure(payload); failed {
 		return code, message, true
 	}

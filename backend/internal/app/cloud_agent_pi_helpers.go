@@ -4,25 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"infinite-canvas/backend/internal/model"
 )
 
 // Skills Configuration Builders
-
-// buildSkillPaths 构建 Skills 路径列表
-func (s *Service) buildSkillPaths(skills []cloudAgentSkill) []string {
-	if len(skills) == 0 {
-		return []string{}
-	}
-
-	paths := make([]string, 0, len(skills))
-	for _, skill := range skills {
-		paths = append(paths, cloudAgentSkillPaths(skill)...)
-	}
-	return paths
-}
 
 // buildSkillManifests 构建 Skills 清单（传递给 Pi）
 func (s *Service) buildSkillManifests(skills []cloudAgentSkill) []map[string]any {
@@ -191,17 +178,17 @@ func formatDuration(ms int64) string {
 
 // logPiAgentStep 记录 Pi Agent 步骤
 func logPiAgentStep(runID, step, message string) {
-	log.Printf("[Agent Step] run=%s step=%s: %s", runID, step, message)
+	slog.Debug("agent step", "run", runID, "step", step, "message", message)
 }
 
 // logPiAgentError 记录 Pi Agent 错误
 func logPiAgentError(runID string, err error) {
-	log.Printf("[Agent Error] run=%s: %v", runID, err)
+	slog.Warn("agent error", "run", runID, "error", err)
 }
 
 // logPiAgentMetric 记录 Pi Agent 指标
 func logPiAgentMetric(runID, metric string, value interface{}) {
-	log.Printf("[Agent Metric] run=%s %s=%v", runID, metric, value)
+	slog.Debug("agent metric", "run", runID, "metric", metric, "value", value)
 }
 
 // Type Conversions

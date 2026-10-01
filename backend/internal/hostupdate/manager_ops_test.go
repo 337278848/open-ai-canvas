@@ -390,7 +390,7 @@ func TestWriteComposeEnvOverrideReplacesImageRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &Manager{config: Config{InstallDir: installDir, EnvFile: ".env", StateDir: stateDir}}
-	path, err := manager.writeComposeEnvOverride(deploymentImages{backend: "new-backend", web: "new-web"})
+	path, err := manager.writeComposeEnvOverride(deploymentImages{backend: "new-backend", web: "new-web", agent: "new-agent"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestWriteComposeEnvOverrideReplacesImageRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := string(data)
-	if !strings.Contains(value, "CANVAS_BACKEND_IMAGE=new-backend\n") || !strings.Contains(value, "CANVAS_WEB_IMAGE=new-web\n") || !strings.Contains(value, "POSTGRES_DB=canvas\n") {
+	if !strings.Contains(value, "CANVAS_BACKEND_IMAGE=new-backend\n") || !strings.Contains(value, "CANVAS_WEB_IMAGE=new-web\n") || !strings.Contains(value, "CANVAS_YINGCE_AGENT_IMAGE=new-agent\n") || !strings.Contains(value, "POSTGRES_DB=canvas\n") {
 		t.Fatalf("unexpected override env: %q", value)
 	}
 }
@@ -428,5 +428,25 @@ func TestImageInstallerInstallsUpdaterBeforeBackend(t *testing.T) {
 			t.Fatalf("安装顺序错误：%s 出现在前一个步骤之前或缺失", step)
 		}
 		previous = position
+	}
+}
+
+// v1.5.8.x 的 Host Updater 只注入 backend/web 镜像，也不会生成 Agent Token。
+// 部署 Compose 中 Agent 相关变量必须有回退值，否则旧更新器的预检会直接失败。
+func TestDeployComposeAgentVariablesFallbackForLegacyUpdater(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "docker-compose.deploy.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose := string(data)
+	for _, required := range []string{"${CANVAS_YINGCE_AGENT_IMAGE:?", "${YINGCE_AGENT_TOKEN:?"} {
+		if strings.Contains(compose, required) {
+			t.Errorf("docker-compose.deploy.yml must not hard-require %s…}", required)
+		}
+	}
+	for _, fallback := range []string{"${CANVAS_YINGCE_AGENT_IMAGE:-", "${YINGCE_AGENT_TOKEN:-${CANVAS_UPDATER_TOKEN:?"} {
+		if !strings.Contains(compose, fallback) {
+			t.Errorf("docker-compose.deploy.yml is missing fallback %s…}", fallback)
+		}
 	}
 }

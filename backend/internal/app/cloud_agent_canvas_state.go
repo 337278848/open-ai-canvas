@@ -340,7 +340,7 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 		if status, ok := meta["status"].(string); ok {
 			item["status"] = truncateRunes(status, 40)
 		}
-		capability, known := cloudAgentNodeCapabilityForType(stringValue(node["type"]))
+		capability, known := cloudAgentNodeCapabilityForNode(node)
 		if !known {
 			// Read visibility is not permission to mutate or use a node as a media reference.
 			item["agentSupported"] = false
@@ -356,6 +356,10 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 			continue
 		}
 		precise := len(ids) > 0 || focus[id]
+		if capability.Variant != nil {
+			// 变体节点（如角色卡）底层 type 仍是 text，用 kind 标明真实能力，避免当普通文本处理。
+			item["kind"] = capability.Type
+		}
 		fields := capability.SummaryFields
 		if precise {
 			fields = capability.DetailFields
@@ -366,6 +370,35 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 		}
 		for key, value := range projected {
 			item[key] = value
+		}
+		if cloudAgentCharacterNode(node) {
+			if repo == nil {
+				item["character"] = map[string]any{"available": false, "issue": "角色资产读取服务不可用"}
+			} else {
+				canvas, canvasErr := repo.CanvasProjectForUser(userID, canvasID)
+				if canvasErr != nil {
+					return nil, canvasErr
+				}
+				character, characterErr := cloudAgentResolveCharacter(repo, userID, canvas.ProjectID, node)
+				if characterErr != nil {
+					item["character"] = map[string]any{"available": false, "issue": cloudAgentSafeToolError(characterErr)}
+				} else {
+					characterView := character.read(precise)
+					if precise {
+						_, referenceErr := cloudAgentCharacterImageReference(repo, userID, id, character)
+						characterView["imageReference"] = map[string]any{"ready": referenceErr == nil}
+						if referenceErr != nil {
+							characterView["imageReference"].(map[string]any)["issue"] = cloudAgentSafeToolError(referenceErr)
+						}
+						_, audioErr := cloudAgentCharacterAudioReference(repo, userID, id, character)
+						characterView["audioReference"] = map[string]any{"ready": audioErr == nil}
+						if audioErr != nil {
+							characterView["audioReference"].(map[string]any)["issue"] = cloudAgentSafeToolError(audioErr)
+						}
+					}
+					item["character"] = characterView
+				}
+			}
 		}
 		if capability.GenerationMode != "" {
 			generation := map[string]any{"taskStatus": "not_submitted"}
@@ -397,7 +430,8 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 			}
 			item["generationDraft"] = draft
 		}
-		if capability.Connection.CanReference {
+		// 角色卡的引用可用性在 character.imageReference/audioReference 中给出。
+		if capability.Connection.CanReference && !cloudAgentCharacterNode(node) {
 			ref, _, err := cloudAgentReference(repo, userID, node)
 			outputReference := map[string]any{"ready": err == nil}
 			item["outputReference"] = outputReference
