@@ -257,8 +257,23 @@ func providerPayloadErrorCategory(raw string) (string, bool) {
 	case (strings.Contains(normalized, "thinking") || strings.Contains(normalized, "reasoning")) && strings.Contains(normalized, "tool_choice"),
 		strings.Contains(normalized, "tool_choice") && (strings.Contains(normalized, "not support") || strings.Contains(normalized, "unsupported")):
 		return "当前模型为思考/推理模式，不支持强制工具调用（tool_choice=required），请改用自动工具选择或更换非思考模式模型", true
+	case strings.Contains(strings.TrimSpace(raw), "本次未能生成图片，请调整提示词或更换参考图后重试"):
+		return "模型服务本次未能生成图片，可直接重试；若反复出现请切换模型或渠道", true
 	case strings.Contains(normalized, "invalid"), strings.Contains(normalized, "parameter"), strings.Contains(normalized, "argument"):
 		return "模型服务拒绝了请求，请检查模型和参数", true
+	// 上游“暂时过载/稍后再试”属于可重试的瞬时故障。若不单独归类，它会落回
+	// 笼统的“模型服务返回失败”，让用户误以为提示词或渠道配置有错，也让
+	// 失败轮次失去“可以直接重试”的语义。只匹配明确的瞬时措辞，不扫描
+	// 泛化单词（如 api_error），避免把永久性错误误判成过载。
+	case strings.Contains(normalized, "overloaded"), strings.Contains(normalized, "overload"),
+		strings.Contains(normalized, "try again later"), strings.Contains(normalized, "please retry"), strings.Contains(normalized, "please try again"),
+		strings.Contains(normalized, "temporarily unavailable"), strings.Contains(normalized, "service unavailable"),
+		strings.Contains(normalized, "server error"), strings.Contains(normalized, "internal error"),
+		strings.Contains(normalized, "server is busy"), strings.Contains(normalized, "high load"), strings.Contains(normalized, "capacity"),
+		strings.Contains(normalized, "过载"), strings.Contains(normalized, "繁忙"), strings.Contains(normalized, "暂时不可用"), strings.Contains(normalized, "请稍后重试"):
+		return "上游模型服务暂时过载或不可用，请稍后重试", true
+	case strings.Contains(normalized, "rate limit"), strings.Contains(normalized, "rate_limit"), strings.Contains(normalized, "too many requests"), strings.Contains(normalized, "限流"):
+		return "模型服务请求过于频繁，请稍后重试", true
 	}
 	return "", false
 }

@@ -11,8 +11,9 @@ test("initial HTML stays brand neutral until the public appearance is resolved",
     expect(html).toContain("<title>正在加载</title>");
     expect(mainSource).toContain("bootstrapAppearance()");
     expect(mainSource).toContain('import("./application")');
-    expect(mainSource).toContain("void launchApplication()");
-    expect(mainSource.indexOf("void launchApplication()")).toBeLessThan(mainSource.lastIndexOf("void bootstrapAppearance()"));
+    // 应用与外观并行加载：外观失败不阻塞页面挂载（会话记录在 application-bootstrap.test.mjs）。
+    expect(mainSource).toContain("appearanceReady");
+    expect(mainSource).toContain("void appearanceReady.catch(() => undefined);");
 });
 
 test("default 拼好布 appearance does not expose the previous brand label", () => {

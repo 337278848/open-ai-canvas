@@ -25,14 +25,16 @@ import (
 const appearanceSettingKey = "appearance"
 
 const (
-	AppearanceAssetLogo     = "logo"
-	AppearanceAssetDarkLogo = "logo-dark"
-	AppearanceAssetVideo    = "video"
-	AppearanceAssetPoster   = "poster"
+	AppearanceAssetLogo        = "logo"
+	AppearanceAssetDarkLogo    = "logo-dark"
+	AppearanceAssetVideo       = "video"
+	AppearanceAssetPoster      = "poster"
+	AppearanceAssetUpdateImage = "update-image"
+	AppearanceAssetUpdateVideo = "update-video"
 )
 
 const (
-	appearanceSchemaVersion        = 9
+	appearanceSchemaVersion        = 10
 	appearanceLogoMaxBytes   int64 = 5 << 20
 	appearancePosterMaxBytes int64 = 10 << 20
 	appearanceVideoMaxBytes  int64 = 256 << 20
@@ -43,9 +45,11 @@ const (
 	defaultAppearanceBrandSlug = "studio"
 	defaultAppearanceSkinID    = "classic"
 	defaultAppearanceHeroTitle = "让一个故事，\n从文字走向银幕。"
+	defaultRedeemPurchaseURL   = "" // 默认不配置购买链接，前端为空时不展示入口
 )
 
 type AppearanceSetting struct {
+	Updates                   UpdateAnnouncement    `json:"updates"`
 	Canvas                    CanvasAppearance      `json:"canvas"`
 	SchemaVersion             int                   `json:"schemaVersion"`
 	BrandName                 string                `json:"brandName"`
@@ -66,9 +70,11 @@ type AppearanceSetting struct {
 	FooterCopyright           string                `json:"footerCopyright"`
 	ICPFilingEnabled          bool                  `json:"icpFilingEnabled"`
 	ICPFilingNumber           string                `json:"icpFilingNumber"`
+	RedeemPurchaseURL         string                `json:"redeemPurchaseUrl"`
 }
 
 type PublicAppearanceSetting struct {
+	Updates                   UpdateAnnouncement  `json:"updates"`
 	Canvas                    CanvasAppearance    `json:"canvas"`
 	SchemaVersion             int                 `json:"schemaVersion"`
 	BrandName                 string              `json:"brandName"`
@@ -89,6 +95,7 @@ type PublicAppearanceSetting struct {
 	FooterCopyright           string              `json:"footerCopyright"`
 	ICPFilingEnabled          bool                `json:"icpFilingEnabled"`
 	ICPFilingNumber           string              `json:"icpFilingNumber"`
+	RedeemPurchaseURL         string              `json:"redeemPurchaseUrl"`
 	LogoConfigured            bool                `json:"logoConfigured"`
 	DarkLogoConfigured        bool                `json:"darkLogoConfigured"`
 	AuthVideoConfigured       bool                `json:"authVideoConfigured"`
@@ -118,6 +125,7 @@ func defaultAppearanceSetting() AppearanceSetting {
 		LogoFrameEnabled:  true,
 		SkinID:            defaultAppearanceSkinID,
 		SkinThemes:        defaultAppearanceSkinThemes(),
+		RedeemPurchaseURL: defaultRedeemPurchaseURL,
 	}
 }
 
@@ -125,9 +133,9 @@ func AppearanceAssetMaxBytes(slot string) (int64, error) {
 	switch strings.TrimSpace(slot) {
 	case AppearanceAssetLogo, AppearanceAssetDarkLogo:
 		return appearanceLogoMaxBytes, nil
-	case AppearanceAssetPoster:
+	case AppearanceAssetPoster, AppearanceAssetUpdateImage:
 		return appearancePosterMaxBytes, nil
-	case AppearanceAssetVideo:
+	case AppearanceAssetVideo, AppearanceAssetUpdateVideo:
 		return appearanceVideoMaxBytes, nil
 	default:
 		return 0, BadAuthRequest("外观资源类型无效")
@@ -175,6 +183,11 @@ func (s *Service) UpdateAppearance(actor *model.User, value AppearanceSetting) (
 		return nil, canvasErr
 	}
 	value.Canvas = canvas
+	updates, updatesErr := normalizeUpdateAnnouncement(value.Updates)
+	if updatesErr != nil {
+		return nil, updatesErr
+	}
+	value.Updates = updates
 	value.BrandName = strings.TrimSpace(value.BrandName)
 	value.BrandSlug = strings.ToLower(strings.TrimSpace(value.BrandSlug))
 	value.AuthHeroTitle = normalizeAppearanceCopy(value.AuthHeroTitle)
@@ -193,6 +206,7 @@ func (s *Service) UpdateAppearance(actor *model.User, value AppearanceSetting) (
 	value.SEOKeywords = normalizeAppearanceSingleLine(value.SEOKeywords)
 	value.FooterCopyright = normalizeAppearanceSingleLine(value.FooterCopyright)
 	value.ICPFilingNumber = normalizeAppearanceSingleLine(value.ICPFilingNumber)
+	value.RedeemPurchaseURL = strings.TrimSpace(value.RedeemPurchaseURL)
 	if err := validateAppearanceSetting(value); err != nil {
 		return nil, err
 	}
@@ -209,6 +223,9 @@ func (s *Service) UpdateAppearance(actor *model.User, value AppearanceSetting) (
 			return nil, err
 		}
 		value.Canvas.Live2DEntry = entry
+	}
+	if err := s.validateUpdateAnnouncementResources(actor, value.Updates, before.Updates); err != nil {
+		return nil, err
 	}
 	for _, candidate := range []struct {
 		slot       string
@@ -274,7 +291,7 @@ func (s *Service) UploadAppearanceAsset(actor *model.User, slot string, header *
 	// the sniffed value so the persisted resource contract matches the bytes.
 	header.Header.Set("Content-Type", mimeType)
 	kind := "image"
-	if slot == AppearanceAssetVideo {
+	if slot == AppearanceAssetVideo || slot == AppearanceAssetUpdateVideo {
 		kind = "video"
 	}
 	var resource *model.Resource
@@ -361,6 +378,16 @@ func (s *Service) appearanceResourceReferences(resourceIDs []string) map[string]
 		{resourceID: value.AuthVideoPosterResourceID, title: "登录页视频封面"},
 		{resourceID: value.Canvas.Live2DResourceID, title: "画布 Agent Live2D 形象"},
 	}
+	for _, release := range value.Updates.Releases {
+		for _, block := range release.Blocks {
+			if block.ResourceID != "" {
+				candidates = append(candidates, struct {
+					resourceID string
+					title      string
+				}{block.ResourceID, "更新公告 " + release.Version})
+			}
+		}
+	}
 	wanted := make(map[string]struct{}, len(resourceIDs))
 	for _, resourceID := range resourceIDs {
 		wanted[resourceID] = struct{}{}
@@ -418,6 +445,7 @@ func (s *Service) readAppearance() (*model.SystemSetting, AppearanceSetting, err
 	value.SEOKeywords = normalizeAppearanceSingleLine(value.SEOKeywords)
 	value.FooterCopyright = normalizeAppearanceSingleLine(value.FooterCopyright)
 	value.ICPFilingNumber = normalizeAppearanceSingleLine(value.ICPFilingNumber)
+	value.RedeemPurchaseURL = strings.TrimSpace(value.RedeemPurchaseURL)
 	return setting, value, nil
 }
 
@@ -496,6 +524,12 @@ func validateAppearanceSetting(value AppearanceSetting) error {
 	if value.ICPFilingEnabled && value.ICPFilingNumber == "" {
 		return BadAuthRequest("显示备案号前请先填写备案号")
 	}
+	if value.RedeemPurchaseURL != "" {
+		parsed, err := url.Parse(value.RedeemPurchaseURL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+			return BadAuthRequest("兑换码购买链接必须是有效的 HTTPS 地址")
+		}
+	}
 	for _, resourceID := range []string{value.LogoResourceID, value.DarkLogoResourceID, value.AuthVideoResourceID, value.AuthVideoPosterResourceID} {
 		if len(resourceID) > 80 {
 			return BadAuthRequest("外观资源 ID 无效")
@@ -562,10 +596,10 @@ func validateAppearanceResourceType(slot string, resource *model.Resource) error
 	if _, exists := allowed[mimeType]; !exists {
 		return BadAuthRequest("外观资源文件类型不受支持")
 	}
-	if slot == AppearanceAssetVideo && resource.Kind != "video" {
+	if (slot == AppearanceAssetVideo || slot == AppearanceAssetUpdateVideo) && resource.Kind != "video" {
 		return BadAuthRequest("登录页品牌视频必须是视频资源")
 	}
-	if slot != AppearanceAssetVideo && resource.Kind != "image" {
+	if slot != AppearanceAssetVideo && slot != AppearanceAssetUpdateVideo && resource.Kind != "image" {
 		return BadAuthRequest("Logo 和视频封面必须是图片资源")
 	}
 	return nil
@@ -598,7 +632,7 @@ func validateAppearanceUpload(slot string, header *multipart.FileHeader) (string
 
 func detectAppearanceMIME(slot string, data []byte, fileSize int64) string {
 	mimeType := strings.ToLower(strings.TrimSpace(strings.Split(http.DetectContentType(data), ";")[0]))
-	if slot != AppearanceAssetVideo || mimeType == "video/mp4" || len(data) < 12 {
+	if (slot != AppearanceAssetVideo && slot != AppearanceAssetUpdateVideo) || mimeType == "video/mp4" || len(data) < 12 {
 		return mimeType
 	}
 	// Go's generic sniffer only recognises a subset of MP4 compatible brands.
@@ -612,7 +646,7 @@ func detectAppearanceMIME(slot string, data []byte, fileSize int64) string {
 }
 
 func appearanceAllowedMIMETypes(slot string) map[string]struct{} {
-	if slot == AppearanceAssetVideo {
+	if slot == AppearanceAssetVideo || slot == AppearanceAssetUpdateVideo {
 		return map[string]struct{}{"video/mp4": {}, "video/webm": {}}
 	}
 	return map[string]struct{}{"image/png": {}, "image/jpeg": {}, "image/webp": {}}
@@ -628,6 +662,10 @@ func appearanceAssetLabel(slot string) string {
 		return "视频封面"
 	case AppearanceAssetVideo:
 		return "品牌视频"
+	case AppearanceAssetUpdateImage:
+		return "公告图片"
+	case AppearanceAssetUpdateVideo:
+		return "公告视频"
 	default:
 		return "外观资源"
 	}
@@ -654,6 +692,7 @@ func publicAppearanceSetting(setting *model.SystemSetting, value AppearanceSetti
 		revision = strconv.FormatInt(setting.UpdatedAt.UTC().UnixNano(), 36)
 	}
 	result := &PublicAppearanceSetting{
+		Updates:             publicUpdateAnnouncement(value.Updates, revision),
 		Canvas:              value.Canvas,
 		SchemaVersion:       appearanceSchemaVersion,
 		BrandName:           value.BrandName,
@@ -674,6 +713,7 @@ func publicAppearanceSetting(setting *model.SystemSetting, value AppearanceSetti
 		FooterCopyright:     effectiveAppearanceCopyright(value),
 		ICPFilingEnabled:    value.ICPFilingEnabled && value.ICPFilingNumber != "",
 		ICPFilingNumber:     value.ICPFilingNumber,
+		RedeemPurchaseURL:   safeAppearancePurchaseURL(value.RedeemPurchaseURL),
 		Configured:          setting != nil,
 		Revision:            revision,
 	}
@@ -711,6 +751,18 @@ func publicAppearanceSetting(setting *model.SystemSetting, value AppearanceSetti
 		result.AuthVideoPosterURL = appearanceAssetURL(AppearanceAssetPoster, revision)
 	}
 	return result
+}
+
+func safeAppearancePurchaseURL(value string) string {
+	candidate := strings.TrimSpace(value)
+	if candidate == "" {
+		return ""
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return ""
+	}
+	return parsed.String()
 }
 
 func effectiveAppearanceSEOTitle(value AppearanceSetting) string {

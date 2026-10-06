@@ -2,25 +2,17 @@ import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
 import { installChunkRecovery } from "@/lib/chunk-recovery";
 import { bootstrapAppearance } from "@/services/appearance-bootstrap";
-import { isIsolatedDirectorRepro } from "@/lib/dev-repro";
+import { isIsolatedPrevisRepro } from "@/lib/dev-repro";
 
 installChunkRecovery();
 
 // The public film entry checks its availability independently of workspace bootstrap.
-if (/^\/welcome\/?$/.test(window.location.pathname)) void import("./welcome-application");
-else {
-    const launchApplication = () => import("./application").catch((error) => {
-        console.error("[canvas] application bootstrap failed", error);
-        const root = document.getElementById("root");
-        if (root) root.innerHTML = '<div style="padding:24px;color:#fff;font-family:system-ui">页面启动失败，请刷新后重试。</div>';
-    });
-    if (isIsolatedDirectorRepro(import.meta.env.DEV, window.location.pathname)) {
-        // The backend-free DEV lab must not make requests before AppProviders isolates it.
-        void launchApplication();
-    } else {
-        // 外观配置只是增强信息，不能阻塞主应用启动。
-        // 如果该接口被浏览器拦截、后端暂时无响应或网络异常，页面仍应先挂载。
-        void launchApplication();
-        void bootstrapAppearance();
-    }
-  }
+if (/^\/welcome\/?$/.test(window.location.pathname)) {
+    void bootstrapAppearance().catch(() => undefined);
+    void import("./welcome-application");
+} else {
+    // The backend-free DEV lab must not make requests before AppProviders isolates it.
+    const appearanceReady = isIsolatedPrevisRepro(import.meta.env.DEV, window.location.pathname) ? Promise.resolve() : bootstrapAppearance();
+    void import("./application");
+    void appearanceReady.catch(() => undefined);
+}

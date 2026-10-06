@@ -153,8 +153,7 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Resolutions = []string{"768P", "2K"}
 		video.DefaultResolution = "768P"
 		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
-	case model.ChannelInterfaceAgnesVideo:
-		video = applyModelSpecificVideoCapability(video, protocol, modelName)
 	}
+	video = applyModelSpecificVideoCapability(video, protocol, modelName)
 	return &ModelCapabilityConfig{Version: 1, Text: text, Image: DefaultImageCapabilityConfig(protocol, modelName), Video: video}
 }

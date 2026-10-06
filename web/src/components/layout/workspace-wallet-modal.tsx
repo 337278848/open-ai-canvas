@@ -11,6 +11,7 @@ import { getWallet, redeemCredits, type CreditLedgerEntry, type WalletSummary } 
 import { cn } from "@/lib/utils";
 import { openWorkspaceWallet, WORKSPACE_WALLET_OPEN_EVENT, type WorkspaceWalletOpenDetail } from "@/lib/workspace-wallet";
 import { createSecureId } from "@/lib/client-id";
+import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 type WalletModalTab = "topup" | "redeem" | "history";
@@ -65,6 +66,7 @@ export function WorkspaceWalletHost() {
 
 export function WorkspaceWalletModal({ open, onClose, pendingPaymentOrderId, paymentInvalid }: { open: boolean; onClose: () => void; pendingPaymentOrderId?: string; paymentInvalid?: boolean }) {
     const { message } = App.useApp();
+    const redeemPurchaseUrl = useAppearanceStore((state) => state.appearance.redeemPurchaseUrl);
     const [tab, setTab] = useState<WalletModalTab>("topup");
     const [wallet, setWallet] = useState<WalletSummary | null>(null);
     const [walletLoading, setWalletLoading] = useState(false);
@@ -379,7 +381,14 @@ export function WorkspaceWalletModal({ open, onClose, pendingPaymentOrderId, pay
                                 <div className="workspace-wallet-section-heading">
                                     <div>
                                         <h3>兑换码</h3>
-                                        <p>输入兑换码，将积分存入当前账户。</p>
+                                        <p>
+                                            购买后请复制卡密，返回此处兑换。
+                                            {redeemPurchaseUrl ? (
+                                                <a className="workspace-wallet-redeem-link" href={redeemPurchaseUrl} target="_blank" rel="noopener noreferrer">
+                                                    获取兑换码
+                                                </a>
+                                            ) : null}
+                                        </p>
                                     </div>
                                     <TicketCheck />
                                 </div>
