@@ -232,6 +232,8 @@ export function systemChannelModelChannels(channels: PublicChannelCatalog[]): Mo
                     channelId: channel.id,
                     modelKey: model.modelKey,
                     logicalPriceTiers,
+                    availability: model.availability,
+                    available: model.available,
                 };
             }),
         };

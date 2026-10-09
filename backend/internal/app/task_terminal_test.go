@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"infinite-canvas/backend/internal/model"
-	"infinite-canvas/backend/internal/outbound"
-	"infinite-canvas/backend/internal/repository"
+	"yingce/backend/internal/model"
+	"yingce/backend/internal/outbound"
+	"yingce/backend/internal/repository"
 )
 
 type taskTerminalRepositoryStub struct {

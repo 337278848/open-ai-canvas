@@ -1,8 +1,8 @@
 package database
 
 import (
-	"infinite-canvas/backend/internal/model"
 	"testing"
+	"yingce/backend/internal/model"
 )
 
 func migrationByNameForTest(t *testing.T, name string) migration {

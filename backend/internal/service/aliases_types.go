@@ -1,6 +1,6 @@
 package service
 
-import "infinite-canvas/backend/internal/app"
+import "yingce/backend/internal/app"
 
 type (
 	PaymentOrderQuery                      = app.PaymentOrderQuery
@@ -241,6 +241,9 @@ type (
 	PublicLogicalModelPriceTier            = app.PublicLogicalModelPriceTier
 	PublicUpstreamMediaRelaySetting        = app.PublicUpstreamMediaRelaySetting
 	UpstreamMediaRelaySettingRequest       = app.UpstreamMediaRelaySettingRequest
+	PublicModelAvailability                = app.PublicModelAvailability
+	PublicModelAvailabilityDataState       = app.PublicModelAvailabilityDataState
+	PublicModelAvailabilityDay             = app.PublicModelAvailabilityDay
 	PublicModelChannel                     = app.PublicModelChannel
 	PublicOSSSetting                       = app.PublicOSSSetting
 	PublicRegistrationSetting              = app.PublicRegistrationSetting

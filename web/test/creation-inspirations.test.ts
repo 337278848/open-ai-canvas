@@ -14,6 +14,6 @@ describe("curated creation inspirations", () => {
         }
     });
     test("adapted prompts stay distinguishable from original platform prompts", () => {
-        expect(creationFeaturedWorks.filter((item) => item.adapted).length).toBe(8);
+        expect(creationFeaturedWorks.filter((item) => item.source).length).toBe(8);
     });
 });

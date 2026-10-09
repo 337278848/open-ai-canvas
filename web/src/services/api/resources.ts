@@ -120,6 +120,11 @@ export type ResourceAccess = {
     originalHeight?: number;
 };
 
+export type ResourceAccessFetchOptions = {
+    /** Bypass both in-memory and persisted display-address caches. */
+    forceRefresh?: boolean;
+};
+
 type ResourceAccessBatchItem = { resourceId: string; access?: ResourceAccess; error?: { msg?: string } };
 type CachedResourceAccess = { value: ResourceAccess; expiresAt: number };
 const accessCache = new Map<string, CachedResourceAccess>();
@@ -409,7 +414,7 @@ function assertResourceRequestCurrent(generation: number, scope: string) {
     }
 }
 
-export async function getResourceAccess(storageKey: string | undefined, purpose: ResourceAccessPurpose = "display", variant: ResourceAccessVariant = "original", downloadName = "") {
+export async function getResourceAccess(storageKey: string | undefined, purpose: ResourceAccessPurpose = "display", variant: ResourceAccessVariant = "original", downloadName = "", fetchOptions: ResourceAccessFetchOptions = {}) {
     if ((purpose as string) === "provider-input") {
         throw new Error("浏览器端不支持 provider-input 资源访问，请改用后端生成任务");
     }
@@ -418,6 +423,18 @@ export async function getResourceAccess(storageKey: string | undefined, purpose:
     const scope = getActiveUserScope();
     const generation = accessGeneration;
     const key = `${scope}:${id}:${purpose}:${variant}:${downloadName}`;
+    const forceRefresh = fetchOptions.forceRefresh === true;
+    if (forceRefresh) {
+        accessCache.delete(key);
+        accessRequests.delete(key);
+        if (purpose === "display") {
+            try {
+                await localForageStorageForScope(scope).removeItem(persistedDisplayAccessKey(id, variant));
+            } catch {
+                // Persisted address caching is optional; the network request below remains authoritative.
+            }
+        }
+    }
     const cached = accessCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.value;
     const pending = accessRequests.get(key);

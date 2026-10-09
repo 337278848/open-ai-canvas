@@ -6,7 +6,7 @@ import { ArrowUp, ChevronDown, Clapperboard, FileText, Image as ImageIcon, Spark
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { useState } from "react";
 import { aceternityMotion } from "@/lib/aceternity-motion";
-import { creationFeaturedWorks } from "./creation-inspirations";
+import { curatedInspirations, inspirationSourceOf, inspirationSources } from "@/lib/inspirations/catalog";
 import { modeLabels } from "./creation-types";
 import { Button } from "antd";
 
@@ -82,14 +82,18 @@ export function CreationEmptySuggest({ onStartPrompt, onOpenLibrary }: { onStart
 export function CreationFeaturedWorks({ onStartPrompt }: { onStartPrompt: (mode: CreationMode, prompt: string) => void }) {
     const [filter, setFilter] = useState<"all" | CreationMode>("all");
     const [limit, setLimit] = useState(12);
-    const filtered = creationFeaturedWorks.filter((item) => filter === "all" || item.mode === filter);
+    const filtered = curatedInspirations.filter((item) => filter === "all" || item.mode === filter);
+    // 只列出真正用到的外部来源；原创条目不写来源声明。
+    const declaredSources = Array.from(new Set(curatedInspirations.map((item) => item.sourceId ?? "original")))
+        .map((id) => inspirationSources[id])
+        .filter((source) => source.notice);
     return (
         <section className="creation-featured-works" aria-labelledby="creation-featured-title">
             <div className="creation-featured-heading">
                 <div>
                     <h2 id="creation-featured-title">精选灵感</h2>
                 </div>
-                <p>{creationFeaturedWorks.length} 个创意起点 · 点击填入提示词，不自动生成</p>
+                <p>{curatedInspirations.length} 个创意起点 · 点击填入提示词，不自动生成</p>
             </div>
             <div className="creation-inspiration-filters" role="group" aria-label="灵感类型">
                 {(["all", "video", "image", "text"] as const).map((value) => (
@@ -103,7 +107,7 @@ export function CreationFeaturedWorks({ onStartPrompt }: { onStartPrompt: (mode:
                         }}
                     >
                         {value === "all" ? "全部灵感" : modeLabels[value]}
-                        <span>{creationFeaturedWorks.filter((item) => value === "all" || item.mode === value).length}</span>
+                        <span>{curatedInspirations.filter((item) => value === "all" || item.mode === value).length}</span>
                     </button>
                 ))}
             </div>
@@ -122,7 +126,7 @@ export function CreationFeaturedWorks({ onStartPrompt }: { onStartPrompt: (mode:
                             <span>{item.description}</span>
                             <em>
                                 <Sparkles />
-            {item.adapted ? "精选模板" : "原创提示词"} · {modeLabels[item.mode]}
+                                {inspirationSourceOf(item).label} · {modeLabels[item.mode]}
                             </em>
                         </span>
                     </button>
@@ -138,8 +142,12 @@ export function CreationFeaturedWorks({ onStartPrompt }: { onStartPrompt: (mode:
                     <span>已展示全部 {filtered.length} 个创意</span>
                 )}
                 <details>
-                    <summary>模板与封面说明</summary>
-                    <p>部分文本模板依据公开领域提示词翻译改编；其余为本项目编写。封面为项目示意图，不代表实际生成结果。</p>
+                    <summary>模板与封面来源</summary>
+                    {declaredSources.map((source) => (
+                        <div key={source.name ?? source.label}>
+                            <p>{source.notice}</p>
+                        </div>
+                    ))}
                 </details>
             </footer>
         </section>

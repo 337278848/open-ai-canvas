@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 )
 
 func TestMigrateLXMoneH3CapabilityLimits(t *testing.T) {
