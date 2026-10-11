@@ -86,7 +86,10 @@ describe("all canvas video entrypoints validate the original request", () => {
         const retry = readFileSync(new URL("../src/pages/canvas/use-canvas-generation-retry.ts", import.meta.url), "utf8");
         const executor = readFileSync(new URL("../src/pages/canvas/use-canvas-generation-executor.ts", import.meta.url), "utf8");
         expect(retry).toContain("buildCanvasVideoRequestConfig(effectiveConfig, videoRequestNode, legacyConfig)");
-        expect(retry.indexOf("if (admission.error)")).toBeLessThan(retry.indexOf("setRunningNodeId(node.id)"));
+        const admissionIndex = retry.indexOf("if (admission.error)");
+        expect(admissionIndex).toBeGreaterThan(-1);
+        // 视频重试必须先过 admission 再进入 running 状态；图层提取等非视频分支允许提前启动。
+        expect(admissionIndex).toBeLessThan(retry.indexOf("setRunningNodeId(node.id)", admissionIndex));
         expect(executor).toContain("if (!validateVideoRequest) generationConfig = buildGenerationConfig");
         expect(executor).toContain("videoCreationAdmission(generationConfig, hydratedRequirements).error");
         expect(executor).toContain("options?.waitForTaskCapacity) setNodes");

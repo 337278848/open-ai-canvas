@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 50
+const CurrentSchemaVersion int64 = 52
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -170,6 +170,18 @@ var schemaMigrations = []migration{
 	}},
 	{version: 49, name: "skill_curation", checksum: "sha256:skill-curation-v49-20261005", apply: migrateSkillCuration},
 	{version: 50, name: "skill_curation_roots", checksum: "sha256:skill-curation-roots-v50-20261005", apply: migrateSkillCurationRoots},
+	{version: 51, name: "channel_proxy_url", checksum: "sha256:channel-proxy-url-v51-20261009-local-lineage", apply: func(tx *gorm.DB) error {
+		if !tx.Migrator().HasColumn(&model.ModelChannel{}, "ProxyURL") {
+			return tx.Migrator().AddColumn(&model.ModelChannel{}, "ProxyURL")
+		}
+		return nil
+	}},
+	{version: 52, name: "banner_sort_order", checksum: "sha256:banner-sort-order-v52-20261010-local-lineage", apply: func(tx *gorm.DB) error {
+		if !tx.Migrator().HasColumn(&model.BannerAnnouncement{}, "SortOrder") {
+			return tx.Migrator().AddColumn(&model.BannerAnnouncement{}, "SortOrder")
+		}
+		return nil
+	}},
 }
 
 func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {

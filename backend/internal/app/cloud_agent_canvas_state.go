@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"yingce/backend/internal/assets"
 	"yingce/backend/internal/canvas/capability"
 	"yingce/backend/internal/repository"
 )
@@ -88,104 +89,45 @@ func cloudAgentMediaContentHash(doc map[string]any) string {
 
 const cloudAgentReadPageBytes = 64 << 10
 
-// A related-component read is intentionally bounded.  The same limit applies
-// to both bounded-depth and full-component reads so callers cannot bypass the
-// context budget by switching selection modes.
+// A full related-component read is useful for answering questions such as
+// "what feeds this shot and what does it feed?", but it must remain bounded so
+// a densely connected canvas cannot turn one tool call into an unbounded
+// context dump.
 const cloudAgentRelatedNodeLimit = 256
 
-type cloudAgentCanvasReadOptions struct {
-	MaxItems         int
-	ConnectionOffset int
-}
-
-func cloudAgentCanvasState(repo *repository.Repository, userID, canvasID string, doc map[string]any, offset int, ids []string, storyboardOffset int, options ...cloudAgentCanvasReadOptions) (any, error) {
-	readOptions := cloudAgentCanvasReadOptions{MaxItems: 40}
-	if len(options) > 0 {
-		readOptions = options[0]
-		// The legacy caller supplies an options struct even when maxItems was
-		// omitted.  Keep that established omission-as-default behavior here;
-		// the tool argument layer must carry presence separately if it needs to
-		// reject an explicit zero.
-		if readOptions.MaxItems == 0 {
-			readOptions.MaxItems = 40
-		}
-	}
-	return cloudAgentCanvasStateSelectedWithOptions(
-		repo, userID, canvasID, doc, offset, ids, nil, 0, false,
-		storyboardOffset, readOptions.MaxItems, readOptions.ConnectionOffset,
-	)
+func cloudAgentCanvasState(repo *repository.Repository, userID, canvasID string, doc map[string]any, offset int, ids []string, storyboardOffset int, connectionOffsets ...int) (any, error) {
+	return cloudAgentCanvasStateSelected(repo, userID, canvasID, doc, offset, ids, nil, 0, false, storyboardOffset, connectionOffsets...)
 }
 
 // cloudAgentCanvasStateWithFocus returns a bounded graph neighborhood around
-// the requested nodes.  Focus nodes are always emitted first, followed by
-// breadth-first neighbours in persisted connection order.
+// the requested nodes. It is deliberately separate from the legacy paginated
+// reader so existing callers keep their exact pagination semantics.
 func cloudAgentCanvasStateWithFocus(repo *repository.Repository, userID, canvasID string, doc map[string]any, offset int, focusNodeIDs []string, depth, storyboardOffset int, connectionOffsets ...int) (any, error) {
-	connectionOffset := 0
-	if len(connectionOffsets) > 0 {
-		connectionOffset = connectionOffsets[0]
-	}
-	return cloudAgentCanvasStateSelectedWithOptions(
-		repo, userID, canvasID, doc, offset, nil, focusNodeIDs, depth, false,
-		storyboardOffset, 40, connectionOffset,
-	)
+	return cloudAgentCanvasStateSelected(repo, userID, canvasID, doc, offset, nil, focusNodeIDs, depth, false, storyboardOffset, connectionOffsets...)
 }
 
 func cloudAgentCanvasStateWithRelated(repo *repository.Repository, userID, canvasID string, doc map[string]any, offset int, focusNodeIDs []string, storyboardOffset int, connectionOffsets ...int) (any, error) {
-	connectionOffset := 0
-	if len(connectionOffsets) > 0 {
-		connectionOffset = connectionOffsets[0]
-	}
-	return cloudAgentCanvasStateSelectedWithOptions(
-		repo, userID, canvasID, doc, offset, nil, focusNodeIDs, 0, true,
-		storyboardOffset, 40, connectionOffset,
-	)
+	return cloudAgentCanvasStateSelected(repo, userID, canvasID, doc, offset, nil, focusNodeIDs, 0, true, storyboardOffset, connectionOffsets...)
 }
 
-// cloudAgentCanvasStateSelected is kept as the upstream-compatible entry
-// point.  One optional integer is the connection cursor.  Two optional
-// integers are accepted for the legacy merged caller as maxItems followed by
-// the connection cursor.
-func cloudAgentCanvasStateSelected(repo *repository.Repository, userID, canvasID string, doc map[string]any, offset int, ids, focusNodeIDs []string, depth int, includeRelated bool, storyboardOffset int, paging ...int) (any, error) {
-	maxItems, connectionOffset := 40, 0
-	if len(paging) == 1 {
-		connectionOffset = paging[0]
-	} else if len(paging) >= 2 {
-		maxItems, connectionOffset = paging[0], paging[1]
-	}
-	return cloudAgentCanvasStateSelectedWithOptions(
-		repo, userID, canvasID, doc, offset, ids, focusNodeIDs, depth,
-		includeRelated, storyboardOffset, maxItems, connectionOffset,
-	)
-}
-
-func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userID, canvasID string, doc map[string]any, offset int, ids, focusNodeIDs []string, depth int, includeRelated bool, storyboardOffset, maxItems, connectionOffset int) (any, error) {
+func cloudAgentCanvasStateSelected(repo *repository.Repository, userID, canvasID string, doc map[string]any, offset int, ids, focusNodeIDs []string, depth int, includeRelated bool, storyboardOffset int, connectionOffsets ...int) (any, error) {
 	if offset < 0 || storyboardOffset < 0 || len(ids) > 8 || len(focusNodeIDs) > 8 || (len(ids) > 0 && len(focusNodeIDs) > 0) {
 		return nil, BadAuthRequest("画布读取分页参数无效")
 	}
-	selectedMode := len(focusNodeIDs) > 0
-	if selectedMode && !includeRelated && (depth < 0 || depth > 3) {
+	if len(focusNodeIDs) > 0 && !includeRelated && (depth < 0 || depth > 3) {
 		return nil, BadAuthRequest("关联子图 depth 必须在 0 到 3 之间")
 	}
-	if !selectedMode && (includeRelated || depth != 0) {
-		return nil, BadAuthRequest("关联子图参数必须包含 focusNodeIds")
-	}
-	if includeRelated && !selectedMode {
+	if includeRelated && len(focusNodeIDs) == 0 {
 		return nil, BadAuthRequest("includeRelated 只能与 focusNodeIds 一起使用")
 	}
-	if includeRelated && depth != 0 {
-		return nil, BadAuthRequest("includeRelated 与 depth 不能同时使用")
-	}
-	if maxItems < 1 || maxItems > 40 {
-		return nil, BadAuthRequest("画布摘要节点数必须在1到40之间")
-	}
-	if selectedMode && maxItems != 40 {
-		return nil, BadAuthRequest("maxItems 只能用于摘要读取，不能与 focusNodeIds 一起使用")
+	all := creationMaps(doc["nodes"])
+	connectionOffset := 0
+	if len(connectionOffsets) > 0 {
+		connectionOffset = connectionOffsets[0]
 	}
 	if connectionOffset < 0 {
 		return nil, BadAuthRequest("连线分页参数无效")
 	}
-
-	all := creationMaps(doc["nodes"])
 	wanted := map[string]bool{}
 	for _, id := range ids {
 		wanted[id] = true
@@ -213,41 +155,23 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 			return nil, BadAuthRequest("关联子图 focusNodeIds 中存在不在当前画布的节点")
 		}
 	}
-
-	selectionTruncated := false
 	selected := map[string]bool{}
-	candidateNodes := make([]map[string]any, 0, len(all))
-	candidateSourceIndexes := make([]int, 0, len(all))
-	if selectedMode {
-		adjacency := make(map[string][]string, len(nodeByID))
-		seenNeighbours := make(map[string]map[string]bool, len(nodeByID))
-		addNeighbour := func(from, to string) {
-			if nodeByID[from] == nil || nodeByID[to] == nil {
-				return
-			}
-			if seenNeighbours[from] == nil {
-				seenNeighbours[from] = map[string]bool{}
-			}
-			if seenNeighbours[from][to] {
-				return
-			}
-			seenNeighbours[from][to] = true
-			adjacency[from] = append(adjacency[from], to)
-		}
+	selectionTruncated := false
+	if len(focus) > 0 {
+		adjacency := make(map[string][]string, len(all))
 		for _, edge := range creationMaps(doc["connections"]) {
 			from, to := stringValue(edge["fromNodeId"]), stringValue(edge["toNodeId"])
-			addNeighbour(from, to)
-			addNeighbour(to, from)
+			if nodeByID[from] == nil || nodeByID[to] == nil {
+				continue
+			}
+			adjacency[from] = append(adjacency[from], to)
+			adjacency[to] = append(adjacency[to], from)
 		}
-
-		// Preserve request order for focus nodes, then use stable breadth-first
-		// discovery.  The selection order, rather than the document node order,
-		// is also the pagination order for a subgraph.
-		frontier := make([]string, 0, len(focusNodeIDs))
-		selectedOrder := make([]string, 0, min(len(focusNodeIDs), cloudAgentRelatedNodeLimit))
+		frontier := make([]string, 0, len(focus))
+		// Preserve the caller's focus order. This makes bounded results stable
+		// and keeps the selected node itself ahead of its neighbours.
 		for _, id := range focusNodeIDs {
 			selected[id] = true
-			selectedOrder = append(selectedOrder, id)
 			frontier = append(frontier, id)
 		}
 		levels := depth
@@ -257,43 +181,32 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 		for level := 0; level < levels && len(frontier) > 0; level++ {
 			next := make([]string, 0)
 			for _, id := range frontier {
-				for _, neighbour := range adjacency[id] {
-					if selected[neighbour] {
+				for _, neighbor := range adjacency[id] {
+					if selected[neighbor] {
 						continue
 					}
-					if len(selectedOrder) >= cloudAgentRelatedNodeLimit {
+					if includeRelated && len(selected) >= cloudAgentRelatedNodeLimit {
 						selectionTruncated = true
-						break
+						continue
 					}
-					selected[neighbour] = true
-					selectedOrder = append(selectedOrder, neighbour)
-					next = append(next, neighbour)
+					selected[neighbor] = true
+					next = append(next, neighbor)
 				}
-				if selectionTruncated {
-					break
-				}
-			}
-			if selectionTruncated {
-				break
 			}
 			frontier = next
 		}
-		for _, id := range selectedOrder {
-			candidateNodes = append(candidateNodes, nodeByID[id])
-			candidateSourceIndexes = append(candidateSourceIndexes, -1)
-		}
-	} else {
-		for sourceIndex, node := range all {
-			id := stringValue(node["id"])
-			if len(ids) > 0 {
-				if wanted[id] {
-					candidateNodes = append(candidateNodes, node)
-					candidateSourceIndexes = append(candidateSourceIndexes, sourceIndex)
-				}
-				continue
-			}
+	}
+	selectedMode := len(focus) > 0
+	candidateNodes := make([]map[string]any, 0, len(all))
+	for _, node := range all {
+		id := stringValue(node["id"])
+		switch {
+		case selectedMode && selected[id]:
 			candidateNodes = append(candidateNodes, node)
-			candidateSourceIndexes = append(candidateSourceIndexes, sourceIndex)
+		case !selectedMode && len(ids) > 0 && wanted[id]:
+			candidateNodes = append(candidateNodes, node)
+		case !selectedMode && len(ids) == 0:
+			candidateNodes = append(candidateNodes, node)
 		}
 	}
 	limit := 320
@@ -305,18 +218,15 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 	next := 0
 	pageBytes := 1024
 	for candidateIndex, node := range candidateNodes {
-		if (len(ids) == 0 || selectedMode) && candidateIndex < offset {
+		if candidateIndex < offset {
 			continue
 		}
 		id := stringValue(node["id"])
-		nextNodeOffset := candidateIndex
-		if len(ids) > 0 {
-			nextNodeOffset = candidateSourceIndexes[candidateIndex]
-		}
-		if len(ids) == 0 && !selectedMode && len(nodes) == maxItems {
+		if len(ids) == 0 && len(focus) == 0 && len(nodes) == 40 {
 			next = candidateIndex
 			break
 		}
+		precise := len(ids) > 0 || focus[id]
 		meta, _ := node["metadata"].(map[string]any)
 		item := map[string]any{"id": id, "type": stringValue(node["type"])}
 		if title, ok := node["title"].(string); ok {
@@ -346,7 +256,7 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 			item["agentUnsupportedReason"] = "仅展示基础信息；当前 Agent 不支持操作此类型节点"
 			body, _ := json.Marshal(item)
 			if pageBytes+len(body) > cloudAgentReadPageBytes-(8<<10) {
-				next = nextNodeOffset
+				next = candidateIndex
 				break
 			}
 			pageBytes += len(body)
@@ -354,7 +264,6 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 			included[id] = true
 			continue
 		}
-		precise := len(ids) > 0 || focus[id]
 		if capability.Variant != nil {
 			// 变体节点（如角色卡）底层 type 仍是 text，用 kind 标明真实能力，避免当普通文本处理。
 			item["kind"] = capability.Type
@@ -455,74 +364,44 @@ func cloudAgentCanvasStateSelectedWithOptions(repo *repository.Repository, userI
 			if len(nodes) == 0 {
 				return nil, BadAuthRequest("节点详情超过单页读取预算，请使用节点对应的结构化分页工具")
 			}
-			next = nextNodeOffset
+			next = candidateIndex
 			break
 		}
 		pageBytes += len(body)
 		nodes = append(nodes, item)
 		included[id] = true
 	}
-
 	edges := []any{}
 	nextConnection := 0
-	hasMoreConnections := false
 	for index, edge := range creationMaps(doc["connections"]) {
 		if index < connectionOffset {
 			continue
 		}
-		fromID, toID := stringValue(edge["fromNodeId"]), stringValue(edge["toNodeId"])
-		eligible := false
-		if selectedMode {
-			// Selected subgraph edges are filtered against the complete,
-			// stable selection, not only the nodes that happened to fit on
-			// this page.  This preserves edges whose endpoints land on
-			// different node pages.
-			eligible = selected[fromID] && selected[toID]
-		} else {
-			// Preserve the established summary/nodeIds behavior.
-			eligible = included[fromID] || included[toID]
+		fromIncluded := included[stringValue(edge["fromNodeId"])]
+		toIncluded := included[stringValue(edge["toNodeId"])]
+		if (selectedMode && fromIncluded && toIncluded) || (!selectedMode && (fromIncluded || toIncluded)) {
+			item := map[string]any{"id": edge["id"], "fromNodeId": edge["fromNodeId"], "toNodeId": edge["toNodeId"]}
+			body, _ := json.Marshal(item)
+			if pageBytes+len(body) > cloudAgentReadPageBytes {
+				nextConnection = index
+				break
+			}
+			pageBytes += len(body)
+			edges = append(edges, item)
 		}
-		if !eligible {
-			continue
-		}
-		item := map[string]any{"id": edge["id"], "fromNodeId": edge["fromNodeId"], "toNodeId": edge["toNodeId"]}
-		body, _ := json.Marshal(item)
-		if pageBytes+len(body) > cloudAgentReadPageBytes {
-			nextConnection = index
-			hasMoreConnections = true
-			break
-		}
-		pageBytes += len(body)
-		edges = append(edges, item)
 	}
-
-	result := map[string]any{
-		"snapshotHash":         cloudAgentCanvasHash(doc),
-		"mediaSnapshotHash":    cloudAgentMediaContentHash(doc),
-		"nodes":                nodes,
-		"connections":          edges,
-		"totalNodes":           len(all),
-		"nextOffset":           next,
-		"hasMore":              next > 0,
-		"nextConnectionOffset": nextConnection,
-		"hasMoreConnections":   hasMoreConnections,
-		"pageByteBudget":       cloudAgentReadPageBytes,
-	}
+	result := map[string]any{"snapshotHash": cloudAgentCanvasHash(doc), "mediaSnapshotHash": cloudAgentMediaContentHash(doc), "nodes": nodes, "connections": edges, "totalNodes": len(all), "nextOffset": next, "hasMore": next > 0, "nextConnectionOffset": nextConnection, "hasMoreConnections": nextConnection > 0, "pageByteBudget": cloudAgentReadPageBytes}
 	if selectedMode {
 		result["totalSelectedNodes"] = len(candidateNodes)
-		result["selection"] = map[string]any{
-			"mode":          "subgraph",
-			"focusNodeIds":  focusNodeIDs,
-			"selectedNodes": len(candidateNodes),
-			"depth":         depth,
-			"truncated":     selectionTruncated,
-			"nodeLimit":     cloudAgentRelatedNodeLimit,
-		}
+		selection := map[string]any{"mode": "subgraph", "focusNodeIds": focusNodeIDs, "selectedNodes": len(candidateNodes)}
 		if includeRelated {
-			selection := result["selection"].(map[string]any)
 			selection["relationMode"] = "all"
-			delete(selection, "depth")
+			selection["truncated"] = selectionTruncated
+			selection["nodeLimit"] = cloudAgentRelatedNodeLimit
+		} else {
+			selection["depth"] = depth
 		}
+		result["selection"] = selection
 	}
 	return result, nil
 }
@@ -574,6 +453,16 @@ func cloudAgentProjectNodeFields(node, meta map[string]any, descriptor capabilit
 		}
 		if !ok || (key == "content" && descriptor.GenerationMode != "") {
 			continue
+		}
+		// Some older uploads persist only a resource URL in the text node. Do not
+		// expose that locator as if it were the novel/script正文; the model must
+		// call canvas_read_text, which authorizes and reads the owned resource.
+		if key == "content" {
+			if text, isString := value.(string); isString && assets.ResourceID(text) != "" {
+				projected["contentAvailable"] = true
+				projected["contentSource"] = "resource"
+				continue
+			}
 		}
 		if safe, truncated := cloudAgentSafeProjection(value, textLimit); safe != nil {
 			projected[key] = safe

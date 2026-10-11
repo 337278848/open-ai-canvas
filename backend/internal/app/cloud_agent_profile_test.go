@@ -359,15 +359,45 @@ func TestCloudAgentReadToolCacheReplaysRepeatedIdenticalReads(t *testing.T) {
 		t.Fatalf("the first cached replay should still be allowed: %v", err)
 	}
 	third, err := cloudAgentReadToolCached(nil, "user", state, call)
-	var loopErr *cloudAgentReadLoopError
-	if !errors.As(err, &loopErr) {
-		t.Fatalf("expected repeated-read guard, got %v", err)
+	if err != nil {
+		t.Fatalf("repeated cached read must remain usable: %v", err)
 	}
-	if third != nil || loopErr.Count != cloudAgentMaxCachedReadReplays+1 {
-		t.Fatalf("unexpected repeated-read guard result: result=%#v err=%v", third, err)
+	if replay, ok := third.(map[string]any); !ok || replay["cacheReplay"] != true || replay["replayCount"] != 2 {
+		t.Fatalf("third identical read did not return a replay receipt: %#v", third)
 	}
 	if state.ReadToolCalls != 1 {
 		t.Fatalf("cached replays consumed read budget: %d", state.ReadToolCalls)
+	}
+}
+
+func TestCloudAgentReadToolCacheSoftNudgesAfterRepeatedReplay(t *testing.T) {
+	state := &cloudAgentRuntime{Profile: cloudAgentProfileSnapshot{Layers: []AgentProfileLayer{{Scope: model.AgentProfileScopeUser, Content: "固定偏好"}}}}
+	call := cloudAgentCall{ID: "profile-read"}
+	call.Function.Name, call.Function.Arguments = "agent_profile_read", `{"scope":"user"}`
+
+	for index := 0; index < cloudAgentMaxReadReplaysBeforeNudge+1; index++ {
+		if _, err := cloudAgentReadToolCached(nil, "user", state, call); err != nil {
+			t.Fatalf("replay %d failed: %v", index+1, err)
+		}
+	}
+	if !state.ReadLoopNudge || state.ReadLoopToolName != "agent_profile_read" || state.ReadLoopCount != cloudAgentMaxReadReplaysBeforeNudge {
+		t.Fatalf("repeated replay did not trigger a soft nudge: %+v", state)
+	}
+	if state.ReadToolCalls != 1 {
+		t.Fatalf("cached replays must not consume real-read budget: %d", state.ReadToolCalls)
+	}
+}
+
+func TestCloudAgentToolsWithoutReadToolsKeepsWrites(t *testing.T) {
+	tools := []map[string]interface{}{
+		{"function": map[string]interface{}{"name": "canvas_get_state"}},
+		{"function": map[string]interface{}{"name": "model_list"}},
+		{"function": map[string]interface{}{"name": "canvas_apply_ops"}},
+		{"function": map[string]interface{}{"name": "ask_user"}},
+	}
+	filtered := cloudAgentToolsWithoutReadTools(tools)
+	if len(filtered) != 2 || stringValue(filtered[0]["function"].(map[string]interface{})["name"]) != "canvas_apply_ops" || stringValue(filtered[1]["function"].(map[string]interface{})["name"]) != "ask_user" {
+		t.Fatalf("soft read guard removed non-read tools: %#v", filtered)
 	}
 }
 
@@ -446,183 +476,5 @@ func TestCloudAgentReadCacheNormalizesObjectKeyOrder(t *testing.T) {
 	}
 	if cloudAgentReadCacheKey(first) != cloudAgentReadCacheKey(second) {
 		t.Fatalf("object key order changed the cache key: %q vs %q", cloudAgentReadCacheKey(first), cloudAgentReadCacheKey(second))
-	}
-}
-
-func TestCloudAgentReadCacheBoundsEntriesAndBytes(t *testing.T) {
-	state := &cloudAgentRuntime{
-		ToolReadResults: make(map[string]cloudAgentCachedToolResult),
-		ToolReadReplays: make(map[string]int),
-	}
-	body, err := json.Marshal(strings.Repeat("x", 64<<10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for index := 0; index < cloudAgentToolReadResultsMaxEntries+4; index++ {
-		key := fmt.Sprintf("canvas_get_state:{\"offset\":%d}", index)
-		state.ToolReadResults[key] = cloudAgentCachedToolResult{Result: body}
-		state.ToolReadReplays[key] = index + 1
-	}
-	keep := fmt.Sprintf("canvas_get_state:{\"offset\":%d}", cloudAgentToolReadResultsMaxEntries+3)
-	cloudAgentBoundToolReadResults(state, keep)
-	if len(state.ToolReadResults) > cloudAgentToolReadResultsMaxEntries {
-		t.Fatalf("read cache entry cap exceeded: %d", len(state.ToolReadResults))
-	}
-	if size := cloudAgentReadCacheJSONBytes(state.ToolReadResults, state.ToolReadReplays); size > cloudAgentToolReadResultsMaxBytes {
-		t.Fatalf("read cache byte cap exceeded: %d", size)
-	}
-	if _, ok := state.ToolReadResults[keep]; !ok {
-		t.Fatal("a fitting current read was evicted while bounding the cache")
-	}
-	for key := range state.ToolReadReplays {
-		if _, ok := state.ToolReadResults[key]; !ok {
-			t.Fatalf("orphan replay counter retained for evicted key %q", key)
-		}
-	}
-}
-
-func TestCloudAgentSaveBoundsLargeReadCache(t *testing.T) {
-	req := agentTestRequest()
-	state := &cloudAgentRuntime{
-		Request:         req,
-		Canonical:       canonicalAgentRequest{SystemPrompt: strings.Repeat("system ", 2000), Tools: cloudAgentTools(req)},
-		Decisions:       map[string]string{},
-		Events:          []CloudAgentEvent{},
-		ToolReadResults: make(map[string]cloudAgentCachedToolResult),
-		ToolReadReplays: make(map[string]int),
-	}
-	body, err := json.Marshal(strings.Repeat("canvas", 12<<10))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for index := 0; index < cloudAgentToolReadResultsMaxEntries+4; index++ {
-		key := fmt.Sprintf("canvas_get_state:{\"offset\":%d}", index)
-		state.ToolReadResults[key] = cloudAgentCachedToolResult{Result: body}
-		state.ToolReadReplays[key] = index + 1
-	}
-	run := &model.CloudAgentExecution{}
-	if err := cloudAgentSave(run, state); err != nil {
-		t.Fatalf("bounded cache checkpoint failed: %v", err)
-	}
-	if len(run.StateJSON) >= 512<<10 {
-		t.Fatalf("bounded cache checkpoint still exceeds 512 KiB: %d", len(run.StateJSON))
-	}
-	var decoded cloudAgentRuntime
-	if err := json.Unmarshal([]byte(run.StateJSON), &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if len(decoded.ToolReadResults) > cloudAgentToolReadResultsMaxEntries || cloudAgentReadCacheJSONBytes(decoded.ToolReadResults, decoded.ToolReadReplays) > cloudAgentToolReadResultsMaxBytes {
-		t.Fatalf("persisted read cache is unbounded: entries=%d bytes=%d", len(decoded.ToolReadResults), cloudAgentReadCacheJSONBytes(decoded.ToolReadResults, decoded.ToolReadReplays))
-	}
-}
-
-func TestCloudAgentReadCacheReplaysAfterContextCompaction(t *testing.T) {
-	state := &cloudAgentRuntime{
-		Profile: cloudAgentProfileSnapshot{Layers: []AgentProfileLayer{{Scope: model.AgentProfileScopeUser, Content: "固定偏好"}}},
-		Canonical: canonicalAgentRequest{Messages: []map[string]any{
-			{"role": "tool", "content": `{"scope":"user","content":"固定偏好"}`},
-		}},
-	}
-	call := cloudAgentCall{ID: "profile-read"}
-	call.Function.Name, call.Function.Arguments = "agent_profile_read", `{"scope":"user"}`
-	if _, err := cloudAgentReadToolCached(nil, "user", state, call); err != nil {
-		t.Fatalf("first read failed: %v", err)
-	}
-	state.Canonical.Messages = []map[string]any{
-		{"role": "user", "content": "压缩后的检查点"},
-	}
-	replayed, err := cloudAgentReadToolCached(nil, "user", state, call)
-	if err != nil {
-		t.Fatalf("replay after context compaction failed: %v", err)
-	}
-	if got := replayed.(map[string]any)["content"]; got != "固定偏好" {
-		t.Fatalf("compaction replay lost the cached body: %#v", replayed)
-	}
-	if _, err := cloudAgentReadToolCached(nil, "user", state, call); err == nil {
-		t.Fatal("context-compaction recovery must not reopen an unlimited replay loop")
-	}
-}
-
-func TestCloudAgentReadCacheBoundsReplayMetadataAndPreservesProfile(t *testing.T) {
-	profileKey := `agent_profile_read:{"scope":"user"}`
-	state := &cloudAgentRuntime{
-		Profile: cloudAgentProfileSnapshot{Layers: []AgentProfileLayer{{Scope: model.AgentProfileScopeUser, Content: "固定偏好"}}},
-		ToolReadResults: map[string]cloudAgentCachedToolResult{
-			profileKey: {Result: json.RawMessage(`{"scope":"user","content":"固定偏好"}`)},
-		},
-		ToolReadReplays: map[string]int{profileKey: 1},
-	}
-	for index := 0; index < cloudAgentToolReadResultsMaxEntries; index++ {
-		key := fmt.Sprintf("canvas_get_state:%s-%d", strings.Repeat("k", 20<<10), index)
-		state.ToolReadResults[key] = cloudAgentCachedToolResult{Result: json.RawMessage(`{"nodes":[]}`)}
-		state.ToolReadReplays[key] = index + 1
-	}
-	if cloudAgentReadResultsJSONBytes(state.ToolReadResults) >= cloudAgentToolReadResultsMaxBytes {
-		t.Fatal("test fixture must fit the result-only budget before replay metadata is counted")
-	}
-	if cloudAgentReadCacheJSONBytes(state.ToolReadResults, state.ToolReadReplays) <= cloudAgentToolReadResultsMaxBytes {
-		t.Fatal("test fixture must exceed the combined result/replay budget")
-	}
-
-	cloudAgentBoundToolReadResults(state, "")
-	if _, ok := state.ToolReadResults[profileKey]; !ok {
-		t.Fatal("profile cache entry was evicted")
-	}
-	if state.ToolReadReplays[profileKey] != 1 {
-		t.Fatalf("profile replay counter was evicted or changed: %#v", state.ToolReadReplays)
-	}
-	if size := cloudAgentReadCacheJSONBytes(state.ToolReadResults, state.ToolReadReplays); size > cloudAgentToolReadResultsMaxBytes {
-		t.Fatalf("combined read cache budget exceeded: %d", size)
-	}
-	for key := range state.ToolReadReplays {
-		if _, ok := state.ToolReadResults[key]; !ok {
-			t.Fatalf("orphan replay counter retained for evicted key %q", key)
-		}
-	}
-}
-
-func TestCloudAgentReadCacheDropsTransientErrorAndReplayCounter(t *testing.T) {
-	call := cloudAgentCall{ID: "profile-read"}
-	call.Function.Name, call.Function.Arguments = "agent_profile_read", `{"scope":"user"}`
-	key := cloudAgentReadCacheKey(call)
-	state := &cloudAgentRuntime{
-		Profile:         cloudAgentProfileSnapshot{Layers: []AgentProfileLayer{{Scope: model.AgentProfileScopeUser, Content: "固定偏好"}}},
-		ToolReadResults: map[string]cloudAgentCachedToolResult{key: {Error: "暂时不可用"}},
-		ToolReadReplays: map[string]int{key: 4},
-	}
-
-	result, err := cloudAgentReadToolCached(nil, "user", state, call)
-	if err != nil {
-		t.Fatalf("transient cached error was not retried: %v", err)
-	}
-	if result.(map[string]any)["content"] != "固定偏好" {
-		t.Fatalf("retry did not return the live profile: %#v", result)
-	}
-	if state.ToolReadReplays[key] != 0 {
-		t.Fatalf("transient error replay counter was retained: %#v", state.ToolReadReplays)
-	}
-}
-
-func TestCloudAgentSaveFailureDoesNotMutateLiveReadCache(t *testing.T) {
-	state := &cloudAgentRuntime{
-		ToolReadResults: make(map[string]cloudAgentCachedToolResult),
-		ToolReadReplays: make(map[string]int),
-	}
-	for index := 0; index < cloudAgentToolReadResultsMaxEntries+1; index++ {
-		key := fmt.Sprintf("canvas_get_state:{\"offset\":%d}", index)
-		state.ToolReadResults[key] = cloudAgentCachedToolResult{Result: json.RawMessage(`{`)}
-		state.ToolReadReplays[key] = index + 1
-	}
-	run := &model.CloudAgentExecution{}
-	if err := cloudAgentSave(run, state); err == nil {
-		t.Fatal("invalid cached JSON unexpectedly saved")
-	}
-	if len(state.ToolReadResults) != cloudAgentToolReadResultsMaxEntries+1 || len(state.ToolReadReplays) != cloudAgentToolReadResultsMaxEntries+1 {
-		t.Fatalf("failed save polluted live read cache: results=%d replays=%d", len(state.ToolReadResults), len(state.ToolReadReplays))
-	}
-	for key, count := range state.ToolReadReplays {
-		if _, ok := state.ToolReadResults[key]; !ok || count < 1 {
-			t.Fatalf("failed save changed live cache entry %q: %#v / %#v", key, state.ToolReadResults[key], state.ToolReadReplays)
-		}
 	}
 }

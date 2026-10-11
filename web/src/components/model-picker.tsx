@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSP
 import { Check, ChevronDown, Coins } from "lucide-react";
 import { Popover } from "antd";
 
+import { imageQualityLabel } from "@/lib/image-quality";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
 import { modelCapabilityConfigFor, videoDurationOptions } from "@/lib/model-capabilities";
 import { formatPriceRange, modelQuoteDescription, modelQuoteRequest, normalizeTierResolution, priceTierSummaryLabel, priceTiersForCurrentSelection } from "@/lib/model-pricing";
@@ -33,6 +34,7 @@ type ModelPickerProps = {
     /** Explicit user constraints for discovery; requirements remains the full request for quoting. */
     selectionRequirements?: ModelRequirements;
     showConfiguredModelName?: boolean;
+    modelFilter?: (model: string) => boolean;
 };
 
 export function ModelPicker({
@@ -51,6 +53,7 @@ export function ModelPicker({
     requirements,
     selectionRequirements: suppliedSelectionRequirements,
     showConfiguredModelName = false,
+    modelFilter,
 }: ModelPickerProps) {
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const pickerId = useId();
@@ -62,7 +65,7 @@ export function ModelPicker({
     const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null);
     const menuRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLButtonElement>(null);
-    const options = useMemo(() => Array.from(new Set(selectableModelsByCapability(config, capability).filter(Boolean))), [capability, config]);
+    const options = useMemo(() => Array.from(new Set(selectableModelsByCapability(config, capability).filter((model) => Boolean(model) && (!modelFilter || modelFilter(model))))), [capability, config, modelFilter]);
     const optionGroups = useMemo(() => groupModelsForPicker(config, options), [config, options]);
     const storedCurrent = value?.trim() || "";
     // Video discovery preserves explicit intent. Other capabilities retain their
@@ -502,7 +505,8 @@ function tierSpecificationLabel(tier: NonNullable<NonNullable<AiConfig["channels
     const operation = selector.operation && selector.operation !== "*" ? operationLabels[selector.operation] || selector.operation : "";
     const details = [
         operation,
-        selector.quality && selector.quality !== "*" ? selector.quality.toUpperCase() : "",
+        selector.quality && selector.quality !== "*" ? imageQualityLabel(selector.quality) : "",
+        selector.resolution && selector.resolution !== "*" ? imageQualityLabel(selector.resolution) : "",
         selector.size && selector.size !== "*" ? selector.size : "",
         tier.resolution !== "*" ? tierResolutionLabel(tier.resolution) : "",
         tier.videoSeconds ? tierDurationLabel(tier.videoSeconds) : "",

@@ -1,6 +1,6 @@
 ---
 title: 后端数据库
-description: 拼好布后端核心持久化表与状态边界
+description: 影策后端核心持久化表与状态边界
 ---
 
 # 后端数据库
@@ -31,17 +31,11 @@ Schema 45 新增 `upload_reservations`：`id`、`user_id`、`size`、`day`、`ex
 
 ## 结构迁移与版本
 
-当前结构版本为 47。由于本地已发布版本 32–45，不能复用其他版本线已经使用的编号；本次 Agent 会话和充值商品策略迁移顺延为版本 46–47：
+当前结构版本为 49。版本 49 `banner_sort_order` 为 `banner_announcements` 增加可配置的 `sort_order` 展示顺序；版本 48 `channel_proxy_url` 为 `model_channels` 增加渠道级出站代理地址 `proxy_url`，支持 `socks5://`、`http://`、`https://`；留空时沿用全局代理。代理地址只返回管理员视图，普通用户目录不暴露渠道代理或其中的认证信息。版本 42 `cloud_agent_pi_sessions` 新增 `cloud_agent_pi_sessions` 表，按运行 ID 保存 Pi 原生 JSONL 会话快照、用户 ID、乐观并发 revision 和更新时间；会话正文由 Agent runtime 管理，Go 只将其作为不透明快照读写，不替代有界控制检查点、事件日志或任务记录。版本 41 `resource_thumbnail` 为 `resources` 增加缩略图元数据。版本 40 `builtin_skill_tombstones` 新增内置技能删除记录，管理员删除平台技能后，后续启动同步不会重新创建该技能；版本 39 `skill_library_categories` 新增 `skill_library_categories` 表，并为 `user_skill_states` 增加 `library_category_id`，保存个人技能库分类及每个用户对技能的归类；分类不改变 `skills.tag` 的技能广场共享分类。版本 38 `prefixed_id_sequence_reconcile` 创建（若缺失）并校准 `id_sequences`：`CHANNEL`、`MODEL`、`PTIER`、`ATTEMPT`、`LMODEL`、`REVISION`、`ROUTE` 按对应业务表的最大有效 ID 前移，包含软删除记录，不回退已有序列、不重写业务 ID。分配新 ID 时再次校准并检查冲突；SQLite → PostgreSQL 迁移完成后也校准序列。
 
-- 版本 46 `cloud_agent_pi_sessions` 新增 Pi 原生 JSONL 会话快照表，支持审批恢复和续轮；版本 47 `topup_sale_strategies` 为充值商品和支付订单增加限购、库存及限时销售策略。
-- 版本 45 `resource_thumbnail` 为资源增加缩略图元数据；版本 43–44 保留技能库分类和内置技能删除记录。
+版本 36 `cloud_agent_gemini_cache` 创建 `cloud_agent_gemini_caches`，保存用户范围内的官方 Gemini 缓存元数据；版本 37 `cloud_agent_gemini_cache_identity` 将缓存标识约束修正为 `(user_id, cache_key)`，移除旧的全局 cache_key 唯一索引。版本 35 `auth_notifications` 为认证通知与组合验证补齐 `auth_verifications`、`notification_quotas`、`sms_channels`、`sms_records` 四张表，并为 `users` 增加 `phone`、`email_verified_at`、`phone_verified_at`，为 `email_verification_codes` 增加 `attempts`；同时创建非空手机号唯一索引。版本 34 `task_media_recovery` 为 `tasks` 增加 `media_recovery_json`（text）和 `media_stage`（最长 24 字）。版本 33 `oauth_state_accepted_terms` 为 `o_auth_states` 增加非空布尔列 `accepted_terms`，默认 `false`，不替历史流程补造同意记录。
 
-- 版本 37 `oauth_state_accepted_terms` 为 `o_auth_states` 增加非空布尔列 `accepted_terms`，默认 `false`，不替历史流程补造同意记录；版本 38 `task_media_recovery` 为 `tasks` 增加 `media_recovery_json`（text）和 `media_stage`（最长 24 字）；版本 39 `auth_notifications` 为认证通知与组合验证补齐 `auth_verifications`、`notification_quotas`、`sms_channels`、`sms_records` 四张表，并为 `users` 增加 `phone`、`email_verified_at`、`phone_verified_at`，为 `email_verification_codes` 增加 `attempts`，同时创建非空手机号唯一索引。
-- 版本 40 `cloud_agent_gemini_cache` 创建 `cloud_agent_gemini_caches`，保存用户范围内的官方 Gemini 缓存元数据；版本 41 `cloud_agent_gemini_cache_identity` 将缓存标识约束修正为 `(user_id, cache_key)`，移除旧的全局 `cache_key` 唯一索引。
-- 版本 42 `prefixed_id_sequence_reconcile` 创建（若缺失）并校准 `id_sequences`：`CHANNEL`、`MODEL`、`PTIER`、`ATTEMPT`、`LMODEL`、`REVISION`、`ROUTE` 按对应业务表的最大有效 ID 前移，包含软删除记录，不回退已有序列、不重写业务 ID。分配新 ID 时再次校准并检查冲突；SQLite → PostgreSQL 迁移会复制 Gemini 缓存记录并在完成后校准序列。
-- 版本 43 `skill_library_categories` 增加个人技能库分类及用户技能归类字段；版本 44 `builtin_skill_tombstones` 保存被管理员删除的内置技能，启动同步不会重新创建已删除项目。
-
-迁移器保留历史版本线的校验和，并对已采用其他版本线的数据库执行幂等补齐后再进入本地 46–47 线，不改写已应用记录。升级前备份，按既有流程执行 `migrate-schema up` 和 `verify` 后再启动新后端。旧版本二进制不支持版本 47，回退需恢复匹配的数据库备份，并评估备份之后的新写入；不能只切回旧镜像。关闭自动迁移的生产环境必须运行正式迁移；手工改表不能更新 `schema_migrations` 的版本与校验和记录。
+升级前备份，按既有流程执行 `migrate-schema up` 和 `verify` 后再启动新后端。旧版本二进制不支持版本 42，回退需恢复匹配的数据库备份，并评估备份之后的新写入；不能只切回旧镜像。关闭自动迁移的生产环境必须运行正式迁移；手工改表不能更新 `schema_migrations` 的版本与校验和记录。
 
 ### 生成成功后的作品保存恢复
 
@@ -155,7 +149,10 @@ docker compose -f docker-compose.deploy.yml up -d backend web
 | `skills` | 保存技能公开元数据、当前版本指针、来源和 GitHub 同步状态 | `instruction` 仅保留入口 `SKILL.md` 的兼容投影；目录文件不展开写入该字段 |
 | `skill_versions` | 保存每次安装、编辑或同步形成的不可变技能版本 | 记录内容哈希、入口路径、规范化 ZIP 的存储键、文件数、总大小和 GitHub commit |
 | `skill_files` | 保存某个版本的文件索引 | `(skill_version_id, path)` 唯一；只保存路径、类型、MIME、大小和 SHA-256，不保存正文 |
-| `user_skill_states` | 保存用户的加入、收藏、安装版本和自动更新选择 | 技能正文读取仍经过公开性和归属校验，不能通过文件接口绕过私有技能权限 |
+| `skill_library_categories` | 保存个人技能库分类和管理员创建的平台分类 | personal 分类按用户隔离；platform 分类对所有用户可见；分类名在用户可见范围内唯一，删除分类只清除归类引用 |
+| `user_skill_states` | 保存用户的加入、收藏、安装版本、自动更新选择及该用户对技能的技能库分类 | `library_category_id` 属于用户技能库元数据，不修改 `skills.tag` 等技能广场共享分类；技能正文读取仍经过公开性和归属校验 |
+
+技能库分类由 schema migration 39 创建/扩展；内置技能删除记录由 schema migration 40 创建。删除分类时在事务内清空对应 `user_skill_states.library_category_id` 后删除分类记录，不会级联删除任何技能。删除内置技能时写入 tombstone，后续启动同步会跳过该技能。
 
 规范化技能包保存在后端数据目录的 `skill-packages/<skill-id>/<version-id>.zip`，数据库只保存索引和版本指针。上传 ZIP 时强制校验 `SKILL.md`、路径越界、软链接、重复路径、文件数量和解压大小；GitHub 技能保存公开仓库、分支、子目录和提交 SHA，后台每 6 小时检查一次开启自动更新的技能，并记录最近检查、同步时间及失败状态。
 
@@ -267,7 +264,7 @@ schema v27 为 `channel_model_price_tiers` 和 `billing_orders` 添加 `cost_con
 | `announcements` | 保存管理员发布的系统公告 | `pinned` 只改变排序；`image_resource_id` 只能绑定由当前管理员上传并在发布事务中消费的公告配图草稿 |
 | `announcement_image_drafts` | 标记尚未发布的公告配图资源 | 发布/更新事务消费草稿；取消编辑显式回收，超过 24 小时的异常遗留草稿由后台清理 |
 | `user_announcement_reads` | 保存用户已读状态 | 同一用户和公告唯一；公告重新发布时清除旧已读记录 |
-| `banner_announcements` | 保存首页顶部常驻展示的滚动通知条 | 与系统公告完全独立：只有标题、图标与跳转链接，无正文、无配图、无已读状态；`link` 仅接受 `http(s)` 外链或 `/` 开头的站内路径；`status` 为 `active` / `disabled`，`starts_at` / `ends_at` 构成生效窗口（可预约未来开始）；`title_runs` 以 JSON 文本保存标题的样式分段；`notice_type` 决定通知条底色，`icon` 是标题前的图标键 |
+| `banner_announcements` | 保存首页顶部常驻展示的滚动通知条 | 与系统公告完全独立：只有标题、图标与跳转链接，无正文、无配图、无已读状态；`link` 仅接受 `http(s)` 外链或 `/` 开头的站内路径；`status` 为 `active` / `disabled`，`sort_order` 越小越靠前，`starts_at` / `ends_at` 构成生效窗口（可预约未来开始）；`title_runs` 以 JSON 文本保存标题的样式分段；`notice_type` 决定通知条底色，`icon` 是标题前的图标键 |
 
 活动公告按置顶状态优先、发布时间倒序返回；置顶不会绕过关闭状态或用户登录校验。公告只要求标题，正文和配图均可为空。用户首次进入工作区时会自动看到未读公告，可以只关闭本次或选择今日不再提醒；主动打开公告中心后才会写入服务端已读状态。替换或移除配图时，公告更新、旧资源记录删除和物理删除任务入队在同一数据库事务完成。
 
