@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 52
+const CurrentSchemaVersion int64 = 57
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -69,6 +69,18 @@ const legacyAuthNotificationsChecksum = "sha256:auth-notifications-v35-20260924"
 const legacyCloudAgentGeminiCacheChecksum = "sha256:cloud-agent-gemini-cache-v36-20260924"
 const legacyCloudAgentGeminiCacheIdentityChecksum = "sha256:cloud-agent-gemini-cache-identity-v37-20260925"
 const legacyPrefixedIDSequenceReconcileChecksum = "sha256:prefixed-id-sequence-reconcile-v38-20260926"
+
+// Local v45-v52 are already published. Append the upstream v50-v54 features
+// without changing either lineage's historical migration records.
+const canvasMutationReceiptsMigrationVersion int64 = 53
+const profileSecurityMigrationVersion int64 = 54
+const avatarPresetsMigrationVersion int64 = 55
+const loginLogsMigrationVersion int64 = 56
+const workbenchToolsMigrationVersion int64 = 57
+const workbenchToolsMigrationName = "workbench_tools_and_presets"
+const workbenchToolsMigrationChecksum = "sha256:workbench-tools-presets-v57-20261013-local-lineage"
+const upstreamWorkbenchToolsMigrationChecksum = "sha256:workbench-tools-presets-v54-20261014"
+const legacyWorkbenchToolsMigrationChecksum = "sha256:workbench-tools-presets-v51-20261014"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -181,6 +193,24 @@ var schemaMigrations = []migration{
 			return tx.Migrator().AddColumn(&model.BannerAnnouncement{}, "SortOrder")
 		}
 		return nil
+	}},
+	{version: canvasMutationReceiptsMigrationVersion, name: "canvas_mutation_receipts", checksum: "sha256:canvas-mutation-receipts-v53-20261011-local-lineage", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.CanvasMutationReceipt{})
+	}},
+	{version: profileSecurityMigrationVersion, name: "personal_profile_security", checksum: "sha256:personal-profile-security-v54-20261012-local-lineage", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.User{}, &model.AuthSession{}, &model.OAuthState{}, &model.AuthVerification{}, &model.UserAvatar{})
+	}},
+	{version: avatarPresetsMigrationVersion, name: "user_avatar_presets", checksum: "sha256:user-avatar-presets-v55-20261012-local-lineage", apply: func(tx *gorm.DB) error {
+		if tx.Migrator().HasColumn(&model.User{}, "AvatarPreset") {
+			return nil
+		}
+		return tx.Migrator().AddColumn(&model.User{}, "AvatarPreset")
+	}},
+	{version: loginLogsMigrationVersion, name: "user_login_logs", checksum: "sha256:user-login-logs-v56-local-lineage", apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.LoginLog{})
+	}},
+	{version: workbenchToolsMigrationVersion, name: workbenchToolsMigrationName, checksum: workbenchToolsMigrationChecksum, apply: func(tx *gorm.DB) error {
+		return tx.AutoMigrate(&model.WorkbenchTool{}, &model.WorkbenchPreset{}, &model.Task{})
 	}},
 }
 
@@ -831,10 +861,13 @@ func migrationsForValidation(db *gorm.DB) ([]migration, error) {
 }
 
 func migrationsForDatabaseWithMode(db *gorm.DB, mode migrationPlanMode) ([]migration, error) {
-	plan := append([]migration(nil), schemaMigrations...)
+	plan, err := applyLegacyWorkbenchMigrationCompatibility(db, append([]migration(nil), schemaMigrations...))
+	if err != nil {
+		return nil, err
+	}
 
 	var applied schemaMigration
-	err := db.First(&applied, "version = ?", 6).Error
+	err = db.First(&applied, "version = ?", 6).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, fmt.Errorf("读取数据库迁移 6：%w", err)
 	}
@@ -996,6 +1029,24 @@ func applyUpstreamLineageCompatibility(db *gorm.DB, plan []migration, allowConve
 			return tx.AutoMigrate(&model.TopupProduct{}, &model.PaymentOrder{})
 		}},
 	)
+	// Upstream skipped v44, then consumed the already-published local suffix.
+	// Recognize only exact historical identities; missing rows retain local work.
+	aliases = append(aliases,
+		upstreamMigrationAlias{version: 45, name: "upload_reservations", checksum: "sha256:upload-reservations-v45-20261005", apply: func(tx *gorm.DB) error {
+			return tx.AutoMigrate(&model.UploadReservation{})
+		}},
+		upstreamMigrationAlias{version: 46, name: "skill_curation", checksum: "sha256:skill-curation-v46-20261005", apply: migrateSkillCuration},
+		upstreamMigrationAlias{version: 47, name: "skill_curation_roots", checksum: "sha256:skill-curation-roots-v47-20261005", apply: migrateSkillCurationRoots},
+		// These identities replace only already-applied rows. Their physical
+		// operations converge under the new local v57, not an occupied slot.
+		upstreamMigrationAlias{version: 48, name: "channel_proxy_url", checksum: "sha256:channel-proxy-url-v48-20261009"},
+		upstreamMigrationAlias{version: 49, name: "banner_sort_order", checksum: "sha256:banner-sort-order-v49-20261010"},
+		upstreamMigrationAlias{version: 50, name: "canvas_mutation_receipts", checksum: "sha256:canvas-mutation-receipts-v50-20261011"},
+		upstreamMigrationAlias{version: 51, name: "personal_profile_security", checksum: "sha256:personal-profile-security-v51-20261012"},
+		upstreamMigrationAlias{version: 52, name: "user_avatar_presets", checksum: "sha256:user-avatar-presets-v52-20261012"},
+		upstreamMigrationAlias{version: 53, name: "user_login_logs", checksum: "sha256:user-login-logs-v53"},
+		upstreamMigrationAlias{version: 54, name: workbenchToolsMigrationName, checksum: upstreamWorkbenchToolsMigrationChecksum},
+	)
 	for _, alias := range aliases {
 		legacy := migration{
 			version:  alias.version,
@@ -1050,21 +1101,43 @@ func applyUpstreamLineageCompatibility(db *gorm.DB, plan []migration, allowConve
 		// occupied upstream version slots. Run it idempotently as part of the
 		// canonical v42 migration, without rewriting historical rows. v43/v44
 		// then install the new skill tables on both lineages.
-		plan = replaceMigration(plan, migration{
-			version:  42,
-			name:     "prefixed_id_sequence_reconcile",
-			checksum: prefixedIDSequenceReconcileChecksum,
-			apply:    migrateUpstreamLineageConvergence,
-		})
 		var appliedV42 schemaMigration
 		err := db.First(&appliedV42, "version = ?", 42).Error
-		if err == nil && appliedV42.Name == "prefixed_id_sequence_reconcile" && appliedV42.Checksum == prefixedIDSequenceReconcileChecksum {
+		if err == nil {
+			// Either validated v42 identity is already occupied. Preserve it
+			// and perform local-only repairs within the migration transaction.
 			if err := migrateUpstreamLineageConvergence(db); err != nil {
 				return nil, fmt.Errorf("收敛已记录 v42 的 upstream 历史迁移：%w", err)
 			}
-		} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		} else if errors.Is(err, gorm.ErrRecordNotFound) {
+			plan = replaceMigration(plan, migration{
+				version:  42,
+				name:     "prefixed_id_sequence_reconcile",
+				checksum: prefixedIDSequenceReconcileChecksum,
+				apply:    migrateUpstreamLineageConvergence,
+			})
+		} else {
 			return nil, fmt.Errorf("读取 upstream 数据库迁移 42：%w", err)
 		}
+
+		workbenchMigration, ok := migrationByVersion(plan, workbenchToolsMigrationVersion)
+		if !ok {
+			return nil, fmt.Errorf("迁移计划缺少版本 %d", workbenchToolsMigrationVersion)
+		}
+		applyWorkbench := workbenchMigration.apply
+		workbenchMigration.apply = func(tx *gorm.DB) error {
+			// Mixed upstream/local ledgers may occupy a local suffix slot
+			// without its physical schema. Repair at new v57, never edit rows.
+			for _, item := range schemaMigrations {
+				if item.version >= 43 && item.version < workbenchToolsMigrationVersion {
+					if err := item.apply(tx); err != nil {
+						return fmt.Errorf("收敛本地迁移 %d（%s）：%w", item.version, item.name, err)
+					}
+				}
+			}
+			return applyWorkbench(tx)
+		}
+		plan = replaceMigration(plan, workbenchMigration)
 	}
 	return plan, nil
 }
@@ -1244,6 +1317,66 @@ func migrateSchemaV12(tx *gorm.DB) error {
 		return fmt.Errorf("增加 Agent Token 扣费上限列：%w", err)
 	}
 	return nil
+}
+
+func applyLegacyWorkbenchMigrationCompatibility(db *gorm.DB, plan []migration) ([]migration, error) {
+	var legacy schemaMigration
+	if err := db.First(&legacy, "version = ?", 51).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return plan, nil
+		}
+		return nil, fmt.Errorf("读取旧工作台迁移记录：%w", err)
+	}
+	if legacy.Name != workbenchToolsMigrationName {
+		return plan, nil
+	}
+	historical := migration{version: 51, name: workbenchToolsMigrationName, checksum: legacyWorkbenchToolsMigrationChecksum}
+	if err := validateMigrationRecord(legacy, historical); err != nil {
+		return nil, err
+	}
+	if !db.Migrator().HasTable(&model.WorkbenchTool{}) || !db.Migrator().HasTable(&model.WorkbenchPreset{}) {
+		return nil, fmt.Errorf("数据库迁移 51 记录为旧工作台迁移，但工作台表不完整；请从备份恢复后再升级")
+	}
+	// Freeze the required legacy shape here, rather than trusting table names
+	// or using future model fields to reject a valid historical migration.
+	for _, shape := range []struct {
+		model   any
+		columns []string
+		index   string
+	}{
+		{&model.WorkbenchTool{}, []string{"ID", "Kind", "Name", "Enabled", "SortOrder", "CapabilityJSON"}, "idx_workbench_tools_kind_enabled_sort"},
+		{&model.WorkbenchPreset{}, []string{"ID", "ToolID", "Name", "Enabled", "SortOrder", "PromptTemplate", "DefaultParamsJSON"}, "idx_workbench_presets_tool_enabled_sort"},
+		{&model.Task{}, []string{"WorkbenchKind"}, "idx_tasks_workbench_kind"},
+	} {
+		for _, column := range shape.columns {
+			if !db.Migrator().HasColumn(shape.model, column) {
+				return nil, fmt.Errorf("数据库迁移 51 的旧工作台结构不完整：缺少 %T.%s；请从备份恢复后再升级", shape.model, column)
+			}
+		}
+		if !db.Migrator().HasIndex(shape.model, shape.index) {
+			return nil, fmt.Errorf("数据库迁移 51 的旧工作台结构不完整：缺少索引 %s；请从备份恢复后再升级", shape.index)
+		}
+	}
+	// This v51 belongs to workbench, not the local channel proxy migration.
+	// Keep the historical row and repair that missing local schema at new v57.
+	historical.apply = func(*gorm.DB) error { return nil }
+	plan = replaceMigration(plan, historical)
+	proxyMigration, ok := migrationByVersion(schemaMigrations, 51)
+	if !ok {
+		return nil, fmt.Errorf("迁移计划缺少本地版本 51")
+	}
+	workbenchMigration, ok := migrationByVersion(plan, workbenchToolsMigrationVersion)
+	if !ok {
+		return nil, fmt.Errorf("迁移计划缺少版本 %d", workbenchToolsMigrationVersion)
+	}
+	applyWorkbench := workbenchMigration.apply
+	workbenchMigration.apply = func(tx *gorm.DB) error {
+		if err := proxyMigration.apply(tx); err != nil {
+			return err
+		}
+		return applyWorkbench(tx)
+	}
+	return replaceMigration(plan, workbenchMigration), nil
 }
 
 func MigrateSchema(db *gorm.DB) error {

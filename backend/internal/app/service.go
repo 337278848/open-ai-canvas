@@ -22,6 +22,7 @@ import (
 	"yingce/backend/internal/skills"
 	"yingce/backend/internal/sms"
 	"yingce/backend/internal/tools"
+	"yingce/backend/internal/workbench"
 )
 
 type Service struct {
@@ -79,6 +80,7 @@ type Service struct {
 	auth                     *auth.Service
 	sms                      *sms.Service
 	canvas                   *canvas.Service
+	workbench                *workbench.Service
 	// 可注入的上游素材中继出口：测试替换图床上传与部署公网地址，避免真实网络请求。
 	relayUploadOverride   func(name string, fileName string, mimeType string, data []byte) (string, error)
 	publicBaseURLOverride string
@@ -105,6 +107,7 @@ const taskLogPayloadLimit = 4000
 type CreateTaskRequest struct {
 	creationPrepare *creationTaskPreparation
 	admission       *taskAdmission
+	workbenchKind   string
 	// callerHoldsStorageMu 只给已经持有 Service.storageMu 的内部调用设置。
 	// 文件容量检查不能再锁一次，否则审批改参数会自锁。
 	callerHoldsStorageMu bool
@@ -121,9 +124,10 @@ type CreateTaskRequest struct {
 }
 
 type TaskListOptions struct {
-	Limit      int
-	ProjectID  string
-	ActiveOnly bool
+	Limit         int
+	ProjectID     string
+	ActiveOnly    bool
+	WorkbenchKind string
 }
 
 func New(repo *repository.Repository, dataDir string) *Service {
@@ -152,6 +156,7 @@ func newService(repo *repository.Repository, dataDir string) *Service {
 	service.sms = service.newSMSDomain()
 	service.auth.SetSMSDelivery(service.sms)
 	service.canvas = canvas.New(service.repo, canvasHost{svc: service})
+	service.workbench = workbench.New(service.repo, workbenchAdminGate{svc: service}, workbenchAdminGate{svc: service})
 	service.platform = platform.New(service.repo, coordinator, platformHost{svc: service})
 	return service
 }
@@ -238,7 +243,7 @@ func (s *Service) Tasks(userID string, limit int) ([]TaskSummary, error) {
 }
 
 func (s *Service) TasksWithOptions(userID string, options TaskListOptions) ([]TaskSummary, error) {
-	tasks, err := s.repo.Tasks(userID, options.Limit, options.ProjectID, options.ActiveOnly)
+	tasks, err := s.repo.TasksWithWorkbenchKind(userID, options.Limit, options.ProjectID, options.ActiveOnly, options.WorkbenchKind)
 	if err != nil {
 		return nil, err
 	}

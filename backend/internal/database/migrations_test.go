@@ -18,6 +18,13 @@ func TestCurrentSchemaVersionMatchesMigrationPlan(t *testing.T) {
 	if len(schemaMigrations) == 0 {
 		t.Fatal("migration plan is empty")
 	}
+	var previous int64
+	for _, item := range schemaMigrations {
+		if item.version <= previous {
+			t.Fatalf("migration versions must be unique and ordered: %d follows %d", item.version, previous)
+		}
+		previous = item.version
+	}
 	latest := schemaMigrations[len(schemaMigrations)-1].version
 	if CurrentSchemaVersion != latest {
 		t.Fatalf("supported schema version %d does not match latest migration %d", CurrentSchemaVersion, latest)
@@ -42,6 +49,14 @@ func TestSchemaMigrationSuffixPreservesPublishedMetadata(t *testing.T) {
 		42: {"prefixed_id_sequence_reconcile", "sha256:prefixed-id-sequence-reconcile-v42-20260926"},
 		43: {"skill_library_categories", "sha256:skill-library-categories-v43-20260927-local-lineage"},
 		44: {"builtin_skill_tombstones", "sha256:builtin-skill-tombstones-v44-20260927-local-lineage"},
+		45: {"resource_thumbnail", "sha256:resource-thumbnail-v45-20260927-local-lineage"},
+		46: {"cloud_agent_pi_sessions", "sha256:cloud-agent-pi-sessions-v46-20260929-local-lineage"},
+		47: {"topup_sale_strategies", "sha256:topup-sale-strategies-v47-20260929-local-lineage"},
+		48: {"upload_reservations", "sha256:upload-reservations-v48-20261005"},
+		49: {"skill_curation", "sha256:skill-curation-v49-20261005"},
+		50: {"skill_curation_roots", "sha256:skill-curation-roots-v50-20261005"},
+		51: {"channel_proxy_url", "sha256:channel-proxy-url-v51-20261009-local-lineage"},
+		52: {"banner_sort_order", "sha256:banner-sort-order-v52-20261010-local-lineage"},
 	}
 	for _, item := range schemaMigrations {
 		want, ok := expected[item.version]
@@ -75,6 +90,15 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	}
 	if !db.Migrator().HasTable(&model.UploadReservation{}) {
 		t.Fatal("upload reservation migration missing")
+	}
+	if !db.Migrator().HasTable(&model.WorkbenchTool{}) || !db.Migrator().HasTable(&model.WorkbenchPreset{}) {
+		t.Fatal("schema migration v57 did not create workbench tool and preset tables")
+	}
+	if !db.Migrator().HasIndex(&model.WorkbenchTool{}, "idx_workbench_tools_kind_enabled_sort") {
+		t.Fatal("schema migration v57 did not create the workbench catalog index")
+	}
+	if !db.Migrator().HasIndex(&model.WorkbenchPreset{}, "idx_workbench_presets_tool_enabled_sort") {
+		t.Fatal("schema migration v57 did not create the workbench preset index")
 	}
 	if !db.Migrator().HasIndex(&schemaMigration{}, "idx_schema_migrations_applied_at") {
 		t.Fatal("schema migration v2 did not create the applied_at index")

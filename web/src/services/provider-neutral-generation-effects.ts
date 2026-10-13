@@ -184,7 +184,7 @@ export function createProviderNeutralGenerationTaskEffectStore(
                     scope,
                     taskId,
                     effectKey,
-        leaseToken: createSecureId(),
+                    leaseToken: createSecureId(),
                     expiresAt: new Date(current.getTime() + leaseMs).toISOString(),
                     fence: (record?.fence ?? 0) + 1,
                 };

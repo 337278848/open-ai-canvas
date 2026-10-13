@@ -19,47 +19,6 @@
 
 在线演示：[http://tv.pinhaoai.help/](http://tv.pinhaoai.help/)
 
-## 赞助商
-
-感谢以下赞助商对拼好布项目的支持：
-
-| LOGO | 类型 | 赞助商名称 | 说明 | 网站 |
-| --- | --- | --- | --- | --- |
-| <img src="assets/artdance.png" alt="ArtDance" width="160"> | 商业 | ArtDance | 本项目 Seedance 模型的天使投资人。 | [artbox.top](https://artbox.top) |
-| <img src="assets/soonstudio.jpg" alt="soonstudio" width="160"> | 商业 | soonstudio | API 一站式网站，自研系统，非 New API；支持手机、短信接码，覆盖国内外几乎所有模型 API 接口，并发高、稳定性强。源于开源，步入 AI 领域，感谢开源。 | [soonstudio.ai](https://soonstudio.ai/) |
-| <img src="assets/fluxion.jpg" alt="Fluxion AI" width="160"> | 商业 | Fluxion AI | 面向个人开发者、技术团队与企业，通过统一 API 接入并管理全球主流 AI 模型，根据不同模型与线路，API 调用成本较官方或基准价格可降低 40%—98%。 | [注册送 $3.88 试用福利](https://fluxionai.space/register?source=github&campaign=yingce&promo=yingce) |
-| <img src="assets/sponsor1.svg" alt="快乐机艺术小组" width="160"> | 团队 | 快乐机艺术小组 | 一支跨学科的艺术创作团队，持续探索数字与艺术的全新表达形式。 | 暂无 |
-| <img src="assets/metaso.png" alt="秘塔" width="160"> | 企业 | 秘塔 | 提供 MiniMax H3 视频生成 API，支持原生 2K、音画同步和 OpenAI 兼容协议。 | [metaso.cn](https://metaso.cn/minimax-h3/?s=dd) |
-| <img src="assets/fruivision.png" alt="浮瑞万相AI" width="160"> | 企业 | 浮瑞万相AI | 一家专注于AI视听的AI Native公司 | 暂无 |
-| <img src="assets/xmzm.png" alt="喜马抓马" width="160"> | 团队 | 喜马抓马 | 中国AI视听先锋厂牌/AI 视听全链路综合服务平台 | [himadrama.com](https://himadrama.com) |
-| <img src="assets/yuyutech.jpg" alt="羽宇科技" width="160"> | 企业 | 羽宇科技 | 一站式AI应用平台。提供模型算力入口、AI短剧视频制作（Studio）、企业数字员工（Agent）及内容出海（OPC）全栈解决方案。 | 暂无 |
-
-### 3D 预演台赞助用户
-
-感谢以下用户赞助 3D 预演台的开发：
-
-<p>
-  <a href="https://github.com/TripsCoder"><img src="https://github.com/TripsCoder.png?size=64" width="48" height="48" alt="TripsCoder"></a>
-  <a href="https://github.com/sugtex"><img src="https://github.com/sugtex.png?size=64" width="48" height="48" alt="sugtex"></a>
-  <a href="https://github.com/Leyi813"><img src="https://github.com/Leyi813.png?size=64" width="48" height="48" alt="Leyi813"></a>
-  <a href="https://github.com/daoge05178"><img src="https://github.com/daoge05178.png?size=64" width="48" height="48" alt="daoge05178"></a>
-  <a href="https://github.com/AetherNo2332"><img src="https://github.com/AetherNo2332.png?size=64" width="48" height="48" alt="AetherNo2332"></a>
-</p>
-
-GitHub 用户：[@TripsCoder](https://github.com/TripsCoder) · [@sugtex](https://github.com/sugtex) · [@Leyi813](https://github.com/Leyi813) · [@daoge05178](https://github.com/daoge05178) · [@AetherNo2332](https://github.com/AetherNo2332)
-
-| 赞助用户 | 联系方式 |
-| --- | --- |
-| vv | 2838033228@qq.com |
-| 克里斯 | [artbox.top](https://artbox.top) |
-| 宇熙 | 53121904@qq.com |
-| 落羽 | luoyyv66@gmail.com |
-| 今夕何在 | 809321478@qq.com |
-| Alpha-M·Break | 15739564793@qq.com |
-| 不吃鸭梨 | elio02519@gmail.com |
-| 九月 | 563641352@qq.com |
-| A | jaiboxuan1205@gmail.com |
-
 ## 核心能力
 
 - **自由画布**：节点、连线、框选、缩放、小地图、撤销重做、导入导出和只读分享。
@@ -67,8 +26,10 @@ GitHub 用户：[@TripsCoder](https://github.com/TripsCoder) · [@sugtex](https:
 - **多媒体生成**：文本、图片、视频、音频任务，支持参考图、首尾帧、运镜、续写、局部修改和批量生成。
 - **任务与素材管理**：异步队列、进度与日志、取消/重试、素材库、资源引用校验和登录后的跨设备同步。
 - **时间线剪辑**：片段编排、拆分、修剪、字幕转写和服务端成片导出，并支持插件化编辑面板。
-- **云端 Agent**：支持持久化对话、画布摘要和流式事件回放；当前为只读阶段，真实环境能力以文档和验收清单为准。
-- **Agent 技能生态**：内置技能覆盖生产流程；社区技能库 [judian-skills](https://github.com/itsWyatt-K/judian-skills) 提供 34 个场景域包索引，完整卡片通过 GitHub 安装后按需读取。安装：技能页 → 安装技能 → GitHub 标签 → 仓库地址填 `https://github.com/itsWyatt-K/judian-skills`，子目录填 `skills/drama/story-structure-engine` 这类域包路径。
+- **画布助手**：支持持久化对话、流式事件回放、分镜协作和生成审批；收费操作在确认前可以调整模型与生成规格。
+- **创作技能**：内置影视剧作工坊等技能，支持按创作需要安装、管理和收藏技能。
+- **独立生成工作台**：提供图片与视频工作台，支持工具预设、参考素材与任务结果管理。
+- **账户与安全**：提供个人资料、头像设置与登录记录，便于管理账号访问。
 - **管理与渠道**：系统渠道、逻辑模型、用量/积分、功能开关、对象存储、响应拦截和管理后台。
 
 完整功能以[功能清单](docs/content/docs/overview/features.mdx)为准。
@@ -175,7 +136,7 @@ sudo docker compose --env-file .env \
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/337278848/open-ai-canvas/main/scripts/install-server-image.sh \
-  | sudo env CANVAS_IMAGE_TAG=v1.5.9 bash
+  | sudo env CANVAS_IMAGE_TAG=v1.6.7 bash
 ```
 
 历史 `v1.2.9`、`v1.5.7`、`v1.5.7.1` 的 Host Updater 仍是 tag-based 格式，必须显式设置 `CANVAS_SKIP_HOST_UPDATER=1`；脚本会在写入部署文件前拒绝隐式安装旧更新器。脚本会先按指定 Release 拉取镜像，再解析并写入 `CANVAS_BACKEND_IMAGE`、`CANVAS_WEB_IMAGE` 的 GHCR digest；生产 Compose 不接受缺失 digest 的默认镜像或 `latest`。更新流程、数据库迁移、备份和回退说明见[系统更新文档](docs/content/docs/backend/system-update.mdx)。

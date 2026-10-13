@@ -1,6 +1,6 @@
 import { EmptyState } from "@/components/ui/product/empty-state";
 import { Button, Spin } from "antd";
-import { ArrowLeft, Eye, History, Maximize, Minus, Plus } from "lucide-react";
+import { ArrowLeft, Download, Eye, History, Maximize, Minus, Plus } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { CanvasViewport } from "@/components/canvas/canvas-viewport";
 import { CanvasNode } from "@/components/canvas/canvas-node";
@@ -15,13 +15,14 @@ import { useActiveTheme } from "@/stores/canvas/use-canvas-theme-store";
 import { resourceFileUrl, resourceIdFromStorageKey } from "@/services/api/resources";
 import { resolveMediaUrl } from "@/services/file-storage";
 import type { CanvasNodeData, ViewportTransform } from "@/types/canvas";
+import { getActiveUserScope } from "@/lib/user-scope";
 import type { CanvasVersionPreviewState } from "./canvas-version-history";
 
 const noAction = () => undefined;
 const readOnlyActions = {};
 const previewNodeId = (id: string) => `version-preview:${id}`;
 
-export function CanvasVersionPreview({ preview, onReturn, onShowVersions }: { preview: CanvasVersionPreviewState; onReturn: () => void; onShowVersions: () => void }) {
+export function CanvasVersionPreview({ preview, onReturn, onShowVersions, onExport, disabled }: { preview: CanvasVersionPreviewState; onReturn: () => void; onShowVersions: () => void; onExport: () => void; disabled: boolean }) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [viewport, setViewport] = useState<ViewportTransform>({ x: 0, y: 0, k: 1 });
     const [selectedId, setSelectedId] = useState<string>();
@@ -29,6 +30,12 @@ export function CanvasVersionPreview({ preview, onReturn, onShowVersions }: { pr
     const [mediaError, setMediaError] = useState("");
     const theme = useActiveTheme();
     const project = preview.project;
+    const scope = preview.scope;
+    useEffect(() => {
+        setSelectedId(undefined);
+        setLocalMedia({});
+        setMediaError("");
+    }, [preview.key, scope]);
     useEffect(() => {
         const node = project?.nodes.find((item) => item.id === selectedId);
         const key = node?.metadata?.storageKey;
@@ -37,15 +44,15 @@ export function CanvasVersionPreview({ preview, onReturn, onShowVersions }: { pr
         setMediaError("");
         void resolveMediaUrl(key, node.metadata?.content)
             .then((url) => {
-                if (active) setLocalMedia((current) => ({ ...current, [node.id]: url }));
+                if (active && getActiveUserScope() === scope) setLocalMedia((current) => ({ ...current, [node.id]: url }));
             })
             .catch(() => {
-                if (active) setMediaError("媒体暂时无法读取，请重新打开此版本重试");
+                if (active && getActiveUserScope() === scope) setMediaError("媒体暂时无法读取，请重新打开此版本重试");
             });
         return () => {
             active = false;
         };
-    }, [project, selectedId]);
+    }, [project, selectedId, scope]);
     const nodes = useMemo(
         () =>
             (project?.nodes || []).map((node) => {
@@ -104,10 +111,12 @@ export function CanvasVersionPreview({ preview, onReturn, onShowVersions }: { pr
                 <Button type="text" className="lg:!hidden" icon={<History size={15} />} onClick={onShowVersions}>
                     版本
                 </Button>
-                <Button className="col-span-3" icon={<ArrowLeft size={15} />} onClick={onReturn}>
+                <Button icon={<Download size={15} />} disabled={!project || disabled} onClick={onExport}>导出内容备份</Button>
+                <Button className="col-span-3" disabled={disabled} icon={<ArrowLeft size={15} />} onClick={onReturn}>
                     返回当前画布
                 </Button>
             </header>
+            <p data-canvas-no-zoom className="shrink-0 border-b border-border bg-sidebar px-5 py-2 text-xs text-muted-foreground">导出仅含画布内容与资源引用，不包含媒体文件和本机历史笔画；可在画布列表导入为新画布。</p>
             {preview.error ? (
                 <div role="alert" className="grid flex-1 place-content-center gap-4 p-6 text-center text-sm text-destructive">
                     <p>{preview.error}</p>
@@ -168,7 +177,6 @@ export function CanvasVersionPreview({ preview, onReturn, onShowVersions }: { pr
                                             isFocusRelated={false}
                                             isConnectionTarget={false}
                                             showImageInfo={false}
-                                            reduceMediaEffects
                                             renderNodeContent={renderReadOnlyContent}
                                             onMouseDown={() => setSelectedId(node.id)}
                                             onHoverStart={noAction}

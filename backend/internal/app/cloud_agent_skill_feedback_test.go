@@ -43,11 +43,10 @@ func TestCloudAgentSkillEmptyDirectoryAndRepeatedRead(t *testing.T) {
 		t.Fatalf("cache replay consumed a real-read budget: %d", state.ReadToolCalls)
 	}
 
-	// One cached replay is enough to recover a normal repeated call. A second
-	// replay must hit the independent same-argument guard rather than loop
-	// forever while leaving ReadToolCalls unchanged.
-	if _, err := cloudAgentReadToolCached(nil, "user", &state, call); err == nil {
-		t.Fatal("second repeated skill read bypassed the replay guard")
+	// A model can repeat the same call more than once while recovering a long
+	// context. Replays stay harmless and never terminate the run.
+	if _, err := cloudAgentReadToolCached(nil, "user", &state, call); err != nil {
+		t.Fatalf("second repeated skill read must remain harmless: %v", err)
 	}
 }
 

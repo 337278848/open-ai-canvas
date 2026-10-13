@@ -29,7 +29,11 @@ func TestCloudAgentReadArgumentsRejectBeforeReadingCanvas(t *testing.T) {
 		{"negative storyboard offset", `{"storyboardOffset":-1}`, "非负整数"},
 		{"too many nodes", `{"nodeIds":["1","2","3","4","5","6","7","8","9"]}`, "最多包含8个"},
 		{"null depth", `{"focusNodeIds":["1"],"depth":null}`, "不能为 null"},
+		{"null depth case alias", `{"focusNodeIds":["1"],"Depth":null}`, "不能为 null"},
+		{"null depth last value", `{"focusNodeIds":["1"],"depth":0,"depth":null}`, "不能为 null"},
 		{"null includeRelated", `{"focusNodeIds":["1"],"includeRelated":null}`, "不能为 null"},
+		{"null includeRelated case alias", `{"focusNodeIds":["1"],"INCLUDERELATED":null}`, "不能为 null"},
+		{"null includeRelated whitespace", `{"focusNodeIds":["1"],"includeRelated": null }`, "不能为 null"},
 		{"null maxItems", `{"maxItems":null}`, "不能为 null"},
 		{"maxItems with focus", `{"maxItems":2,"focusNodeIds":["1"]}`, "不能与 focusNodeIds 同传"},
 	} {
@@ -44,6 +48,54 @@ func TestCloudAgentReadArgumentsRejectBeforeReadingCanvas(t *testing.T) {
 				t.Fatalf("expected correctable %q error, got %v", tt.message, err)
 			}
 		})
+	}
+}
+
+func TestCloudAgentCanvasReadPreservesOptionalDepthAndRelatedDefaults(t *testing.T) {
+	s, db, canvasID, _ := creationTestService(t)
+	canvas := model.CanvasProject{
+		ID: canvasID, UserID: "user",
+		PayloadJSON: `{"nodes":[{"id":"note","type":"text"},{"id":"other","type":"text"}],"connections":[{"id":"edge","fromNodeId":"note","toNodeId":"other"}]}`,
+	}
+	if err := db.Create(&canvas).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, arguments string
+		nodes, depth    int
+	}{
+		{"omitted", `{}`, 2, -1},
+		{"default focus depth", `{"focusNodeIds":["note"]}`, 2, 1},
+		{"explicit zero depth", `{"focusNodeIds":["note"],"depth":0}`, 1, 0},
+		{"explicit false related", `{"focusNodeIds":["note"],"includeRelated":false}`, 2, 1},
+		{"zero depth and false related", `{"focusNodeIds":["note"],"depth":0,"includeRelated":false}`, 1, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &cloudAgentRuntime{Request: CloudAgentRequest{CanvasID: canvasID}}
+			call := cloudAgentCall{ID: "valid-read"}
+			call.Function.Name, call.Function.Arguments = "canvas_get_state", tt.arguments
+			result, err := cloudAgentReadTool(s.repo, "user", state, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := result.(map[string]any)
+			if nodes := creationMaps(body["nodes"]); len(nodes) != tt.nodes {
+				t.Fatalf("optional arguments changed selection: %#v", body)
+			}
+			if tt.depth >= 0 {
+				selection, ok := body["selection"].(map[string]any)
+				if !ok || selection["depth"] != tt.depth {
+					t.Fatalf("explicit zero or default depth was lost: %#v", body["selection"])
+				}
+			}
+		})
+	}
+	stored, err := s.repo.CanvasProjectForUser("user", canvasID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PayloadJSON != canvas.PayloadJSON || stored.Revision != canvas.Revision {
+		t.Fatal("optional-argument reads changed the saved canvas")
 	}
 }
 

@@ -25,6 +25,7 @@ function sectionForSaveError(message: string): EditorSection {
 export function ChannelModelEditor({
     channel,
     editing,
+    draftValues,
     protocols,
     protocolLoading,
     protocolError,
@@ -34,6 +35,7 @@ export function ChannelModelEditor({
 }: {
     channel: ModelChannel;
     editing: ChannelModel | null;
+    draftValues?: FormValues;
     protocols: ModelProtocolDefinition[];
     protocolLoading: boolean;
     protocolError: string;
@@ -47,7 +49,7 @@ export function ChannelModelEditor({
         .sort((a, b) => a.localeCompare(b, "zh-CN"))
         .map((value) => ({ value }));
     const [form] = Form.useForm<FormValues>();
-    const [initialValues] = useState(() => initialChannelModelValues(editing, protocols));
+    const [initialValues] = useState(() => draftValues ?? initialChannelModelValues(editing, protocols));
     const [activeSection, setActiveSection] = useState<EditorSection>("identity");
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
@@ -188,9 +190,9 @@ export function ChannelModelEditor({
             open
             title={
                 <div className="admin-model-editor-title">
-                    <span>{editing ? "编辑模型" : "新增模型"}</span>
+                    <span>{draftValues ? "复制模型" : editing ? "编辑模型" : "新增模型"}</span>
                     <p>
-                        {channel.name} · {editing?.displayName || editing?.modelKey || "配置调用方式与用户积分价格"}
+                        {channel.name} · {editing?.displayName || editing?.modelKey || draftValues?.displayName || "配置调用方式与用户积分价格"}
                     </p>
                 </div>
             }

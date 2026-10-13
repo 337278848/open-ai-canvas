@@ -21,7 +21,7 @@ const SHOT_DIR = join(WEB_DIR, "public");
 const GALLERY_POOL_FILE = join(PUBLIC_DIR, "gallery-pool.json");
 /** 只留各来源的上游版本号，几行字，进包无所谓。 */
 const REVISIONS_FILE = join(WEB_DIR, "src", "lib", "inspirations", "source-revisions.ts");
-const UA = "Mozilla/5.0 (compatible; yingce-inspiration-import/1.0; +https://github.com/ddcat-ai/open-ai-canvas)";
+const UA = "Mozilla/5.0 (compatible; pinhaobu-inspiration-import/1.0)";
 
 const SEEDANCE_REPO = "LearnPrompt/awesome-seedance";
 const HAOHAOXUE_PAGE = "https://www.haohaoxue.com/prompts/";

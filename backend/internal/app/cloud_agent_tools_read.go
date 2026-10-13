@@ -284,9 +284,23 @@ func cloudAgentReadTool(repo *repository.Repository, userID string, state *cloud
 			Depth            *int     `json:"depth"`
 			IncludeRelated   *bool    `json:"includeRelated"`
 			StoryboardOffset int      `json:"storyboardOffset"`
+			MaxItems         *int     `json:"maxItems"`
 		}
 		if err := decodeCloudAgentJSONObject(call.Function.Arguments, &args); err != nil {
 			return nil, cloudAgentJSONArgumentError(err)
+		}
+		if cloudAgentJSONFieldIsNull(call.Function.Arguments, "depth") ||
+			cloudAgentJSONFieldIsNull(call.Function.Arguments, "includeRelated") ||
+			cloudAgentJSONFieldIsNull(call.Function.Arguments, "maxItems") {
+			return nil, &cloudAgentArgumentError{BadAuthRequest("画布读取参数无效：depth、includeRelated、maxItems 不能为 null，请省略字段或传有效值")}
+		}
+		if args.MaxItems != nil {
+			if *args.MaxItems < 1 || *args.MaxItems > 40 {
+				return nil, &cloudAgentArgumentError{BadAuthRequest("画布读取参数无效：maxItems 必须为1到40")}
+			}
+			if len(args.FocusNodeIDs) > 0 {
+				return nil, &cloudAgentArgumentError{BadAuthRequest("画布读取参数无效：maxItems 不能与 focusNodeIds 同传")}
+			}
 		}
 		depth := 0
 		if args.Depth != nil {

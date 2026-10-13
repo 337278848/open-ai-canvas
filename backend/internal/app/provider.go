@@ -112,6 +112,8 @@ type providerMedia struct {
 	DataURL    string `json:"dataUrl"`
 	URL        string `json:"url"`
 	StorageKey string `json:"storageKey"`
+	Role       string `json:"role,omitempty"`
+	SlotKey    string `json:"slotKey,omitempty"`
 	MimeType   string `json:"mimeType"`
 	Bytes      int64  `json:"bytes"`
 	Width      int    `json:"width"`
@@ -149,7 +151,9 @@ func (s *Service) processCanvasGenerationTask(ctx context.Context, userID string
 		input.Prompt = compiled.Content
 	}
 	if strings.TrimSpace(input.Prompt) == "" {
-		return nil, errors.New("prompt is required")
+		if err := s.validateWorkbenchOptionalPrompt(ctx, userID, taskType, &input); err != nil {
+			return nil, err
+		}
 	}
 	// 将 @[tool:type:ID:label:icon] 令牌替换为对应工具的提示词文本
 	resolved, err := s.ResolveToolMentionTokens(userID, input.Mode, input.Prompt)

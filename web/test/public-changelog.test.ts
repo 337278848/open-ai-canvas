@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { publicReleaseNotes } from "../src/lib/public-release-notes";
 
 const changelog = readFileSync(new URL("../../CHANGELOG.md", import.meta.url), "utf8");
+const version = readFileSync(new URL("../../VERSION", import.meta.url), "utf8").trim();
 
 describe("public changelog", () => {
     test("uses product release language instead of source-control provenance", () => {
@@ -12,6 +13,7 @@ describe("public changelog", () => {
     });
 
     test("keeps the current release notes available to the in-app dialog", () => {
+        expect(changelog).toContain(`## ${version}`);
         expect(changelog).toContain("## v1.6.0");
         expect(changelog).toContain("管理后台模型保存失败时");
         expect(changelog).toContain("模型服务连接失败被误报为图片生成等待超时");
@@ -38,6 +40,12 @@ describe("public changelog", () => {
         const welcome = readFileSync(new URL("../src/pages/welcome/index.tsx", import.meta.url), "utf8");
         expect(welcome).not.toMatch(/github\.com|Open Source|MIT License|开源 AI|贡献者/);
         expect(welcome).toContain("AI 影视创作工作台");
+    });
+
+    test("the previs workbench retains the product brand after synchronization", () => {
+        const previs = readFileSync(new URL("../src/components/canvas/previs/canvas-previs-workbench.tsx", import.meta.url), "utf8");
+        expect(previs).toContain('className="previs-desk-logo">拼好布</span>');
+        expect(previs).not.toContain("影策");
     });
 
     test("customer-facing discovery pages do not expose platform repository provenance", () => {

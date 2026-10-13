@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -677,6 +678,63 @@ func TestOfficialArkAgentPlanPluginsUsePlanPaths(t *testing.T) {
 	}
 	if poll.Path != "/api/plan/v3/contents/generations/tasks/task-1" {
 		t.Fatalf("agent plan video poll = %#v", poll)
+	}
+}
+
+func TestOfficialGeminiImageOmitsOnlyBlankPromptParts(t *testing.T) {
+	adapter := officialPackageAdapter(t, "google-gemini-image.yingce-plugin", "gemini-image")
+	for _, prompt := range []string{"", " \t\n", "landscape", "false", "0", "no", "null"} {
+		t.Run(fmt.Sprintf("prompt=%q", prompt), func(t *testing.T) {
+			create, err := adapter.BuildCreate(context.Background(), RequestContext{Request: GenerationRequest{
+				Model: "gemini-3-pro-image-preview", Prompt: prompt,
+				Images: []MediaReference{
+					{DataURL: "data:image/png;base64,aGVsbG8="},
+					{URL: "https://example.com/reference.jpg", MIMEType: "image/jpeg"},
+				},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := manifestTestBody(t, create)
+			contents, ok := body["contents"].([]any)
+			if !ok || len(contents) != 1 {
+				t.Fatalf("contents = %#v", body["contents"])
+			}
+			content, ok := contents[0].(map[string]any)
+			if !ok {
+				t.Fatalf("content = %#v", contents[0])
+			}
+			parts, ok := content["parts"].([]any)
+			offset := 0
+			if strings.TrimSpace(prompt) != "" {
+				offset = 1
+			}
+			if !ok || len(parts) != 2+offset {
+				t.Fatalf("parts = %#v, want %d", content["parts"], 2+offset)
+			}
+			if offset == 1 {
+				textPart, ok := parts[0].(map[string]any)
+				if !ok || textPart["text"] != prompt {
+					t.Fatalf("nonblank prompt was changed or omitted: %#v", parts[0])
+				}
+			}
+			inlinePart, ok := parts[offset].(map[string]any)
+			if !ok {
+				t.Fatalf("inline part = %#v", parts[offset])
+			}
+			inline, ok := inlinePart["inlineData"].(map[string]any)
+			if !ok || inline["mimeType"] != "image/png" || inline["data"] != "aGVsbG8=" {
+				t.Fatalf("inlineData = %#v", inlinePart)
+			}
+			filePart, ok := parts[offset+1].(map[string]any)
+			if !ok {
+				t.Fatalf("file part = %#v", parts[offset+1])
+			}
+			file, ok := filePart["fileData"].(map[string]any)
+			if !ok || file["mimeType"] != "image/jpeg" || file["fileUri"] != "https://example.com/reference.jpg" {
+				t.Fatalf("fileData = %#v", filePart)
+			}
+		})
 	}
 }
 

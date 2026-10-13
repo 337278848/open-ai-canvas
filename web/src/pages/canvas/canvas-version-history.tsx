@@ -1,10 +1,13 @@
 import { AppDrawer } from "@/components/ui/product/app-drawer";
 import { EmptyState } from "@/components/ui/product/empty-state";
 import { App, Button, Grid, Spin } from "antd";
-import { Check, ChevronDown, Cloud, FileClock, History, RefreshCw, X } from "lucide-react";
+import { Check, ChevronDown, Cloud, Download, FileClock, History, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCanvasHistoryEntry, listCanvasHistory, type CanvasHistoryEntry } from "@/services/api/user-data";
-import { readCanvasSyncDrafts, type CanvasSyncDraft } from "@/services/canvas-sync-drafts";
+import { canvasVersionExportDocument, readCanvasSyncDraftInventory, type CanvasDraftReadIssue, type CanvasSyncDraft } from "@/services/canvas-sync-drafts";
+import { saveAs } from "file-saver";
+import { strToU8, zipSync } from "fflate";
+import type { RestoreRemoteCanvasProjectInput } from "@/services/user-data-sync";
 import { getActiveUserScope } from "@/lib/user-scope";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
@@ -12,6 +15,7 @@ import "./canvas-version-history.css";
 
 export type CanvasVersionPreviewState = {
     key: string;
+    scope: string;
     label: string;
     date: string;
     kind: "cloud" | "draft";
@@ -20,19 +24,24 @@ export type CanvasVersionPreviewState = {
     error?: string;
 };
 
-export function useCanvasVersionHistory(projectId: string, onRestore: (snapshotId: string, revision: number) => Promise<void>) {
+export function useCanvasVersionHistory(projectId: string, onRestore: (input: RestoreRemoteCanvasProjectInput) => Promise<void>) {
     const { message, modal } = App.useApp();
     const desktop = Boolean(Grid.useBreakpoint().lg);
     const scope = getActiveUserScope();
     const contextRef = useRef({ projectId, scope });
-    contextRef.current = { projectId, scope };
-    const isCurrentContext = () => contextRef.current.projectId === projectId && contextRef.current.scope === scope && getActiveUserScope() === scope;
+    if (contextRef.current.projectId !== projectId || contextRef.current.scope !== scope) contextRef.current = { projectId, scope };
+    const context = contextRef.current;
+    const mounted = useRef(false);
+    const restorePending = useRef<typeof context | null>(null);
+    const isCurrentContext = () => mounted.current && contextRef.current === context && getActiveUserScope() === scope;
+    useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
     const draftCount = useSyncProgressStore((state) => state.syncingProjects[projectId]?.draftCount);
     const [open, setOpen] = useState(false);
     const [listOpen, setListOpen] = useState(true);
     const [tab, setTab] = useState<"cloud" | "draft">("cloud");
     const [entries, setEntries] = useState<CanvasHistoryEntry[]>([]);
     const [drafts, setDrafts] = useState<CanvasSyncDraft[]>([]);
+    const [draftIssues, setDraftIssues] = useState<CanvasDraftReadIssue[]>([]);
     const [currentRevision, setCurrentRevision] = useState<number>();
     const [preview, setPreview] = useState<CanvasVersionPreviewState | null>(null);
     const [loading, setLoading] = useState(false);
@@ -55,8 +64,12 @@ export function useCanvasVersionHistory(projectId: string, onRestore: (snapshotI
     }, [restoring, returnToCurrent]);
 
     useEffect(() => {
+        restorePending.current = null;
         setOpen(false);
         setTab("cloud");
+        setRestoring(false);
+        setConfirming(false);
+        setDraftIssues([]);
         returnToCurrent();
     }, [projectId, scope, returnToCurrent]);
 
@@ -89,9 +102,13 @@ export function useCanvasVersionHistory(projectId: string, onRestore: (snapshotI
         setDraftLoading(true);
         setDraftError("");
         setDrafts([]);
-        void readCanvasSyncDrafts(projectId, scope)
-            .then((items) => {
-                if (active && isCurrentContext()) setDrafts(items.sort((a, b) => b.savedAt.localeCompare(a.savedAt)));
+        setDraftIssues([]);
+        void readCanvasSyncDraftInventory(projectId, scope)
+            .then(({ drafts: items, issues }) => {
+                if (active && isCurrentContext()) {
+                    setDrafts(items.sort((a, b) => b.savedAt.localeCompare(a.savedAt)));
+                    setDraftIssues(issues);
+                }
             })
             .catch(() => {
                 if (active && isCurrentContext()) setDraftError("本地草稿读取失败，请刷新重试");
@@ -115,7 +132,7 @@ export function useCanvasVersionHistory(projectId: string, onRestore: (snapshotI
         previewRequest.current?.abort();
         const controller = new AbortController();
         previewRequest.current = controller;
-        const selection: CanvasVersionPreviewState = { key: entry.id, label: `版本 ${entry.revision}`, date: entry.contentUpdatedAt, kind: "cloud", snapshot: entry };
+        const selection: CanvasVersionPreviewState = { key: entry.id, scope, label: `版本 ${entry.revision}`, date: entry.contentUpdatedAt, kind: "cloud", snapshot: entry };
         setPreview(selection);
         setListOpen(false);
         void getCanvasHistoryEntry(projectId, entry.id, controller.signal)
@@ -127,33 +144,51 @@ export function useCanvasVersionHistory(projectId: string, onRestore: (snapshotI
             });
     };
 
+    const exportPreview = () => {
+        if (!isCurrentContext() || !preview?.project || restorePending.current) return;
+        try {
+            const document = canvasVersionExportDocument(preview.project);
+            const archive = zipSync({ "projects.json": strToU8(JSON.stringify(document)) }, { level: 0 });
+            if (!isCurrentContext()) return;
+            saveAs(new Blob([archive], { type: "application/zip" }), "画布内容备份.zip");
+        } catch (cause) {
+            if (isCurrentContext()) message.error(cause instanceof Error ? cause.message : "导出失败");
+        }
+    };
+    const exportIssue = (issue: CanvasDraftReadIssue) => {
+        if (!isCurrentContext() || !issue.raw || restorePending.current) return;
+        saveAs(new Blob([issue.raw], { type: "application/json" }), "画布草稿原始记录.json");
+    };
     const restore = () => {
         const selected = preview?.snapshot;
-        if (!selected || !preview.project || currentRevision === undefined || restoring) return;
+        if (!isCurrentContext() || !selected || !preview.project || currentRevision === undefined || restorePending.current || confirming) return;
+        const input: RestoreRemoteCanvasProjectInput = { projectId, expectedRevision: currentRevision, document: structuredClone(preview.project), expectedScope: scope };
         setConfirming(true);
         modal.confirm({
             title: `恢复版本 ${selected.revision} 的内容？`,
-            content: "恢复前会备份当前云端内容，并保留本地草稿。恢复后会生成一个新版本，画布的项目归属保持当前设置。",
+            content: "恢复前会保留当前本地草稿，核对云端版本，再逐项检查并提交修改。版本不符、待提交操作无法确认或内容冲突时会停止恢复；不会整份覆盖云端。",
             okText: "恢复此版本",
             cancelText: "取消",
-            afterClose: () => setConfirming(false),
+            afterClose: () => { if (isCurrentContext()) setConfirming(false); },
             onOk: async () => {
-                if (!isCurrentContext()) {
-                    message.error("画布或账号已切换，请重新打开版本记录");
-                    return;
-                }
+                if (!isCurrentContext() || restorePending.current) return;
+                restorePending.current = context;
                 setRestoring(true);
                 try {
-                    await onRestore(selected.id, currentRevision);
+                    await onRestore(input);
+                    if (!isCurrentContext()) return;
                     returnToCurrent();
                     setReload((value) => value + 1);
-                    message.success("已恢复内容并保存为新版本");
+                    message.success("已恢复内容并保存到云端");
                 } catch (cause) {
-                    const detail = cause instanceof Error ? cause.message : "恢复失败，请重试";
+                    if (!isCurrentContext()) return;
+                    const detail = cause instanceof Error ? cause.message : "恢复失败，请刷新后重试";
                     setError(detail);
                     message.error(detail);
+                    throw cause;
                 } finally {
-                    setRestoring(false);
+                    if (restorePending.current === context) restorePending.current = null;
+                    if (isCurrentContext()) setRestoring(false);
                 }
             },
         });
@@ -174,6 +209,9 @@ export function useCanvasVersionHistory(projectId: string, onRestore: (snapshotI
         confirming,
         error,
         draftError,
+        draftIssues,
+        exportPreview,
+        exportIssue,
         show: () => {
             setOpen(true);
             setListOpen(true);
@@ -203,7 +241,7 @@ export function useCanvasVersionHistory(projectId: string, onRestore: (snapshotI
         selectVersion,
         selectDraft: (draft: CanvasSyncDraft) => {
             previewRequest.current?.abort();
-            setPreview({ key: draft.id, label: "本地草稿", date: draft.savedAt, kind: "draft", project: draft.project });
+            setPreview({ key: draft.id, scope, label: draftLabel(draft), date: draft.savedAt, kind: "draft", project: draft.project });
             setListOpen(false);
         },
         returnToCurrent,
@@ -322,12 +360,18 @@ export function CanvasVersionHistory({ history }: { history: CanvasVersionHistor
                     </>
                 ) : (
                     <>
-                        <p className="canvas-version-draft-note">发生冲突或恢复版本时，系统自动保留的本地内容，可在此查看。</p>
+                        <p className="canvas-version-draft-note">旧版草稿与暂停同步的恢复副本都保留在本机。可只读查看、导出，再从画布列表导入为新画布，不会覆盖当前云端。</p>
                         {draftError ? (
                             <p role="alert" className="canvas-version-error">
                                 {draftError}
                             </p>
                         ) : null}
+                        {history.draftIssues.map((issue, index) => (
+                            <div key={index} role="alert" className="canvas-version-error">
+                                <p>{issue.message}</p>
+                                {issue.raw ? <Button size="small" icon={<Download size={14} />} disabled={restoring} onClick={() => history.exportIssue(issue)}>导出原始记录</Button> : null}
+                            </div>
+                        ))}
                         {draftLoading ? (
                             <div className="canvas-version-empty">
                                 <Spin size="small" />
@@ -339,9 +383,10 @@ export function CanvasVersionHistory({ history }: { history: CanvasVersionHistor
                             <button type="button" key={draft.id} className="canvas-version-item canvas-version-draft" disabled={restoring} aria-pressed={preview?.key === draft.id} onClick={() => history.selectDraft(draft)}>
                                 <span className="canvas-version-item-title">
                                     <FileClock size={15} />
-                                    <strong>本机备份</strong>
+                                    <strong>{draftLabel(draft)}</strong>
                                     {draft.project.revision !== undefined ? <span className="canvas-version-tag">基于 v{draft.project.revision}</span> : null}
                                 </span>
+                                {draft.message ? <small>{draft.message}</small> : null}
                                 <time dateTime={draft.savedAt}>{new Date(draft.savedAt).toLocaleString("zh-CN")}</time>
                                 <small>
                                     {draft.project.nodes.length} 个节点 · {draft.project.connections.length} 条连线
@@ -365,6 +410,8 @@ export function CanvasVersionHistory({ history }: { history: CanvasVersionHistor
                             </small>
                         ) : null}
                         {preview.project?.nodes.some((node) => node.type === "drawing") ? <p className="canvas-version-hint">绘图仅保留已上传的预览，不含本机历史笔画。</p> : null}
+                        <p className="canvas-version-hint">导出含内容与资源引用，不包含媒体文件或本机历史笔画。</p>
+                        <Button block icon={<Download size={15} />} disabled={!preview.project || restoring} onClick={history.exportPreview}>导出内容备份</Button>
                         {preview.kind === "cloud" ? (
                             <div className="canvas-version-actions">
                                 <Button block type="primary" loading={restoring} disabled={!preview.project || currentRevision === undefined || loading} onClick={history.restore}>
@@ -405,4 +452,8 @@ export function CanvasVersionHistory({ history }: { history: CanvasVersionHistor
 
 function formatTime(date: string) {
     return new Date(date).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function draftLabel(draft: CanvasSyncDraft) {
+    return draft.source === "recovery-original" ? "暂停同步 · 原始副本" : draft.source === "recovery-latest" ? "暂停同步 · 最新副本" : "旧版本地草稿";
 }

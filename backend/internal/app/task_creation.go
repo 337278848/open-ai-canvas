@@ -27,6 +27,13 @@ type taskAdmission struct {
 // 这是常规模型生成任务的写入口：客户端只提交创作意图，模型、渠道、协议和计价信息必须由服务端目录重新解析，
 // 以保证“可展示的模型”与“实际执行及扣费的模型”来自同一份有效配置。
 func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task, error) {
+	return s.createTask(userID, req, false)
+}
+
+// promptOptional is only passed by the workbench bridge after resolving the
+// server-owned tool contract and validating its required resources. It is not
+// a public request field and does not skip model, quota or billing admission.
+func (s *Service) createTask(userID string, req CreateTaskRequest, promptOptional bool) (*model.Task, error) {
 	if req.admission == nil && (strings.HasPrefix(req.Operation, "cloud_agent") || req.Input["cloudAgent"] != nil) {
 		return nil, BadAuthRequest("Agent 任务必须通过 Agent 接口创建")
 	}
@@ -34,7 +41,7 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 		return nil, &AppError{Status: 503, Code: 503, Message: "服务正在维护，暂不接受新的生成任务", Retryable: true}
 	}
 	prompt := strings.TrimSpace(req.Prompt)
-	if prompt == "" {
+	if prompt == "" && !promptOptional {
 		return nil, errors.New("prompt is required")
 	}
 	taskType := strings.TrimSpace(req.Type)
@@ -129,7 +136,11 @@ func (s *Service) CreateTask(userID string, req CreateTaskRequest) (*model.Task,
 	if capacityErr != nil {
 		return nil, capacityErr
 	}
-	task := model.Task{ID: newID(), UserID: userID, TraceID: req.TraceID, RequestID: req.RequestID, ProjectID: req.ProjectID, Type: taskType, Status: model.TaskStatusQueued, Stage: "等待队列调度", Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}
+	workbenchKind := req.workbenchKind
+	if workbenchKind == "" {
+		workbenchKind = workbenchKindFromTaskInput(normalizedInput, taskType)
+	}
+	task := model.Task{ID: newID(), UserID: userID, TraceID: req.TraceID, RequestID: req.RequestID, ProjectID: req.ProjectID, Type: taskType, WorkbenchKind: workbenchKind, Status: model.TaskStatusQueued, Stage: "等待队列调度", Progress: 5, Prompt: prompt, Operation: req.Operation, Provider: req.Provider, Model: req.Model}
 	if req.admission != nil {
 		task.ID = req.admission.ID
 		task.AgentRunID = req.admission.AgentRunID
@@ -326,6 +337,28 @@ func normalizeTaskInput(input map[string]any) (map[string]any, error) {
 		normalized["canvasSnapshot"] = compactPersistedValue(snapshot)
 	}
 	return normalized, nil
+}
+
+func workbenchKindFromTaskInput(input map[string]any, taskType string) string {
+	metadata, ok := input["metadata"].(map[string]any)
+	if !ok || metadata["source"] != "workbench" {
+		return ""
+	}
+	kind := stringValue(metadata["workbenchKind"])
+	if stringValue(input["mode"]) != kind {
+		return ""
+	}
+	switch kind {
+	case model.WorkbenchKindImage:
+		if taskType == "canvas_image" {
+			return kind
+		}
+	case model.WorkbenchKindVideo:
+		if taskType == "canvas_video" || strings.HasPrefix(taskType, "video_") {
+			return kind
+		}
+	}
+	return ""
 }
 
 // createTextReplayTask 创建前端自管的文本持久化任务：状态为 text_replay，

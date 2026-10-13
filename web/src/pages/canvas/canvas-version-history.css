@@ -4,32 +4,6 @@
     min-height: 0;
     border-left: 1px solid var(--border);
 }
-.canvas-editor-shell {
-    container-type: inline-size;
-}
-@container (max-width: 1050px) {
-    .canvas-topbar-tools-cluster > :not(:has(.canvas-topbar-version-button)):not(.canvas-topbar-agent-button) {
-        display: none !important;
-    }
-}
-@container (max-width: 650px) {
-    .canvas-topbar-project-picker {
-        display: none !important;
-    }
-    .canvas-topbar-project-cluster {
-        max-width: calc(100% - 180px);
-    }
-    .canvas-topbar {
-        gap: 8px;
-        padding-inline: 10px;
-    }
-    .canvas-sync-status-label {
-        display: none;
-    }
-    .canvas-topbar-project-context {
-        display: none;
-    }
-}
 .canvas-version-panel {
     height: 100%;
     display: flex;
@@ -248,3 +222,4 @@
     cursor: not-allowed;
     opacity: 0.5;
 }
+.canvas-version-sidebar { overflow: hidden; }

@@ -19,8 +19,13 @@ func cloudAgentJSONFieldIsNull(raw, field string) bool {
 	if err := json.Unmarshal([]byte(raw), &object); err != nil {
 		return false
 	}
-	value, ok := object[field]
-	return ok && bytes.Equal(bytes.TrimSpace(value), []byte("null"))
+	for name, value := range object {
+		// Match encoding/json's case-insensitive struct field decoding.
+		if strings.EqualFold(name, field) && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return true
+		}
+	}
+	return false
 }
 
 // Only explicitly classified input errors may be repaired by the model;

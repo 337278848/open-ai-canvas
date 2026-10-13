@@ -31,6 +31,9 @@ func TestCloudAgentCanvasPatchesPersistDraftSubmissionAndAllTerminalStates(t *te
 	for _, status := range []model.TaskStatus{model.TaskStatusSucceeded, model.TaskStatusFailed, model.TaskStatusCancelled} {
 		t.Run(string(status), func(t *testing.T) {
 			s, db, args := agentMediaFixture(t)
+			// This test owns every transition explicitly; the approval waiter
+			// would otherwise race its replay check by saving a resume prompt.
+			s.closeApprovedCloudAgentMediaWaiters()
 			run, _ := agentMediaRun(t, s, args, "request_approval")
 			if err := s.advanceCloudAgentByID("user", run.ID); err != nil {
 				t.Fatal(err)
@@ -63,6 +66,9 @@ func TestCloudAgentCanvasPatchesPersistDraftSubmissionAndAllTerminalStates(t *te
 			}
 			run, _ = s.repo.CloudAgent("user", run.ID)
 			state, _ = cloudAgentDecode(run)
+			if state.MediaTaskID != "" {
+				t.Fatal("terminal handling did not release the media checkpoint")
+			}
 			draft := agentCanvasPatchForOperation(t, state, "generate_media_draft")
 			patch := draft["canvasPatch"].(map[string]any)
 			changes := creationMaps(patch["nodes"])
@@ -96,9 +102,9 @@ func TestCloudAgentCanvasPatchesPersistDraftSubmissionAndAllTerminalStates(t *te
 				}
 				previousRevision = delta["revision"]
 			}
-			history, err := s.CanvasHistory("user", "agent-canvas")
-			if err != nil || len(history.Snapshots) == 0 || float64(history.CurrentRevision) != previousRevision {
-				t.Fatalf("Agent save did not retain history/revision: %+v %v", history, err)
+			canvas, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+			if err != nil || float64(canvas.Revision) != previousRevision {
+				t.Fatalf("Agent save did not retain current revision: %+v %v", canvas, err)
 			}
 			changes = creationMaps(completion["nodes"])
 			if len(changes) != 1 || len(creationMaps(completion["connections"])) != 0 {
@@ -118,11 +124,52 @@ func TestCloudAgentCanvasPatchesPersistDraftSubmissionAndAllTerminalStates(t *te
 				t.Fatal(err)
 			}
 			var count int64
-			db.Model(&model.Task{}).Where("type = ?", "canvas_video").Count(&count)
+			if err := db.Model(&model.Task{}).Where("type = ?", "canvas_video").Count(&count).Error; err != nil {
+				t.Fatal(err)
+			}
 			if count != 1 {
 				t.Fatal("terminal handling resubmitted a charged task")
 			}
+			replayed, err := s.repo.CanvasProjectForUser("user", "agent-canvas")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replayed.Revision != canvas.Revision || replayed.PayloadJSON != canvas.PayloadJSON {
+				t.Fatal("terminal replay changed the persisted canvas or its revision")
+			}
+			run, err = s.repo.CloudAgent("user", run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, err = cloudAgentDecode(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, operation := range []string{"generate_media_draft", "generate_media_submit", "generate_media_complete"} {
+				agentCanvasPatchForOperation(t, state, operation)
+			}
+			canvasEvents := 0
+			for _, event := range state.Events {
+				if event.Type == "canvas_updated" {
+					canvasEvents++
+				}
+			}
+			if canvasEvents != 3 {
+				t.Fatalf("terminal replay emitted extra canvas events: %d", canvasEvents)
+			}
 		})
+	}
+}
+
+func TestCloudAgentPatchCoversProjectedRowMetadata(t *testing.T) {
+	before := map[string]any{"nodes": []any{}, "connections": []any{}}
+	after := map[string]any{"id": "canvas", "revision": float64(2), "createdAt": "2026-10-11T00:00:00Z", "updatedAt": "2026-10-11T01:00:00Z", "title": "", "projectId": "", "nodes": []any{}, "connections": []any{}}
+	if !cloudAgentPatchCoversDocument(before, after) {
+		t.Fatal("database row metadata and empty projected fields should not force a refresh")
+	}
+	after["title"] = "新标题"
+	if cloudAgentPatchCoversDocument(before, after) {
+		t.Fatal("a changed canvas title must still force a refresh")
 	}
 }
 

@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"database/sql"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -11,12 +13,56 @@ import (
 	"yingce/backend/internal/model"
 )
 
-func TestGmailMailboxRegistrationConcurrent(t *testing.T) {
-	dsn := filepath.Join(t.TempDir(), "users.db") + "?_busy_timeout=5000&_journal_mode=WAL"
+func openGmailMailboxTestDB(t *testing.T, dsn string) *gorm.DB {
+	t.Helper()
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registered after TempDir, so all connection pools close before removal.
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Errorf("close Gmail mailbox test database: %v", err)
+		}
+	})
+	return db
+}
+
+func TestGmailMailboxTestDBCleanupClosesConnections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.db")
+	var sqlDB *sql.DB
+	t.Run("connection owner", func(t *testing.T) {
+		db := openGmailMailboxTestDB(t, path+"?_busy_timeout=5000&_journal_mode=WAL")
+		var err error
+		sqlDB, err = db.DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := sqlDB.Ping(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if sqlDB == nil {
+		t.Fatal("test database was not opened")
+	}
+	if open := sqlDB.Stats().OpenConnections; open != 0 {
+		t.Fatalf("database connections after cleanup = %d, want 0", open)
+	}
+	if err := sqlDB.Ping(); err == nil {
+		t.Fatal("test database remains usable after cleanup")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove closed test database: %v", err)
+	}
+}
+
+func TestGmailMailboxRegistrationConcurrent(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "users.db") + "?_busy_timeout=5000&_journal_mode=WAL"
+	db := openGmailMailboxTestDB(t, dsn)
 	if err := db.AutoMigrate(&model.User{}, &model.EmailVerificationCode{}); err != nil {
 		t.Fatal(err)
 	}
@@ -29,14 +75,14 @@ func TestGmailMailboxRegistrationConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	start := make(chan struct{})
+	// Finish fallible setup before starting workers waiting on the start gate.
+	peers := make([]*gorm.DB, 2)
+	for i := range peers {
+		peers[i] = openGmailMailboxTestDB(t, dsn)
+	}
 	for i, email := range []string{"a.b+first@gmail.com", "ab+second@googlemail.com"} {
 		id := []string{"one", "two"}[i]
-		peer, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		sqlDB, _ := peer.DB()
-		t.Cleanup(func() { _ = sqlDB.Close() })
+		peer := peers[i]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -65,10 +111,7 @@ func TestGmailMailboxRegistrationConcurrent(t *testing.T) {
 }
 
 func TestGmailMailboxLegacyLookupsRemainExact(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openGmailMailboxTestDB(t, ":memory:")
 	if err := db.AutoMigrate(&model.User{}); err != nil {
 		t.Fatal(err)
 	}
@@ -93,12 +136,7 @@ func TestGmailMailboxLegacyLookupsRemainExact(t *testing.T) {
 func TestGmailMailboxVerificationEntryPoints(t *testing.T) {
 	for _, mode := range []string{"ticket", "oauth", "bind", "first-user"} {
 		t.Run(mode, func(t *testing.T) {
-			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			sqlDB, _ := db.DB()
-			t.Cleanup(func() { _ = sqlDB.Close() })
+			db := openGmailMailboxTestDB(t, ":memory:")
 			if err := db.AutoMigrate(&model.User{}, &model.AuthVerification{}, &model.UserIdentity{}, &model.CreditAccount{}); err != nil {
 				t.Fatal(err)
 			}
@@ -111,6 +149,7 @@ func TestGmailMailboxVerificationEntryPoints(t *testing.T) {
 			if err := db.Create(&v).Error; err != nil {
 				t.Fatal(err)
 			}
+			var err error
 			switch mode {
 			case "ticket":
 				err = r.CreateUserWithVerification(&user, v.ID)

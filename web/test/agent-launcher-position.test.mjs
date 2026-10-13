@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { runInNewContext } from "node:vm";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { clampAgentLauncherPosition, moveAgentLauncher, restoreAgentLauncherPosition } from "../src/lib/canvas/agent-launcher-position";
 
 const viewport = { width: 1280, height: 800 };
