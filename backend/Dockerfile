@@ -4,6 +4,9 @@ FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS payment-package-build
 
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=$GOPROXY
+# 部分镜像源（goproxy.cn / 阿里云 goproxy 等）会主动断开 Go 客户端的 HTTP/2 连接，
+# 表现为 “http2: server sent GOAWAY”，导致依赖下载随机失败且重试不稳定。
+ENV GODEBUG=http2client=0
 
 RUN apk add --no-cache nodejs unzip zip
 
@@ -13,7 +16,10 @@ COPY backend ./backend
 COPY plugin-packages ./plugin-packages
 ARG TARGETOS
 ARG TARGETARCH
-RUN --mount=type=cache,target=/root/.cache/go-build set -eu; \
+# 模块与编译缓存都挂到 BuildKit 缓存上：首次构建下载后，后续构建直接复用，
+# 既避开镜像源抖动，也不再把几 GB 依赖写进普通镜像层。
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build set -eu; \
     test -n "$TARGETOS"; \
     test -n "$TARGETARCH"; \
     PAYMENT_PLUGIN_GOOS="$TARGETOS" \
@@ -35,6 +41,8 @@ FROM golang:1.25-alpine AS backend-build
 
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=$GOPROXY
+# 与 payment-package-build 相同：禁用 HTTP/2，避免镜像源 GOAWAY 造成随机失败。
+ENV GODEBUG=http2client=0
 
 RUN apk add --no-cache build-base
 
@@ -45,17 +53,15 @@ COPY backend/go.mod backend/go.sum ./
 # 缺了它会报 "reading third_party/go-sms-sender/go.mod: no such file or directory"。
 # 后面 COPY backend ./ 会覆盖为完整源码，这里只为让依赖解析通过。
 COPY backend/third_party ./third_party
-# 模块保留在普通镜像层中，供后续编译及跨 Runner 的 GHA 层缓存复用。
-# 部分镜像源（goproxy.cn / 阿里云 goproxy 等）会主动断开 Go 客户端的 HTTP/2 连接，
-# 表现为 “http2: server sent GOAWAY”。这里禁用 HTTP/2 传输，让依赖下载走 HTTP/1.1；
-# 否则在本地与 CI 构建中会以随机模块失败，重试也不稳定。
-RUN GODEBUG=http2client=0 go mod download
+# 模块缓存在 BuildKit 缓存里，不进镜像层：重复构建不再重新下载整个依赖图。
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY backend ./
 COPY VERSION /src/VERSION
 ARG BUILD_VERSION
 ARG BUILD_COMMIT=unknown
 ARG BUILD_TIME=unknown
-RUN --mount=type=cache,target=/root/.cache/go-build set -eu; \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build set -eu; \
     version="${BUILD_VERSION:-$(tr -d '\r\n' </src/VERSION)}"; \
     ldflags="-s -w -X yingce/backend/internal/buildinfo.Version=${version} -X yingce/backend/internal/buildinfo.Commit=${BUILD_COMMIT} -X yingce/backend/internal/buildinfo.BuildTime=${BUILD_TIME}"; \
     CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="$ldflags" -o /out/yingce-backend ./cmd/server; \
