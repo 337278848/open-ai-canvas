@@ -438,6 +438,8 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     const requestedConfig: AiConfig = {
         ...config,
         quality: node?.metadata?.quality ?? workflowParameterValue("quality") ?? config.quality ?? defaultConfig.quality,
+        imageResolution: node?.metadata?.imageResolution ?? workflowParameterValue("imageResolution") ?? config.imageResolution ?? defaultConfig.imageResolution,
+        imageParameters: node?.metadata?.imageParameters ?? workflowParameterValue("imageParameters") ?? config.imageParameters ?? "{}",
         size: workflowProvider === "model" ? (node?.metadata?.size ?? config.size ?? defaultConfig.size) : workflowOutputSize || node?.metadata?.size || config.size || defaultConfig.size,
         transparentBackground: node?.metadata?.transparentBackground ?? config.transparentBackground ?? defaultConfig.transparentBackground,
         videoSeconds:
@@ -463,6 +465,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     // 无 requirements 的调用（重试、媒体工具等）也按当前能力与尺寸路由到组内最低价兼容模型，
     // 避免旧 metadata.model 不支持当前尺寸导致生成时被 normalize 回退。
     const liveOptions = modelRequestOptions(requestedConfig, mode);
+<<<<<<< HEAD
     const baseRequirements = requirements?.capability
         ? { ...requirements, options: { ...liveOptions, ...(requirements.options || {}) } }
         : { capability: mode, options: liveOptions };
@@ -504,6 +507,46 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
               },
           )
         : {};
+=======
+    const baseRequirements = requirements?.capability ? { ...requirements, options: { ...liveOptions, ...(requirements.options || {}) } } : { capability: mode, options: liveOptions };
+    const model = workflowProvider === "model" ? resolveCompatibleModel(config, preferredModel, imageSize ? { ...baseRequirements, imageSize } : baseRequirements) || preferredModel : preferredModel;
+    const generationDefaults: Partial<ModelGenerationDefaults> =
+        workflowProvider === "model"
+            ? resolveModelGenerationDefaults(
+                  config,
+                  model,
+                  mode === "image" ? "image" : mode === "video" ? "video" : undefined,
+                  mode === "image"
+                      ? {
+                            size: node?.metadata?.size,
+                            imageResolution: node?.metadata?.imageResolution,
+                            imageParameters: node?.metadata?.imageParameters,
+                            quality: node?.metadata?.quality,
+                            transparentBackground: node?.metadata?.transparentBackground,
+                            count: requestedConfig.count,
+                        }
+                      : {
+                            size: node?.metadata?.size,
+                            videoSeconds: node?.metadata?.seconds,
+                            vquality: node?.metadata?.vquality,
+                            videoGenerateAudio: node?.metadata?.generateAudio,
+                            videoWatermark: node?.metadata?.watermark,
+                        },
+                  {
+                      size: requestedConfig.size,
+                      imageResolution: requestedConfig.imageResolution,
+                      imageParameters: requestedConfig.imageParameters,
+                      quality: requestedConfig.quality,
+                      transparentBackground: requestedConfig.transparentBackground,
+                      count: requestedConfig.count,
+                      videoSeconds: requestedConfig.videoSeconds,
+                      vquality: requestedConfig.vquality,
+                      videoGenerateAudio: requestedConfig.videoGenerateAudio,
+                      videoWatermark: requestedConfig.videoWatermark,
+                  },
+              )
+            : {};
+>>>>>>> upstream/main
     const modeCapability = mode === "video" || mode === "audio" ? mode : "image";
     const runningHubCapability = normalizeRunningHubCapability(selectedRunningHubWorkflow?.capability, normalizeRunningHubCapability(config.runningHub.capability));
     const runningHub = {
@@ -527,6 +570,8 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         runningHub,
         model,
         quality: generationDefaults.quality || requestedConfig.quality,
+        imageResolution: generationDefaults.imageResolution || requestedConfig.imageResolution,
+        imageParameters: generationDefaults.imageParameters ?? requestedConfig.imageParameters,
         size: generationDefaults.size ?? requestedConfig.size,
         transparentBackground: generationDefaults.transparentBackground || (requestedConfig.transparentBackground === "true" ? "true" : "false"),
         videoSeconds: generationDefaults.videoSeconds ?? requestedConfig.videoSeconds,

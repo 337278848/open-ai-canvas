@@ -5,6 +5,13 @@ import test from "node:test";
 import { DEFAULT_VIDEO_PROMPT_MAX_CHARS, defaultModelCapabilityConfig, normalizeImageValue, normalizeVideoValue } from "../src/lib/model-capabilities.ts";
 import { modelCapabilityConfigFor } from "../src/lib/model-capabilities.ts";
 import { imageTierAvailable, imageResolutionTiers } from "../src/lib/image-size-presets.ts";
+import { workflowFieldIsRatioChoices } from "../src/lib/model-capabilities-workflow.ts";
+
+test("workflow ratio choices use the direct selection control only for ratio values", () => {
+    const field = { fieldName: "aspectRatio", fieldType: "SELECT", options: ["auto", "9:16", "16:9", "21:9"] };
+    assert.equal(workflowFieldIsRatioChoices(field), true);
+    assert.equal(workflowFieldIsRatioChoices({ ...field, options: ["fast", "quality"] }), false);
+});
 
 test("Kemei Seedream defaults retain official 1K/1.5K/2K sizes without a 4K preset", () => {
     for (const model of ["doubao-seedream-5-0-pro-260628", "doubao-seedream-5-0-flash-260915"]) {
@@ -27,6 +34,20 @@ test("text multimodal capability is not guessed from a model name", () => {
         const text = defaultModelCapabilityConfig(undefined, model).text!;
         assert.equal(text.references.maxImages, 0);
         assert.equal(text.references.maxVideos, 0);
+    }
+});
+
+test("MiniMax H3 and METASO offer every duration from 4 to 30 seconds", () => {
+    for (const protocol of ["minimax-video", "metaso-h3"]) {
+        const profile = defaultModelCapabilityConfig(protocol, "MiniMax-H3").video!;
+        assert.deepEqual(
+            profile.duration.values,
+            Array.from({ length: 27 }, (_, index) => index + 4),
+        );
+        assert.equal(profile.duration.default, 5);
+        for (const seconds of ["4", "15", "16", "20", "30"]) {
+            assert.equal(normalizeVideoValue(profile, { seconds, ratio: "16:9", resolution: "768P" }).seconds, seconds);
+        }
     }
 });
 

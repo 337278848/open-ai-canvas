@@ -3,10 +3,11 @@ import { App, Spin } from "antd";
 import { Tooltip } from "@/components/ui/base/tooltip";
 import { History, Sparkles, Maximize2 } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useNavigate, useLocation } from "react-router";
+import { useNavigate } from "react-router";
 
 import type { AssetLibraryPickerItem } from "@/components/assets/asset-library-picker-modal";
 import { generationErrorCode, generationErrorMessage } from "@/lib/generation-error";
+import { imageParameterRequest, normalizeImageParameters } from "@/lib/image-parameters";
 import { creationResultAssetIds } from "@/lib/canvas/canvas-asset-handoff";
 import { getActiveUserScope } from "@/lib/user-scope";
 import { continueCreationConversationOnCanvas } from "@/services/creation-canvas-conversation";
@@ -18,9 +19,10 @@ import type { BackendGenerationResult } from "@/services/api/generation-task";
 import type { Skill } from "@/services/api/skills";
 import type { GenerationTask } from "@/services/api/task-center";
 import { loadCreationConversations, pendingCreationTaskIds, removeCreationConversationSnapshot, saveCreationConversations, updateCreationConversationSnapshot } from "@/services/creation-conversation-store";
-import { resolveModelChannel, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
+import { resolveModelChannel, resolveModelRequestConfig, selectableModelsByCapability, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
 import { useCreationPreferencesStore } from "@/stores/use-creation-preferences-store";
 import { useAssetStore, type Asset } from "@/stores/use-asset-store";
+import { loadAssetsForUse } from "@/services/user-data-sync";
 import { useAppearanceStore } from "@/stores/use-appearance-store";
 import { cn } from "@/lib/utils";
 import { useUserStore } from "@/stores/use-user-store";
@@ -28,19 +30,22 @@ import type { PromptOptimizerProvider } from "@/lib/plugins/plugin-types";
 import { promptOptimizerPlugin, PROMPT_OPTIMIZER_PLUGIN_ID } from "@/lib/plugins/builtin/prompt-optimizer";
 import { createPluginHostContext } from "@/services/plugin-host";
 import { usePluginStore } from "@/stores/use-plugin-store";
-import { buildCreationMentionReferences, expandCreationPrompt, reconcileCreationAttachmentLimit, reconcileCreationAttachmentLimits, removeCreationReferenceTokens, replaceCreationAttachmentReference, selectedCreationReferences, type CreationReference, type CreationReferenceLimits } from "./creation-references";
-import { creationAttachmentFromAsset, creationAttachmentFromAudio, creationAttachmentFromAudioAsset, creationAttachmentFromDocument, creationAttachmentFromExternalAsset, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentFromVideoAsset, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, creationVideoAsset, removeCreationAttachment, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
+import { buildCreationMentionReferences, expandCreationPrompt, reconcileCreationAttachmentLimit, reconcileCreationAttachmentLimits, removeCreationReferenceTokens, replaceCreationAttachmentReference, selectedCreationReferences, type CreationReference } from "./creation-references";
+import { creationAttachmentFromAudio, creationAttachmentFromDocument, creationAttachmentFromImage, creationAttachmentFromVideo, creationAttachmentKind, creationAudioAsset, creationFileAccepted, creationImageAsset, creationMediaAspectRatio, creationUploadAccept, creationVideoAsset, removeCreationAttachment, splitCreationAttachments, type CreationAttachment } from "./creation-assets";
+import { creationLibraryDisabledReason, creationLibrarySelectionToAttachments } from "./creation-library";
 import { defaultCreationMode, modeLabels, type CreationConversation, type CreationMessage, type CreationMode, type CreationRetryContext, type CreationSettings, type CreationShotRailEntry, type CreationStatus } from "./creation-types";
 import { attachCreationTaskContexts, completedCreationGenerationTask, conversationTimestamp, creationShotRail, creationVideoShotOrdinal, isImageAttachment, isVideoAttachment, materializeCreationTaskResults, newConversation, newMessage, reconcileCreationTaskMessages } from "./creation-conversations";
 import { CreationComposer, CreationEmptySuggest, CreationHistoryDrawer, CreationMessageView, CreationModeTabs, CreationWorkspaceToolbar, creationAssetCategoryLabels } from "./creation-workspace";
-import { CreationInspirationTunnel } from "./creation-inspiration-tunnel";
 import { declaredInspirationSources } from "@/lib/inspirations/catalog";
+import { fillablePrompt } from "@/lib/inspirations/resolve";
+import { CreationRecentCanvases } from "./creation-recent-canvases";
 import { CreationAgentEntry } from "./creation-agent-entry";
 import { createCreationSubmitGate } from "./creation-submit-gate";
 import { creationVideoConfig } from "./creation-generation-config";
 import { CreationLoginDialog } from "./creation-login-dialog";
 
 const AssetLibraryPickerModal = lazy(() => import("@/components/assets/asset-library-picker-modal").then((module) => ({ default: module.AssetLibraryPickerModal })));
+const InspirationHall = lazy(() => import("@/pages/inspirations"));
 const loadCreationRuntime = () => import("./creation-runtime");
 type CreationRuntime = Awaited<ReturnType<typeof loadCreationRuntime>>;
 
@@ -105,17 +110,6 @@ export function creationVideoSelectionRequirements(requirements: ModelRequiremen
 const TEXT_STREAMING_PREF_KEY = "creation.composer.text-streaming";
 const TEXT_THINKING_PREF_KEY = "creation.composer.text-thinking";
 
-function creationLibraryDisabledReason(mode: CreationMode, kind: string | undefined, videoLimits?: CreationReferenceLimits) {
-    if (!kind) return undefined;
-    if (mode === "image") return kind === "image" ? undefined : "图片创作仅支持参考图";
-    if (mode !== "video") return undefined;
-
-    const maximum = kind === "image" ? videoLimits?.maxImages : kind === "video" ? videoLimits?.maxVideos : kind === "audio" ? videoLimits?.maxAudios : 0;
-    if ((maximum || 0) > 0) return undefined;
-    const label = kind === "video" ? "视频" : kind === "audio" ? "音频" : kind === "image" ? "图片" : "此类素材";
-    return `当前视频模型不支持参考${label}`;
-}
-
 function readComposerPref(key: string, fallback: boolean): boolean {
     try {
         const stored = window.localStorage.getItem(key);
@@ -136,7 +130,6 @@ export default function CreatePage() {
     const [agentMode, setAgentMode] = useState(false);
     const { message: toast, modal } = App.useApp();
     const navigate = useNavigate();
-    const location = useLocation();
     const [openingCanvas, setOpeningCanvas] = useState(false);
     const openingCanvasRef = useRef(false);
     const brandName = useAppearanceStore((state) => state.appearance.brandName);
@@ -176,6 +169,12 @@ export default function CreatePage() {
     const [explicitVideoSettings, setExplicitVideoSettings] = useState<Partial<CreationVideoSettings>>({});
     const initialVideoModelRef = useRef(config.videoModel);
     const [quality, setQuality] = useState("auto");
+<<<<<<< HEAD
+=======
+    const [imageResolution, setImageResolution] = useState("auto");
+    const [imageParameters, setImageParameters] = useState("{}");
+    const [videoQuality, setVideoQuality] = useState(config.vquality || "720");
+>>>>>>> upstream/main
     const [count, setCount] = useState(String(Math.max(1, Math.min(4, Number(config.count) || 1))));
     const [textStreaming, setTextStreaming] = useState(() => readComposerPref(TEXT_STREAMING_PREF_KEY, true));
     const [textThinking, setTextThinking] = useState(() => readComposerPref(TEXT_THINKING_PREF_KEY, false));
@@ -228,6 +227,7 @@ export default function CreatePage() {
         },
         imageSize: mode === "image" ? ratio : undefined,
 		options: mode === "image"
+<<<<<<< HEAD
 			? { size: ratio, quality, count: Number(count), transparentBackground: config.transparentBackground === "true" }
 			: {},
 	}), [attachments, config.transparentBackground, count, hasPrompt, mentionReferences, mode, prompt, quality, ratio, videoSettings]);
@@ -237,6 +237,14 @@ export default function CreatePage() {
     const generationBlockedReason = mode === "video" && attachments.some((attachment) => creationAttachmentKind(attachment) === "file")
         ? "视频创作不支持文档参考，请手动移除文档或切回文本创作"
         : videoApplicability && videoApplicability.status !== "ready" ? videoApplicability.reason || "当前模型不适用于此任务，请调整需求或选择其他模型" : undefined;
+=======
+            ? imageParameterRequest(modelCapabilityConfigFor(config, preferredModel).image!, { ...config, size: ratio, imageResolution, quality, count, imageParameters }) ?? { size: ratio, imageResolution, quality, count: Number(count), transparentBackground: config.transparentBackground === "true" }
+			: mode === "video"
+				? { size: ratio, videoSeconds: Number(seconds), vquality: videoQuality }
+				: {},
+    }), [attachments, config, preferredModel, count, hasPrompt, imageResolution, imageParameters, mode, quality, ratio, seconds, videoQuality]);
+    const selectedModel = resolveCompatibleModel(config, preferredModel, modelRequirements) || preferredModel;
+>>>>>>> upstream/main
     const generationConfig = useMemo(() => mode === "video"
         ? creationVideoConfig(config, selectedModel, { ratio, seconds, videoQuality })
         : config, [config, mode, ratio, seconds, selectedModel, videoQuality]);
@@ -297,10 +305,14 @@ export default function CreatePage() {
         const normalized = normalizeImageValue(imageProfile, {
             size: saved?.ratio || imageProfile.size.default,
             quality: saved?.quality || imageProfile.quality.default,
+            imageResolution: saved?.imageResolution || imageProfile.resolution.default,
+            imageParameters: saved?.model === selectedModel ? saved.imageParameters : undefined,
             count: saved?.count || count,
         });
         setRatio(normalized.size);
         setQuality(normalized.quality);
+        setImageResolution(normalized.imageResolution || imageProfile.resolution.default);
+        setImageParameters(JSON.stringify(normalizeImageParameters(imageProfile.parameters, saved?.model === selectedModel ? saved.imageParameters : undefined)));
         setCount(normalized.count);
     }, [composerPreferencesHydrated, composerPreferencesInitialized, mode, selectedModel, imageProfile]);
 
@@ -448,21 +460,6 @@ export default function CreatePage() {
         }
     };
 
-    // 灵感库「用这个创意创作」跳过来时把提示词和类型带上。
-    // 用完立刻清掉路由状态：留着的话，用户前进后退回到这一页会被重复填充一次。
-    const inspirationHandoff = location.state as { inspirationPrompt?: string; inspirationMode?: CreationMode } | null;
-    useEffect(() => {
-        const handoffPrompt = inspirationHandoff?.inspirationPrompt;
-        if (!handoffPrompt) return;
-        setAgentMode(false);
-        if (inspirationHandoff?.inspirationMode) selectMode(inspirationHandoff.inspirationMode);
-        setPrompt(handoffPrompt);
-        navigate(".", { replace: true, state: null });
-        window.requestAnimationFrame(() => composerFocusRef.current?.focus());
-        // selectMode 每次渲染都是新函数，放进依赖会让本效果反复触发；靠 state 置空来收敛即可。
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [inspirationHandoff, navigate]);
-
     const setComposerRatio = (value: string) => {
         if (mode === "video") setExplicitVideoSettings((current) => ({ ...current, ratio: value }));
         else setRatio(value);
@@ -476,6 +473,10 @@ export default function CreatePage() {
     const setComposerQuality = (value: string) => {
         setQuality(value);
         if (mode === "image") rememberImageSettings({ quality: value });
+    };
+    const setComposerImageResolution = (value: string) => {
+        setImageResolution(value);
+        if (mode === "image") rememberImageSettings({ imageResolution: value });
     };
     const setComposerVideoQuality = (value: string) => {
         setExplicitVideoSettings((current) => ({ ...current, videoQuality: value }));
@@ -547,16 +548,13 @@ export default function CreatePage() {
         return assetIds;
     };
 
-    const handleLibrarySelect = (selectedIds: string[]) => {
-        const next = selectedIds.flatMap((id): CreationAttachment[] => {
-            const asset = assets.find((item) => item.id === id);
-            if (asset?.kind === "image") return [creationAttachmentFromAsset(asset)];
-            if (asset?.kind === "video" && mode !== "image") return [creationAttachmentFromVideoAsset(asset)];
-            if (asset?.kind === "audio" && mode !== "image") return [creationAttachmentFromAudioAsset(asset)];
-            const external = libraryItems.find((item) => item.id === id)?.external;
-            return external ? [creationAttachmentFromExternalAsset(external)] : [];
-        });
+    const handleLibrarySelect = async (selectedIds: string[], pickedItems = libraryItems) => {
+        const next = creationLibrarySelectionToAttachments(selectedIds, pickedItems, mode, videoReferenceLimits);
         if (!next.length) return;
+        const selected = new Set(selectedIds);
+        const cachedIds = new Set(useAssetStore.getState().assets.map((asset) => asset.id));
+        const uncachedAssetIds = pickedItems.filter((item) => item.asset && selected.has(item.id) && !cachedIds.has(item.id)).map((item) => item.id);
+        if (uncachedAssetIds.length) await loadAssetsForUse(uncachedAssetIds);
         setAttachments((current) => {
             const candidates = [...current.filter((item) => !next.some((candidate) => candidate.id === item.id)), ...next];
             const reconciled = mode === "video" && videoReferenceLimits
@@ -766,11 +764,17 @@ export default function CreatePage() {
         const controller = new AbortController();
         const requestLifecycle = runtime.beginGenerationConsumer(controller.signal);
         abortRef.current = controller;
-        const normalizedImage = mode === "image" ? normalizeImageValue(imageProfile, { size: ratio, quality, count }) : undefined;
+        const normalizedImage = mode === "image"
+            ? imageProfile.parameters
+                ? { size: ratio, quality, imageResolution, imageParameters, count }
+                : normalizeImageValue(imageProfile, { size: ratio, quality, imageResolution, imageParameters, count }, resolveModelRequestConfig(config, selectedModel).interfaceType)
+            : undefined;
         const requestConfig = {
             ...generationConfig,
             model: selectedModel,
             imageModel: selectedModel,
+            imageResolution: normalizedImage?.imageResolution || imageResolution,
+            imageParameters: normalizedImage?.imageParameters || imageParameters,
             videoModel: selectedModel,
             textModel: selectedModel,
             ...(mode === "image"
@@ -1081,6 +1085,13 @@ export default function CreatePage() {
 
 
     const generationActive = activeConversation.messages.some((message) => message.role === "assistant" && message.status === "pending");
+    const startPrompt = (nextMode: CreationMode, nextPrompt: string) => {
+        setAgentMode(false);
+        selectMode(nextMode);
+        setPrompt(nextPrompt);
+        threadScrollRef.current?.scrollTo({ top: 0, behavior: reducedMotion ? "auto" : "smooth" });
+        window.requestAnimationFrame(() => composerFocusRef.current?.focus({ preventScroll: true }));
+    };
 
     const composerProps = {
         mode,
@@ -1122,6 +1133,11 @@ export default function CreatePage() {
         setSeconds: setComposerSeconds,
         quality,
         setQuality: setComposerQuality,
+        imageResolution,
+        setImageResolution: setComposerImageResolution,
+        imageParameters,
+        setImageParameters: (value: string) => { setImageParameters(value); rememberImageSettings({ model: selectedModel, imageParameters: value }); },
+        setTransparentBackground: (value: string) => useConfigStore.getState().updateConfig("transparentBackground", value),
         videoQuality,
         setVideoQuality: setComposerVideoQuality,
         videoGenerateAudio: videoSettings.videoGenerateAudio,
@@ -1144,9 +1160,6 @@ export default function CreatePage() {
     return <>
         <div className="creation-home relative flex h-full min-h-0 flex-col overflow-hidden">
             {isEmpty ? <>
-                <div className="creation-top-actions">
-                    <Tooltip title="历史对话"><button type="button" aria-label="查看历史对话" aria-expanded={historyOpen} className="creation-top-action" onClick={() => setHistoryOpen(true)}><History /></button></Tooltip>
-                </div>
                 <AnimatePresence>
                     {launchpadCondensed && !agentMode ? <motion.div className="creation-floating-prompt" key="floating-prompt"
                         style={{ x: "-50%" }}
@@ -1160,26 +1173,29 @@ export default function CreatePage() {
                         }}><Maximize2 /></button></Tooltip>
                     </motion.div> : null}
                 </AnimatePresence>
-                <main ref={threadScrollRef} onScroll={handleThreadScroll} className="creation-empty-workspace creation-scrollbar">
-                <div className="creation-home-heading">
-                    <h1>和{brandName}聊聊创作想法</h1>
-                    <p>从一个画面、一个角色或一句话开始，继续你的创作。</p>
-                </div>
-                <CreationInspirationTunnel
-                    mode={mode}
-                    onStartPrompt={(nextMode, prompt) => { setAgentMode(false); selectMode(nextMode); setPrompt(prompt); window.requestAnimationFrame(() => composerFocusRef.current?.focus()); }}
-                />
+                <main ref={threadScrollRef} onScroll={handleThreadScroll} className="creation-home-scroll creation-scrollbar">
                 <section ref={launchpadRef} className="creation-launchpad" aria-label="开始创作">
+                    <header className="creation-start-heading">
+                        <div>
+                            <h1>和{brandName}聊聊创作想法</h1>
+                            <p>从一个画面、一个角色或一句话开始。</p>
+                        </div>
+                        <button type="button" className="creation-history-entry" aria-label="查看历史对话" aria-expanded={historyOpen} onClick={() => setHistoryOpen(true)}><History aria-hidden="true" /><span>历史对话</span></button>
+                    </header>
                     <div className={cn("creation-composer-stage is-home-mode", agentMode && "is-agent-mode")}>
                         <CreationModeTabs mode={mode} agentActive={agentMode} onAgentSelect={() => setAgentMode(true)} onModeChange={(next) => { setAgentMode(false); selectMode(next); }} />
                         {agentMode ? <CreationAgentEntry /> : <div className="creation-empty-composer"><CreationComposer {...composerProps} variant="empty" /></div>}
                     </div>
                     <CreationEmptySuggest
-                        onStartPrompt={(nextMode, prompt) => { setAgentMode(false); selectMode(nextMode); setPrompt(prompt); window.requestAnimationFrame(() => composerFocusRef.current?.focus()); }}
+                        onStartPrompt={startPrompt}
                         onOpenLibrary={() => { setAgentMode(false); selectMode("image"); setLibraryOpen(true); }}
                     />
                 </section>
-                {inspirationSourcesVisible ? <div className="creation-inspiration-credit">
+                <CreationRecentCanvases onRequireLogin={() => setLoginDialogOpen(true)} />
+                <Suspense fallback={<div className="creation-hall-loading" role="status">正在准备灵感大厅…</div>}>
+                    <InspirationHall onUse={(item) => startPrompt(item.mode, fillablePrompt(item))} />
+                </Suspense>
+                {inspirationSourcesVisible ? <div className="creation-source-notice">
                     <details>
                         <summary>素材来源</summary>
                         {declaredInspirationSources().map((source) => (
@@ -1218,6 +1234,8 @@ export default function CreatePage() {
         <CreationLoginDialog open={loginDialogOpen} onClose={() => setLoginDialogOpen(false)} />
         {libraryOpen ? <Suspense fallback={null}><AssetLibraryPickerModal
             remoteLibrary
+            acceptRemoteItems
+            remoteItemDisabledReason={(asset) => creationLibraryDisabledReason(mode, asset.kind, videoReferenceLimits)}
             open={libraryOpen}
             items={libraryItems}
             categoryLabels={{ ...creationAssetCategoryLabels, ...externalAssetSources.categoryLabels }}

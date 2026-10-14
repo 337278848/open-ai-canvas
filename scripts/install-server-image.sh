@@ -339,6 +339,9 @@ prepare_environment() {
     step "生成 PostgreSQL 随机密码和部署配置"
     local database_password
     database_password="$(openssl rand -hex 32)"
+    CANVAS_BACKEND_IMAGE="${IMAGE_REPOSITORY}-backend:${CANVAS_IMAGE_TAG}"
+    CANVAS_WEB_IMAGE="${IMAGE_REPOSITORY}-web:${CANVAS_IMAGE_TAG}"
+    CANVAS_YINGCE_AGENT_IMAGE="${IMAGE_REPOSITORY}-yingce-agent:${CANVAS_IMAGE_TAG}"
     umask 077
     local temporary_env
     temporary_env="$(mktemp "${INSTALL_DIR}/.env.XXXXXX")"
@@ -460,6 +463,9 @@ install_host_updater() {
     INSTALL_DIR="$INSTALL_DIR" REPOSITORY="$UPDATER_REPOSITORY" IMAGE_REPOSITORY="$IMAGE_REPOSITORY" \
         CANVAS_UPDATER_SOCKET_DIR="$CANVAS_UPDATER_SOCKET_DIR" bash "$installer"
     rm -f "$installer"
+
+    step "重建 backend 以启用在线更新"
+    docker compose --env-file .env -f "$COMPOSE_FILE" up -d --no-deps --force-recreate --wait --wait-timeout 600 backend
 }
 
 pull_and_pin_images() {
