@@ -1,10 +1,4 @@
 services:
-  yingce-agent:
-    image: open-ai-canvas-yingce-agent:server
-    build:
-      context: .
-      dockerfile: yingce-agent/Dockerfile
-
   migrate:
     image: open-ai-canvas-backend:server
     build:
