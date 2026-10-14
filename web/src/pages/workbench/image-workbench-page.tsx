@@ -247,13 +247,8 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
         videoGenerateAudio: config.videoGenerateAudio, videoWatermark: config.videoWatermark,
     }, submittedPrompt, references) : null, [config, kind, ratio, references, seconds, selectedModel, submittedPrompt, videoQuality]);
     const composerConfig = useMemo(
-<<<<<<< HEAD
-        () => videoRequest?.config || { ...config, model: selectedModel, imageModel: selectedModel, size: ratio, quality, count },
-        [config, count, quality, ratio, selectedModel, videoRequest],
-=======
-        () => (kind === "video" && selectedModel ? creationVideoConfig(config, selectedModel, { ratio, seconds, videoQuality }) : { ...config, model: selectedModel, imageModel: selectedModel, size: ratio, quality, imageResolution, count }),
-        [config, count, imageResolution, kind, quality, ratio, seconds, selectedModel, videoQuality],
->>>>>>> upstream/main
+        () => videoRequest?.config || { ...config, model: selectedModel, imageModel: selectedModel, size: ratio, quality, imageResolution, count },
+        [config, count, imageResolution, quality, ratio, selectedModel, videoRequest],
     );
 
     useEffect(() => {
@@ -333,15 +328,9 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                 audioCount: references.filter((reference) => reference.kind === "audio").length,
                 characterCount: 0,
             },
-<<<<<<< HEAD
-            imageSize: ratio, options: { size: ratio, quality, count: selectedCount },
+            ...(kind === "image" ? { imageSize: ratio, options: { size: ratio, quality, ...(imageProfile?.resolution.supported ? { imageResolution } : {}), count: selectedCount } } : {}),
         }),
-        [capability, quality, ratio, references, selectedCount, submittedPrompt, videoRequest],
-=======
-            ...(kind === "image" ? { imageSize: ratio, options: { size: ratio, quality, ...(imageProfile?.resolution.supported ? { imageResolution } : {}), count: selectedCount } } : { videoSeconds: seconds, options: { size: ratio, videoSeconds: Number(seconds), vquality: videoQuality } }),
-        }),
-        [capability, imageProfile, imageResolution, kind, prompt, quality, ratio, references, seconds, selectedCount, videoQuality],
->>>>>>> upstream/main
+        [capability, imageProfile, imageResolution, kind, quality, ratio, references, selectedCount, submittedPrompt, videoRequest],
     );
 
     useEffect(() => {
@@ -567,11 +556,6 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
     };
 
     const submit = async () => {
-<<<<<<< HEAD
-=======
-        const revision = workbenchRevisionRef.current;
-        const submittedPrompt = normalizeCanvasNodeMentionTokens(prompt.trim(), promptReferences);
->>>>>>> upstream/main
         if (tool?.inputContract?.promptRequired && !submittedPrompt) {
             message.warning("当前工具需要填写提示词");
             return;
@@ -616,12 +600,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
             return;
         }
         try {
-<<<<<<< HEAD
-            const imageRequest = kind === "image" && imageProfile ? normalizeImageValue(imageProfile, { size: ratio, quality, count, transparentBackground: config.transparentBackground }) : null;
-=======
             const imageRequest = kind === "image" && imageProfile ? normalizeImageValue(imageProfile, { size: ratio, quality, imageResolution, imageParameters: config.imageParameters, count, transparentBackground: config.transparentBackground }) : null;
-            const videoRequest = kind === "video" && videoProfile ? normalizeVideoValue(videoProfile, { seconds, ratio, resolution: videoQuality }) : null;
->>>>>>> upstream/main
             const parameters = imageRequest
                 ? { size: imageRequest.size, quality: imageRequest.quality, imageResolution: imageRequest.imageResolution, count: Number(imageRequest.count) }
                 : {
@@ -634,13 +613,8 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
             const generationConfig = {
                 ...composerConfig,
                 model: selectedModel,
-<<<<<<< HEAD
-                ...(imageRequest ? { imageModel: selectedModel, size: imageRequest.size, quality: imageRequest.quality, count: imageRequest.count } : {}),
-                ...(admittedVideo ? admittedVideo.config : {}),
-=======
                 ...(imageRequest ? { imageModel: selectedModel, size: imageRequest.size, quality: imageRequest.quality, imageResolution: imageRequest.imageResolution, count: imageRequest.count } : {}),
-                ...(videoRequest ? { videoModel: selectedModel, size: videoRequest.ratio, videoSeconds: videoRequest.seconds, vquality: videoRequest.resolution.replace(/p$/i, "") } : {}),
->>>>>>> upstream/main
+                ...(admittedVideo ? admittedVideo.config : {}),
             };
             const readyReferences = references.filter((reference) => reference.resourceId);
             const referenceSnapshot = readyReferences.map((reference) => ({ resourceId: reference.resourceId!, kind: reference.kind, role: reference.role, ...(reference.slotKey ? { slotKey: reference.slotKey } : {}) }));
@@ -703,7 +677,6 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                               ...(tool && preset ? { workbenchPresetId: preset.id } : {}),
                               workbench: { kind, ...(tool ? { toolId: tool.id } : {}), ...(tool && preset ? { presetId: preset.id } : {}), parameters, references: referenceSnapshot },
                           },
-<<<<<<< HEAD
                       })
                 );
             };
@@ -716,17 +689,6 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                 return;
             }
             if (result.detailError) message.warning(`任务 ${result.task.id} 已提交，详情暂不可用，请勿重复生成；可重查此任务`);
-=======
-                      });
-            const task = await queryGenerationTask(createdTask.id);
-            setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
-            if (revision === workbenchRevisionRef.current) {
-                setResultHidden(false);
-                setActiveTask(task);
-                setMobileTab("result");
-            }
-            message.success("生成任务已提交");
->>>>>>> upstream/main
         } catch (error) {
             message.error(error instanceof Error ? error.message : "任务提交失败");
             setBusy(false);
@@ -1260,22 +1222,8 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                                         config={config}
                                         value={selectedModel}
                                         capability={capability}
-<<<<<<< HEAD
                                         requirements={quoteRequirements}
                                         selectionRequirements={videoRequest?.selectionRequirements}
-=======
-                                        requirements={{
-                                            capability,
-                                            input: {
-                                                textCount: prompt.trim() ? 1 : 0,
-                                                imageCount: references.filter((reference) => reference.kind === "image").length,
-                                                videoCount: references.filter((reference) => reference.kind === "video").length,
-                                                audioCount: references.filter((reference) => reference.kind === "audio").length,
-                                                characterCount: 0,
-                                            },
-                                            ...(kind === "image" ? { imageSize: ratio, options: { size: ratio, quality, ...(imageProfile?.resolution.supported ? { imageResolution } : {}), count: selectedCount } } : { videoSeconds: seconds, options: { size: ratio, videoSeconds: Number(seconds), vquality: videoQuality } }),
-                                        }}
->>>>>>> upstream/main
                                         variant="creation"
                                         fullWidth
                                         className="creation-model-picker workbench-model-picker"
@@ -1296,7 +1244,6 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                                         </a>
                                     </div>
                                 )}
-<<<<<<< HEAD
                                 <div className="workbench-dock-actions">
                                     <Button
                                         className="workbench-submit"
@@ -1308,13 +1255,6 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                                         <span>{kind === "image" ? "生成图片" : "生成视频"}</span>
                                         <small>{estimateLabel}</small>
                                     </Button>
-=======
-                                <div className="workbench-submit-estimate" aria-live="polite">
-                                    <span className="workbench-submit-estimate-label">{estimateLabel || "预估可用积分"}</span>
-                                    {selectedModel ? (
-                                        <span className="workbench-submit-estimate-model">使用 {modelDisplayName(config, selectedModel)}</span>
-                                    ) : null}
->>>>>>> upstream/main
                                 </div>
                                 <Button
                                     className="workbench-submit"
@@ -1477,11 +1417,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                                     historyTasks
                                         .filter((task) => !query.trim() || task.prompt.toLowerCase().includes(query.trim().toLowerCase()))
                                         .slice(0, 30)
-<<<<<<< HEAD
-                                        .map((task) => <TaskRow key={task.id} task={task} kind={kind} busy={taskBusyId === task.id} onOpen={() => void openDetail(task)} onRetry={canRetryWorkbenchTask(task) ? () => void retryTask(task) : undefined} />)
-=======
-                                        .map((task) => <TaskRow key={task.id} task={task} kind={kind} modelLabel={taskModelLabel(task)} busy={taskBusyId === task.id} onOpen={() => void openDetail(task)} onRetry={() => void retryTask(task)} />)
->>>>>>> upstream/main
+                                        .map((task) => <TaskRow key={task.id} task={task} kind={kind} modelLabel={taskModelLabel(task)} busy={taskBusyId === task.id} onOpen={() => void openDetail(task)} onRetry={canRetryWorkbenchTask(task) ? () => void retryTask(task) : undefined} />)
                                 )}
                                 {!tasksLoading && !historyTasks.length ? <p className="workbench-list-empty">完成的作品会保留在这里</p> : null}
                             </div>

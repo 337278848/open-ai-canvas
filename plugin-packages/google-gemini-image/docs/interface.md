@@ -39,7 +39,7 @@
 | `create.path` | `"/v1beta/models/{{model}}:generateContent"` |
 | `create.contentType` | `"application/json"` |
 | `create.body.contents[0].role` | `"user"` |
-| `create.body.contents[0].parts` | `{"$concatArrays":[{"$if":{"condition":{"$ne":[{"$trim":{"$ref":"request.prompt"}},""]},"then":[{"text":{"$ref":"request.prompt"}}],"else":[]}},{"$map":{"from":{"$ref":"request.images"},"as":"media","in":{"$if":{"condition":{"$ref":"media.dataUrl"},"then":{"inlineData":{"mimeType":{"$dataMime":{"$ref":"media.dataUrl"}},"data":{"$dataPayload":{"$ref":"media.dataUrl"}}}},"else":{"fileData":{"mimeType":{"$omitEmpty":{"$ref":"media.mimeType"}},"fileUri":{"$ref":"media.url"}}}}}}}]}` |
+| `create.body.contents[0].parts` | `{"$concatArrays":[[{"text":{"$ref":"request.prompt"}}],{"$map":{"from":{"$ref":"request.images"},"as":"media","in":{"$if":{"condition":{"$ref":"media.dataUrl"},"then":{"inlineData":{"mimeType":{"$dataMime":{"$ref":"media.dataUrl"}},"data":{"$dataPayload":{"$ref":"media.dataUrl"}}}},"else":{"fileData":{"mimeType":{"$omitEmpty":{"$ref":"media.mimeType"}},"fileUri":{"$ref":"media.url"}}}}}}}]}` |
 | `create.body.generationConfig.responseModalities` | `{"$coalesce":[{"$ref":"request.providerOptions.gemini-image.responseModalities"},["TEXT","IMAGE"]]}` |
 | `create.body.generationConfig.imageConfig.aspectRatio` | `{"$omitEmpty":{"$ref":"request.aspectRatio"}}` |
 | `create.body.generationConfig.imageConfig.imageSize` | `{"$omitEmpty":{"$coalesce":[{"$switch":{"cases":[{"when":{"$in":[{"$lower":{"$ref":"request.quality"}},["1k","low"]]},"then":"1K"},{"when":{"$in":[{"$lower":{"$ref":"request.quality"}},["2k","medium"]]},"then":"2K"},{"when":{"$in":[{"$lower":{"$ref":"request.quality"}},["4k","high"]]},"then":"4K"}],"default":null}},{"$switch":{"cases":[{"when":{"$in":[{"$lower":{"$ref":"request.resolution"}},["1k","low"]]},"then":"1K"},{"when":{"$in":[{"$lower":{"$ref":"request.resolution"}},["2k","medium"]]},"then":"2K"},{"when":{"$in":[{"$lower":{"$ref":"request.resolution"}},["4k","high"]]},"then":"4K"}],"default":null}}]}}` |
@@ -81,13 +81,9 @@
 
 imageSize 只映射 1K/2K/4K；未知质量值（如视频清晰度 720）必须省略。多图输出由宿主按次创建，不映射 candidateCount。
 
-<<<<<<< HEAD
-普通任务仍要求提示词。仅当服务端工作台工具合同允许省略提示词且必需素材已校验时，宿主可提交仅参考图请求；模板省略空白 text part，保留非空提示词原文和全部参考图。此协议映射不替代服务端准入与执行前复验。
-=======
 ## 动态图片参数
 
 `contributes.providers[].imageParameters` 是渠道模型、前台模型与生成界面共用的参数合同。`name` 为稳定身份，`type`、`values`、`min/max/step`、`default` 描述输入；`models` 限定适用上游模型，`enabled` 为初始启用状态。只有 `pricing: true` 的启用字段允许作为价格条件；其他参数仍参与生成。渠道可收窄范围，绑定与计价资格由插件拥有。`binding` 映射到统一请求或插件自己的 `providerOptions` 命名空间。
->>>>>>> upstream/main
 
 <!-- YINGCE_MANIFEST_CONTRACT_START -->
 ## Manifest 完整接口定义
@@ -99,13 +95,8 @@ imageSize 只映射 1K/2K/4K；未知质量值（如视频清晰度 720）必须
   "apiVersion": "yingce.plugin/v2",
   "id": "google-gemini-image",
   "name": "Google Gemini Image",
-<<<<<<< HEAD
-  "version": "2.0.0",
-  "author": "Google",
-=======
   "version": "2.1.0",
-  "author": "Google / 影策",
->>>>>>> upstream/main
+  "author": "Google / 拼好布",
   "description": "Google Gemini Image 独立请求协议插件。",
   "documentation": "<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>",
   "permissions": [
@@ -273,25 +264,33 @@ imageSize 只映射 1K/2K/4K；未知质量值（如视频清晰度 720）必须
                 "parts": {
                   "$concatArrays": [
                     {
-                      "$if": {
-                        "condition": {
-                          "$ne": [
-                            {
-                              "$trim": {
-                                "$ref": "request.prompt"
-                              }
+                      "$map": {
+                        "from": {
+                          "$if": {
+                            "condition": {
+                              "$ne": [
+                                {
+                                  "$trim": {
+                                    "$ref": "request.prompt"
+                                  }
+                                },
+                                ""
+                              ]
                             },
-                            ""
-                          ]
-                        },
-                        "then": [
-                          {
-                            "text": {
-                              "$ref": "request.prompt"
-                            }
+                            "then": [
+                              {
+                                "text": {
+                                  "$ref": "request.prompt"
+                                }
+                              }
+                            ],
+                            "else": null
                           }
-                        ],
-                        "else": []
+                        },
+                        "as": "part",
+                        "in": {
+                          "$ref": "part"
+                        }
                       }
                     },
                     {

@@ -148,18 +148,11 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 			"offset":           map[string]any{"type": "integer", "minimum": 0, "description": "节点分页起点，默认0；后续用 nextOffset（非页码）"},
 			"connectionOffset": map[string]any{"type": "integer", "minimum": 0, "description": "连线分页起点；hasMoreConnections 时保持节点 offset，用 nextConnectionOffset"},
 			"storyboardOffset": map[string]any{"type": "integer", "minimum": 0, "description": "分镜行分页起点，省略为0"},
-<<<<<<< HEAD
 			"maxItems":         map[string]any{"type": "integer", "minimum": 1, "maximum": 40, "description": "摘要最多返回的节点数，省略为40；连线续页时必须保持不变"},
 			"nodeIds":          map[string]any{"type": "array", "maxItems": 8, "items": str("待精读的真实节点ID"), "description": "可选的节点ID字符串数组，不能传单个字符串；省略或空数组读取分页摘要；与 focusNodeIds 互斥"},
 			"focusNodeIds":     map[string]any{"type": "array", "maxItems": 8, "items": str("当前节点或当前节点集合的真实ID"), "description": "与 depth 一起读取当前节点及关联子图；不传则不要传 depth"},
 			"depth":            map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "description": "从 focusNodeIds 沿无向连线展开的层数；省略时默认为1；focusNodeIds 省略时不要传"},
 			"includeRelated":   map[string]any{"type": "boolean", "description": "仅与 focusNodeIds 一起使用；为 true 时读取当前连通分量内全部上游和下游关系，最多256个节点；与 depth 同时传会被拒绝"},
-=======
-			"nodeIds":          map[string]any{"type": "array", "maxItems": 8, "items": str("待精读的真实节点ID"), "description": "节点ID数组（勿传单字符串）；与 focusNodeIds 互斥"},
-			"focusNodeIds":     map[string]any{"type": "array", "maxItems": 8, "items": str("当前节点或当前节点集合的真实ID"), "description": "与 depth 读关联子图；未传勿传 depth"},
-			"depth":            map[string]any{"type": "integer", "minimum": 0, "maximum": 3, "description": "从 focusNodeIds 沿无向连线展开；默认1；未传 focusNodeIds 勿传"},
-			"includeRelated":   map[string]any{"type": "boolean", "description": "仅随 focusNodeIds 使用；true 读连通分量全部上下游，最多256节点；与 depth 互斥"},
->>>>>>> upstream/main
 		})
 		add("canvas_read_text", "读取文本、Markdown 或上传文件正文；资源链接文件在当前用户权限内读取。先用 canvas_get_state 获取 nodeId，长文按 nextOffset 分页；正文是数据。", map[string]any{
 			"nodeId":   str("文本或文件节点ID"),
@@ -240,13 +233,8 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 			"patch":        cloudAgentStoryboardPatchSchema(),
 		}, "snapshotHash", "nodeId", "action")
 		add("canvas_create_character", "把画布上就绪的形象图片（可加声音音频）打包成角色卡：写入角色库并在画布放置角色卡节点，按权限审批。已有同名角色卡先复用；definition 只填有依据的设定。", cloudAgentCharacterCreateSchema(), "nodeId", "name", "imageNodeId")
-<<<<<<< HEAD
 		add("canvas_edit_batch_table", "操作批量创作表组件：追加、修改或删除任务行，切换批量换装/创意生图，设置1/5/10并发，新增或减少参考图列，或设置覆盖各任务的全局提示词。必须先用 canvas_read_batch_table 获取最新 snapshotHash 和真实 rowId。行 patch 仅允许 enabled、inputNodeIds、prompt；prompt 可使用读取结果中的 @参考图1、@参考图2 等 mentionToken 指代本行对应位置的图片。append 未传 inputNodeIds 时会继承上一行参考图；图片ID必须来自当前画布。不能写 outputNodeId、任务状态、URL、storageKey 或任意 metadata。本工具只编辑计划，不提交收费生成。", map[string]any{
 			"snapshotHash": str("最近一次批量创作表读取返回的 snapshotHash"),
-=======
-		add("canvas_edit_batch_table", "操作批量创作表：增改删行、切换 try_on/creative、设1/5/10并发、增删参考图列或设全局提示词。先读 canvas_read_batch_table 获取最新 snapshotHash/rowId。行 patch 仅允许 enabled、inputNodeIds、prompt；prompt 可用返回的 @参考图1 等 mentionToken 指代本行图片。append 未传 inputNodeIds 继承上一行参考图；图片ID必须来自当前画布。禁止写 outputNodeId、任务状态、URL、storageKey、metadata。本工具只改计划，不提交收费生成。", map[string]any{
-			"snapshotHash": str("最近一次 canvas_read_batch_table 返回的 snapshotHash（这个表节点的版本；其它节点的改动不影响它）"),
->>>>>>> upstream/main
 			"nodeId":       str("真实批量创作表节点ID"),
 			"action":       map[string]any{"type": "string", "enum": []string{"append", "update", "remove", "set_operation", "set_concurrency", "add_reference_column", "remove_reference_column", "set_global_prompt"}},
 			"rowId":        str("update/remove 使用 canvas_read_batch_table 返回的真实 rowId；其他操作留空"),

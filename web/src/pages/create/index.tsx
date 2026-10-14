@@ -169,12 +169,9 @@ export default function CreatePage() {
     const [explicitVideoSettings, setExplicitVideoSettings] = useState<Partial<CreationVideoSettings>>({});
     const initialVideoModelRef = useRef(config.videoModel);
     const [quality, setQuality] = useState("auto");
-<<<<<<< HEAD
-=======
     const [imageResolution, setImageResolution] = useState("auto");
     const [imageParameters, setImageParameters] = useState("{}");
     const [videoQuality, setVideoQuality] = useState(config.vquality || "720");
->>>>>>> upstream/main
     const [count, setCount] = useState(String(Math.max(1, Math.min(4, Number(config.count) || 1))));
     const [textStreaming, setTextStreaming] = useState(() => readComposerPref(TEXT_STREAMING_PREF_KEY, true));
     const [textThinking, setTextThinking] = useState(() => readComposerPref(TEXT_THINKING_PREF_KEY, false));
@@ -227,24 +224,15 @@ export default function CreatePage() {
         },
         imageSize: mode === "image" ? ratio : undefined,
 		options: mode === "image"
-<<<<<<< HEAD
-			? { size: ratio, quality, count: Number(count), transparentBackground: config.transparentBackground === "true" }
-			: {},
-	}), [attachments, config.transparentBackground, count, hasPrompt, mentionReferences, mode, prompt, quality, ratio, videoSettings]);
+            ? imageParameterRequest(modelCapabilityConfigFor(config, preferredModel).image!, { ...config, size: ratio, imageResolution, quality, count, imageParameters }) ?? { size: ratio, imageResolution, quality, count: Number(count), transparentBackground: config.transparentBackground === "true" }
+            : {},
+    }), [attachments, config, preferredModel, count, hasPrompt, imageParameters, imageResolution, mentionReferences, mode, prompt, quality, ratio, videoSettings]);
     const selectionRequirements = useMemo(() => mode === "video" ? creationVideoSelectionRequirements(modelRequirements, explicitVideoSettings) : undefined, [mode, modelRequirements, explicitVideoSettings]);
     const selectedModel = mode === "video" ? preferredModel : resolveCompatibleModel(config, preferredModel, modelRequirements) || preferredModel;
     const videoApplicability = useMemo(() => mode === "video" ? assessModelApplicability(config, selectedModel, modelRequirements) : undefined, [mode, config, selectedModel, modelRequirements]);
     const generationBlockedReason = mode === "video" && attachments.some((attachment) => creationAttachmentKind(attachment) === "file")
         ? "视频创作不支持文档参考，请手动移除文档或切回文本创作"
         : videoApplicability && videoApplicability.status !== "ready" ? videoApplicability.reason || "当前模型不适用于此任务，请调整需求或选择其他模型" : undefined;
-=======
-            ? imageParameterRequest(modelCapabilityConfigFor(config, preferredModel).image!, { ...config, size: ratio, imageResolution, quality, count, imageParameters }) ?? { size: ratio, imageResolution, quality, count: Number(count), transparentBackground: config.transparentBackground === "true" }
-			: mode === "video"
-				? { size: ratio, videoSeconds: Number(seconds), vquality: videoQuality }
-				: {},
-    }), [attachments, config, preferredModel, count, hasPrompt, imageResolution, imageParameters, mode, quality, ratio, seconds, videoQuality]);
-    const selectedModel = resolveCompatibleModel(config, preferredModel, modelRequirements) || preferredModel;
->>>>>>> upstream/main
     const generationConfig = useMemo(() => mode === "video"
         ? creationVideoConfig(config, selectedModel, { ratio, seconds, videoQuality })
         : config, [config, mode, ratio, seconds, selectedModel, videoQuality]);

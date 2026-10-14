@@ -84,13 +84,8 @@ Agnes 官方图像端点，同步返回。文生图与图生图共用 /v1/images
   "apiVersion": "yingce.plugin/v2",
   "id": "agnes-image",
   "name": "Agnes Image",
-<<<<<<< HEAD
-  "version": "2.0.0",
-  "author": "Agnes AI",
-=======
   "version": "2.1.0",
-  "author": "Agnes AI / 影策",
->>>>>>> upstream/main
+  "author": "Agnes AI / 拼好布",
   "description": "Agnes Image 独立请求协议插件。",
   "documentation": "<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>",
   "permissions": [

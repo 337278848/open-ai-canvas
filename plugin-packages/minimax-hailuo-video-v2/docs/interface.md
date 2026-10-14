@@ -62,13 +62,8 @@
   "apiVersion": "yingce.plugin/v2",
   "id": "minimax-hailuo-video-v2",
   "name": "MiniMax Hailuo Video V2 / H3",
-<<<<<<< HEAD
-  "version": "2.0.1",
-  "author": "MiniMax",
-=======
   "version": "2.0.2",
-  "author": "MiniMax / 影策",
->>>>>>> upstream/main
+  "author": "MiniMax / 拼好布",
   "description": "MiniMax / Hailuo V2 视频生成协议，保留首帧、尾帧、参考图、视频和音频角色语义。",
   "documentation": "<当前插件的完整 documentation，由 README.md 与 docs/interface.md 拼接而成；为避免 JSON 递归，此处不重复展开正文。>",
   "permissions": [

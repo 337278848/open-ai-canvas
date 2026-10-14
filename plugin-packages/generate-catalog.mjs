@@ -525,7 +525,7 @@ add({
   notes: "imageSize 只映射 1K/2K/4K；未知质量值（如视频清晰度 720）必须省略。多图输出由宿主按次创建，不映射 candidateCount。",
   create: jsonCreate("/v1beta/models/{{model}}:generateContent", {
     contents: [{ role: "user", parts: { $concatArrays: [
-      [{ text: ref("request.prompt") }],
+      map(conditional(ne(trim(ref("request.prompt")), ""), [{ text: ref("request.prompt") }], null), "part", ref("part")),
       map(ref("request.images"), "media", conditional(ref("media.dataUrl"), { inlineData: { mimeType: { $dataMime: ref("media.dataUrl") }, data: { $dataPayload: ref("media.dataUrl") } } }, { fileData: { mimeType: omit(ref("media.mimeType")), fileUri: ref("media.url") } }))
     ] } }],
     generationConfig: {

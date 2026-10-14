@@ -144,7 +144,6 @@ curl -fsSL https://raw.githubusercontent.com/337278848/open-ai-canvas/main/scrip
 
 脚本使用 PostgreSQL、Redis、独立 Agent 和源码构建叠加层，但不安装 Host Updater；该部署不属于后台在线更新管理范围，需自行构建、备份和升级。根目录的 `docker-compose.yml`、`docker-compose.local.yml` 和自行编写的两容器 SQLite 编排用于本地试运行，不作为默认服务器部署方案。
 
-<<<<<<< HEAD
 ```bash
 cd /opt/open-ai-canvas
 sudo docker compose --env-file .env \
@@ -162,10 +161,9 @@ curl -fsSL https://raw.githubusercontent.com/337278848/open-ai-canvas/main/scrip
   | sudo env CANVAS_IMAGE_TAG=v1.6.7 bash
 ```
 
-历史 `v1.2.9`、`v1.5.7`、`v1.5.7.1` 的 Host Updater 仍是 tag-based 格式，必须显式设置 `CANVAS_SKIP_HOST_UPDATER=1`；脚本会在写入部署文件前拒绝隐式安装旧更新器。脚本会先按指定 Release 拉取镜像，再解析并写入 `CANVAS_BACKEND_IMAGE`、`CANVAS_WEB_IMAGE` 的 GHCR digest；生产 Compose 不接受缺失 digest 的默认镜像或 `latest`。更新流程、数据库迁移、备份和回退说明见[系统更新文档](docs/content/docs/backend/system-update.mdx)。
-=======
+历史 `v1.2.9`、`v1.5.7`、`v1.5.7.1` 的 Host Updater 仍是 tag-based 格式，必须显式设置 `CANVAS_SKIP_HOST_UPDATER=1`；脚本会在写入部署文件前拒绝隐式安装旧更新器。脚本会先按指定 Release 拉取镜像，再解析并写入 `CANVAS_BACKEND_IMAGE`、`CANVAS_WEB_IMAGE` 的 GHCR digest；生产 Compose 不接受缺失 digest 的默认镜像或 `latest`。
+
 已有 SQLite 或自定义 Compose 部署，不能只替换 Compose 文件或补装更新器就获得在线更新；应先核对原数据卷、完成备份和数据迁移。方案选择见 [Docker 部署](docs/content/docs/overview/docker.mdx)，更新约束、备份和回退见[系统更新文档](docs/content/docs/backend/system-update.mdx)。
->>>>>>> upstream/main
 
 ## 安全边界
 
