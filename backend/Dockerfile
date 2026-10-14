@@ -46,7 +46,10 @@ COPY backend/go.mod backend/go.sum ./
 # 后面 COPY backend ./ 会覆盖为完整源码，这里只为让依赖解析通过。
 COPY backend/third_party ./third_party
 # 模块保留在普通镜像层中，供后续编译及跨 Runner 的 GHA 层缓存复用。
-RUN go mod download
+# 部分镜像源（goproxy.cn / 阿里云 goproxy 等）会主动断开 Go 客户端的 HTTP/2 连接，
+# 表现为 “http2: server sent GOAWAY”。这里禁用 HTTP/2 传输，让依赖下载走 HTTP/1.1；
+# 否则在本地与 CI 构建中会以随机模块失败，重试也不稳定。
+RUN GODEBUG=http2client=0 go mod download
 COPY backend ./
 COPY VERSION /src/VERSION
 ARG BUILD_VERSION
