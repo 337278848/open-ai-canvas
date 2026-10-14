@@ -15,6 +15,9 @@ describe("public changelog", () => {
 
     test("keeps the current release notes available to the in-app dialog", () => {
         expect(changelog).toContain(`## ${version}`);
+        for (const heading of changelog.match(/^## v\S+.*$/gm) ?? []) {
+            expect(heading).toMatch(/^## v\S+ - \d{4}-\d{2}-\d{2}$/);
+        }
         expect(changelog).toContain("## v1.6.0");
         expect(changelog).toContain("管理后台模型保存失败时");
         expect(changelog).toContain("模型服务连接失败被误报为图片生成等待超时");

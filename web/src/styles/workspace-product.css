@@ -877,6 +877,14 @@
     background: var(--user-accent);
 }
 
+.app-changelog-section-date {
+    margin-left: auto;
+    color: var(--user-ink-muted);
+    font-size: 12px;
+    font-weight: 550;
+    font-variant-numeric: tabular-nums;
+}
+
 .app-changelog-latest-badge {
     border-radius: 999px;
     background: var(--user-accent);

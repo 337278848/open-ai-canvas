@@ -51,11 +51,15 @@ export function AppChangelogDialog({ open, onClose }: { open: boolean; onClose: 
                             h2: ({ children }) => {
                                 const label = String(children);
                                 const latest = label === "Unreleased";
+                                const dated = /^v\S+ - (\d{4}-\d{2}-\d{2})$/.exec(label);
+                                const versionLabel = latest ? "开发中" : dated ? dated[0].slice(0, dated[0].lastIndexOf(" - ")) : label;
+                                const publishedAt = dated?.[1];
 
                                 return (
                                     <h3 className={`app-changelog-section-heading${latest ? " is-latest" : ""}`}>
                                         <span className="app-changelog-section-marker" aria-hidden="true" />
-                                        <span>{latest ? "开发中" : label}</span>
+                                        <span>{versionLabel}</span>
+                                        {publishedAt ? <time className="app-changelog-section-date" dateTime={publishedAt}>{publishedAt}</time> : null}
                                         {latest ? <span className="app-changelog-latest-badge">最新</span> : null}
                                     </h3>
                                 );
