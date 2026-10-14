@@ -39,6 +39,27 @@ mv -f "$stage/.canvas-assets" "$html_dir/.canvas-assets-current"
 
 # Retain current + previous builds unconditionally, and older chunks for 7 days.
 # Only prune hashed assets, never application data or non-asset public files.
+#
+# 这里不能用 find -mtime：busybox 的 -mtime 按整天截断年龄，实际宽限会变成保留 8 天，
+# 而且两次发布之间留下的孤儿分片仍可被公开访问——旧版 project-*.js 会继续拉动更早的
+# canvas 分片，旧品牌文案就是这样在发布后仍停留在线上。
+# 改为显式取差集：当前与上一版清单之外的历史分片立刻回收；再按秒级时间戳兜底一次。
+# 改为显式取差集：当前与上一版清单之外的历史分片立刻回收。
+# 清单里存的是相对路径（assets/xxx.js），所以必须在 html_dir 下用相对路径枚举，
+# 否则绝对路径匹配不上清单，会把当前版本的分片也一起删掉。
+if test -s "$html_dir/.canvas-assets-current"; then
+    if test -f "$html_dir/.canvas-assets-previous"; then
+        cat "$html_dir/.canvas-assets-current" "$html_dir/.canvas-assets-previous" | LC_ALL=C sort -u > "$html_dir/.canvas-assets-keep"
+    else
+        LC_ALL=C sort -u "$html_dir/.canvas-assets-current" > "$html_dir/.canvas-assets-keep"
+    fi
+    if test -s "$html_dir/.canvas-assets-keep"; then
+        (cd "$html_dir" && find assets -type f | LC_ALL=C sort | grep -vxF -f .canvas-assets-keep) | while IFS= read -r relative; do
+            rm -f "$html_dir/$relative"
+        done
+    fi
+    rm -f "$html_dir/.canvas-assets-keep"
+fi
 find "$html_dir/assets" -type f -mtime +"$retention_days" | while IFS= read -r file; do
     relative=${file#"$html_dir/"}
     if grep -Fxq "$relative" "$html_dir/.canvas-assets-current" || { test -f "$html_dir/.canvas-assets-previous" && grep -Fxq "$relative" "$html_dir/.canvas-assets-previous"; }; then

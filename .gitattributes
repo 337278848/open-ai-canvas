@@ -1,4 +1,5 @@
 plugin-packages/*.sh text eol=lf
+docker/*.sh text eol=lf
 scripts/install-server.sh text eol=lf
 scripts/install-server-image.sh text eol=lf
 scripts/install-host-updater.sh text eol=lf
