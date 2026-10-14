@@ -171,7 +171,6 @@ export default function CreatePage() {
     const [quality, setQuality] = useState("auto");
     const [imageResolution, setImageResolution] = useState("auto");
     const [imageParameters, setImageParameters] = useState("{}");
-    const [videoQuality, setVideoQuality] = useState(config.vquality || "720");
     const [count, setCount] = useState(String(Math.max(1, Math.min(4, Number(config.count) || 1))));
     const [textStreaming, setTextStreaming] = useState(() => readComposerPref(TEXT_STREAMING_PREF_KEY, true));
     const [textThinking, setTextThinking] = useState(() => readComposerPref(TEXT_THINKING_PREF_KEY, false));
