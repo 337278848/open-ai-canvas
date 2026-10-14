@@ -89,7 +89,7 @@
   "id": "hc-atom-seedance-v3",
   "name": "HC-ATOM Seedance V3",
   "version": "1.0.0",
-  "author": "HC-ATOM / 影策",
+  "author": "HC-ATOM",
   "description": "HC-ATOM Seedance V3 视频任务协议。",
   "permissions": [
     "generation.run",

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { relative, resolve } from "node:path";
 import { publicReleaseNotes } from "../src/lib/public-release-notes";
 
 const changelog = readFileSync(new URL("../../CHANGELOG.md", import.meta.url), "utf8");
@@ -57,5 +58,35 @@ describe("public changelog", () => {
         expect(plugins).not.toMatch(/官方插件|第三方插件|全部来源/);
         expect(pluginDocs).not.toMatch(/作者：|联系插件作者/);
         expect(skills).not.toContain("GitHub 技能同步失败");
+    });
+
+    test("no shipped plugin artifact or source manifest leaks the legacy brand", () => {
+        // 客户在插件中心能看到插件清单与文档，交付包里也带着这些文件；
+        // 任何一处残留旧品牌都会直接暴露给最终用户。
+        const pluginPackages = resolve(import.meta.dir, "../../plugin-packages");
+        const offenders: string[] = [];
+        const inspect = (file: string) => {
+            const source = readFileSync(file, "utf8");
+            if (source.includes("影策")) offenders.push(relative(pluginPackages, file).replaceAll("\\\\", "/"));
+        };
+        for (const entry of readdirSync(pluginPackages, { withFileTypes: true })) {
+            if (entry.isDirectory()) {
+                for (const name of ["manifest.json", "README.md"]) {
+                    const candidate = resolve(pluginPackages, entry.name, name);
+                    if (existsSync(candidate)) inspect(candidate);
+                }
+                const docs = resolve(pluginPackages, entry.name, "docs", "interface.md");
+                if (existsSync(docs)) inspect(docs);
+                continue;
+            }
+            if (!entry.name.endsWith(".yingce-plugin")) continue;
+            // 分发包是 ZIP；只扫描未压缩的文本条目，命中即视为泄漏。
+            const archive = readFileSync(resolve(pluginPackages, entry.name));
+            const marker = Buffer.from("manifest.json", "utf8");
+            if (archive.includes(Buffer.from("影策", "utf8")) && archive.includes(marker)) {
+                offenders.push(entry.name);
+            }
+        }
+        expect(offenders).toEqual([]);
     });
 });

@@ -30,7 +30,7 @@ func TestCloudAgentIdentityUsesSavedNameAcrossConversationTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(before.Canonical.SystemPrompt, `"agentIdentity":{"name":"影绘"}`) || strings.Contains(before.Canonical.SystemPrompt, "品牌独立验证") || strings.Contains(before.Canonical.SystemPrompt, "你是影策创作 Agent") {
+	if !strings.Contains(before.Canonical.SystemPrompt, `"agentIdentity":{"name":"影绘"}`) || strings.Contains(before.Canonical.SystemPrompt, "品牌独立验证") || strings.Contains(before.Canonical.SystemPrompt, "你是拼好布创作 Agent") {
 		t.Fatal("saved name did not become the canonical identity")
 	}
 	public, err := s.Appearance()

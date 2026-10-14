@@ -22,6 +22,18 @@ description: 当前项目已实现功能的手工验证清单与未确认边界
 - 新增回归：工作台视频任务恢复只轮询原任务、不重复提交（TestWorkbenchVideoResumesOriginalProviderTaskWithoutResubmitting）、恢复凭据不一致拒绝（TestWorkbenchVideoRejectsInconsistentResumeCredentials）；原有可选提示词工作台准入/执行测试全部通过。
 - 修复上游工作台视频任务操作语义：视频工作台按实际参考素材映射 text_to_video / image_to_video，避免上游本身就会触发的“不支持操作 video”准入误报。
 - 产品来源收尾：灵感导入 UA 与 globals-1.css 注释不再含上游仓库地址；预演台品牌保持“拼好布”并由 public-changelog.test.ts 守护。
+
+### 品牌与来源收尾（2026-10-14 第二轮，仅本地提交）
+
+- 目标：任何交付面（源码、构建包、客户文档、管理后台、部署脚本）都不再出现旧品牌名与上游仓库地址。
+- 插件体系：105 份源码 manifest/README/interface 与 103 个 .yingce-plugin 分发包全部清理；分发包只改文本条目、保留全部手写协议逻辑（此前一次重生成曾导致 newapi 视频结果解析、OpenAI Images 内联图、Wan3 参数三类回归，已改回并在 internal/protocol 全量通过）。生成器 plugin-packages/generate-catalog.mjs 同步去除品牌后缀，防止再次生成时回归。
+- 新增守护：web/test/public-changelog.test.ts 增加 “no shipped plugin artifact or source manifest leaks the legacy brand”，覆盖全部插件源码与分发包；已注入临时泄漏验证会真实失败。
+- 恢复并重写本地测试：previs-diagnostics、previs-diagnostics-recorder、previs-save-coordinator、previs-save-wiring 四个文件按合并后的真实契约重写（26 项通过），补回此前被上游重构删掉的草稿保存与诊断脱敏覆盖。
+- 其他：AGENTS.md、SECURITY.md、.github issue 模板、CONTEXT.md、docs 品牌描述、globals-5.css 注释、发布工作流兜底文案、docker-compose.deploy.yml 的 Agent 镜像兜底地址、system-update 安装命令全部改为自有仓库。
+- 保留说明：backend/internal/hostupdate 的 legacyDeploymentImageRepository 常量保留旧镜像仓库名，作用仅是识别既有安装以便平滑升级，不进入任何 API/UI 输出；scripts/test-deploy-contract.sh 与 hostupdate testdata 中的旧仓库名是升级测试夹具。
+- 验证：后端 go test ./... 全绿（backend-brand-v2.log）；前端 bun test 2563 项全过（web-tests-brand-v3.log）；internal/protocol 单包通过（protocol-after-brand.log）。
+- [ ] 未验收：真实登录态浏览器操作、PostgreSQL 旧库升级、真实模型生成任务。
+
 - [ ] 未验收：真实登录态浏览器操作、PostgreSQL 旧库升级、真实模型生成任务；以上均为后续上线前手工验收项。
 ## 创作页提交闸门只覆盖提交阶段
 
