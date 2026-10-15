@@ -55,9 +55,10 @@
 ### `lxmone-h3-max-videos`（`minimax-h3-max`）
 
 官方文档要求 H3 Max 走 `POST /v1/videos`（不要提交到 `/v1/videos/generations`，也要避开
-`input_reference` 与 `audio` 这组独立工作流字段），字段为：`model`、`prompt`、`seconds`、
-`resolution`、`aspect_ratio`、`reference_images[]`、`reference_videos[]`、`reference_audios[]`。
-上游把客户端传入的 720p 映射为 768p，参考素材上限为图 / 视频 / 音频各 12 段。
+`input_reference` 与 `audio` 这组独立工作流字段）。明确标记 `first_frame`、`last_frame`
+的图片分别映射为顶层同名字段；未标记或其他角色的图片进入 `reference_images[]`。视频和音频仍分别进入
+`reference_videos[]`、`reference_audios[]`。上游把客户端传入的 720p 映射为 768p，参考素材上限为图 / 视频 / 音频各 12 段。
+
 
 ### `lxmone-sd-videos`（`sd-2.0-a`、`sd-2.0-b`、`sd-2.0-c`、`sd-2.5-a`、`sd-2.5`）
 
@@ -76,8 +77,9 @@
 
 ### `lxmone-h3-workflow`（`minimax-h3-a`~`minimax-h3-e`）
 
-`POST /v1/videos/generations`，字段：`model`、`prompt`、`seconds`、`resolution`、`aspect_ratio`、
-`input_reference[]`、`first_frame`、`last_frame`、`audio`。
+`POST /v1/videos/generations`，字段：`model`、`prompt`、`duration_seconds`、`resolution`、`aspect_ratio`、
+`reference_images[]`。明确标记为 `first_frame`、`last_frame` 的图片分别映射为顶层同名字段；
+未标记或其他角色的图片保持普通 URL 字符串进入 `reference_images[]`，不会因为图片数量被猜测为首尾帧。
 
 ## 响应与错误
 
@@ -974,7 +976,7 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
       {
         "id": "lxmone-h3-max-videos",
         "label": "万有引力 MiniMax H3 Max 视频",
-        "description": "minimax-h3-max：POST /v1/videos，seconds、resolution 与 reference_images、reference_videos、reference_audios 扁平 URL 数组。",
+        "description": "minimax-h3-max：POST /v1/videos。明确标记 first_frame/last_frame 的图片分别映射为顶层首尾帧，其余图片、视频和音频仍使用扁平参考 URL 数组。",
         "capabilities": [
           "video"
         ],
@@ -1010,8 +1012,8 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
             "name": "images",
             "type": "media[]",
             "required": false,
-            "mapping": "reference_images",
-            "description": "参考图片，宿主发布为公开 URL 后提交。"
+            "mapping": "first_frame/last_frame/reference_images",
+            "description": "参考图片。role 为 first_frame 或 last_frame 时映射到对应顶层字段，其余图片进入 reference_images。"
           },
           {
             "name": "videos",
@@ -1101,17 +1103,98 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
                 "16:9"
               ]
             },
+            "first_frame": {
+              "$omitEmpty": {
+                "$first": {
+                  "$map": {
+                    "from": {
+                      "$filter": {
+                        "from": {
+                          "$ref": "request.images"
+                        },
+                        "as": "media",
+                        "where": {
+                          "$eq": [
+                            {
+                              "$ref": "media.role"
+                            },
+                            "first_frame"
+                          ]
+                        }
+                      }
+                    },
+                    "as": "media",
+                    "in": {
+                      "$ref": "media.value"
+                    }
+                  }
+                }
+              }
+            },
+            "last_frame": {
+              "$omitEmpty": {
+                "$first": {
+                  "$map": {
+                    "from": {
+                      "$filter": {
+                        "from": {
+                          "$ref": "request.images"
+                        },
+                        "as": "media",
+                        "where": {
+                          "$eq": [
+                            {
+                              "$ref": "media.role"
+                            },
+                            "last_frame"
+                          ]
+                        }
+                      }
+                    },
+                    "as": "media",
+                    "in": {
+                      "$ref": "media.value"
+                    }
+                  }
+                }
+              }
+            },
             "reference_images": {
               "$omitEmpty": {
                 "$map": {
-                  "from": {
-                    "$sortByOrder": {
-                      "$ref": "request.images"
-                    }
-                  },
-                  "as": "media",
                   "in": {
                     "$ref": "media.value"
+                  },
+                  "as": "media",
+                  "from": {
+                    "$filter": {
+                      "where": {
+                        "$and": [
+                          {
+                            "$ne": [
+                              {
+                                "$ref": "media.role"
+                              },
+                              "first_frame"
+                            ]
+                          },
+                          {
+                            "$ne": [
+                              {
+                                "$ref": "media.role"
+                              },
+                              "last_frame"
+                            ]
+                          }
+                        ]
+                      },
+                      "as": "media",
+                      "from": {
+                        "$sortByOrder": {
+                          "$ref": "request.images"
+                        }
+                      }
+                    }
                   }
                 }
               }
@@ -2099,7 +2182,7 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
       {
         "id": "lxmone-h3-workflow",
         "label": "万有引力 MiniMax H3 工作流",
-        "description": "minimax-h3-a~e：POST /v1/videos/generations，input_reference、first_frame、last_frame、audio。",
+        "description": "minimax-h3-a~e: POST /v1/videos/generations with duration_seconds and reference_images; explicit first and last frame roles map separately.",
         "capabilities": [
           "video"
         ],
@@ -2135,8 +2218,8 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
             "name": "images",
             "type": "media[]",
             "required": false,
-            "mapping": "reference_images",
-            "description": "参考图片，宿主发布为公开 URL 后提交。"
+            "mapping": "reference_images/first_frame/last_frame",
+            "description": "Unroled images stay in reference_images. Explicit first_frame and last_frame roles map to those fields without guessing from image count."
           },
           {
             "name": "videos",
@@ -2156,7 +2239,7 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
             "name": "duration",
             "type": "integer",
             "required": false,
-            "mapping": "seconds/duration/duration_seconds",
+            "mapping": "duration_seconds",
             "description": "输出时长，单位秒。"
           },
           {
@@ -2192,22 +2275,6 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
             "prompt": {
               "$ref": "request.prompt"
             },
-            "seconds": {
-              "$if": {
-                "condition": {
-                  "$gt": [
-                    {
-                      "$ref": "request.duration"
-                    },
-                    0
-                  ]
-                },
-                "then": {
-                  "$ref": "request.duration"
-                },
-                "else": 5
-              }
-            },
             "resolution": {
               "$lower": {
                 "$coalesce": [
@@ -2225,44 +2292,6 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
                 },
                 "16:9"
               ]
-            },
-            "input_reference": {
-              "$omitEmpty": {
-                "$map": {
-                  "from": {
-                    "$filter": {
-                      "from": {
-                        "$ref": "request.images"
-                      },
-                      "as": "media",
-                      "where": {
-                        "$and": [
-                          {
-                            "$ne": [
-                              {
-                                "$ref": "media.role"
-                              },
-                              "first_frame"
-                            ]
-                          },
-                          {
-                            "$ne": [
-                              {
-                                "$ref": "media.role"
-                              },
-                              "last_frame"
-                            ]
-                          }
-                        ]
-                      }
-                    }
-                  },
-                  "as": "media",
-                  "in": {
-                    "$ref": "media.value"
-                  }
-                }
-              }
             },
             "first_frame": {
               "$omitEmpty": {
@@ -2333,6 +2362,60 @@ HTTP 失败、业务错误码或状态进入 `failed` 时，任务以失败结�
                     "in": {
                       "$ref": "media.value"
                     }
+                  }
+                }
+              }
+            },
+            "duration_seconds": {
+              "$if": {
+                "condition": {
+                  "$gt": [
+                    {
+                      "$ref": "request.duration"
+                    },
+                    0
+                  ]
+                },
+                "then": {
+                  "$ref": "request.duration"
+                },
+                "else": 5
+              }
+            },
+            "reference_images": {
+              "$omitEmpty": {
+                "$map": {
+                  "from": {
+                    "$filter": {
+                      "from": {
+                        "$ref": "request.images"
+                      },
+                      "as": "media",
+                      "where": {
+                        "$and": [
+                          {
+                            "$ne": [
+                              {
+                                "$ref": "media.role"
+                              },
+                              "first_frame"
+                            ]
+                          },
+                          {
+                            "$ne": [
+                              {
+                                "$ref": "media.role"
+                              },
+                              "last_frame"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "as": "media",
+                  "in": {
+                    "$ref": "media.value"
                   }
                 }
               }

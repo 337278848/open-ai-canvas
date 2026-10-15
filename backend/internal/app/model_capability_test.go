@@ -277,6 +277,65 @@ func TestDefaultVolcengineArkVideoCapabilitySupportsFullModalReference(t *testin
 	}
 }
 
+func TestLXMoneFullModalVideoProtocolsUseDocumentedReferenceLimits(t *testing.T) {
+	for _, protocol := range []string{"lxmone-h3-max-videos", "lxmone-seedance-videos"} {
+		t.Run(protocol, func(t *testing.T) {
+			profile := DefaultModelCapabilityConfigForModel(protocol, "configured-upstream-model").Video
+			for _, operation := range []string{"text_to_video", "image_to_video", "reference_to_video", "audio_to_video"} {
+				if !containsCapabilityString(profile.Operations, operation) {
+					t.Fatalf("operations = %v, want %s", profile.Operations, operation)
+				}
+			}
+			if profile.References.MaxImages != 12 || profile.References.MaxVideos != 12 || profile.References.MaxAudios != 12 {
+				t.Fatalf("reference limits = %#v", profile.References)
+			}
+			if profile.Duration.Selection != "range" || profile.Duration.Max != 15 {
+				t.Fatalf("duration was replaced by another protocol default: %#v", profile.Duration)
+			}
+		})
+	}
+}
+
+func TestLXMoneH3CRejectsResolutionsRefusedByUpstream(t *testing.T) {
+	for _, protocol := range []string{"lxmone-h3-max-videos", "lxmone-h3-workflow"} {
+		t.Run(protocol, func(t *testing.T) {
+			saved := DefaultModelCapabilityConfigForModel(protocol, "configured-upstream-model")
+			saved.Video.Resolutions = []string{"480p", "768p", "720p", "1080p", "1440p", "2160p"}
+			saved.Video.DefaultResolution = "720p"
+			normalized, err := NormalizeModelCapabilityConfigForModel("video", protocol, "minimax-h3-c", saved)
+			if err != nil {
+				t.Fatalf("NormalizeModelCapabilityConfigForModel() error = %v", err)
+			}
+			if fmt.Sprint(normalized.Video.Resolutions) != fmt.Sprint([]string{"480p", "720p"}) || normalized.Video.DefaultResolution != "720p" {
+				t.Fatalf("normalized resolutions = %#v", normalized.Video)
+			}
+			if normalized.Video.Duration.Min != 1 || normalized.Video.Duration.Max != 15 {
+				t.Fatalf("duration was replaced: %#v", normalized.Video.Duration)
+			}
+			if normalized.Video.References.MaxImages != 2 || normalized.Video.References.MaxVideos != 0 || normalized.Video.References.MaxAudios != 0 {
+				t.Fatalf("reference limits = %#v", normalized.Video.References)
+			}
+			input := canvasGenerationInput{Config: providerConfig{InterfaceType: protocol, Model: "minimax-h3-c", VideoSeconds: "6", Size: "9:16", VQuality: "1080p"}}
+			if err := validateVideoTask(normalized.Video, input); err == nil || !strings.Contains(err.Error(), "分辨率") {
+				t.Fatalf("validateVideoTask(1080p) error = %v", err)
+			}
+			input.Config.VQuality = "768p"
+			if err := validateVideoTask(normalized.Video, input); err == nil || !strings.Contains(err.Error(), "分辨率") {
+				t.Fatalf("validateVideoTask(768p) error = %v", err)
+			}
+			input.Config.VQuality = "720p"
+			input.ReferenceImages = []providerMedia{{URL: "https://example.com/one.png"}, {URL: "https://example.com/two.png"}, {URL: "https://example.com/three.png"}}
+			if err := validateVideoTask(normalized.Video, input); err == nil {
+				t.Fatal("H3-C accepted a third reference image")
+			}
+			input.ReferenceImages = input.ReferenceImages[:2]
+			if err := validateVideoTask(normalized.Video, input); err != nil {
+				t.Fatalf("validateVideoTask(720p, two images) error = %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateVolcengineArkFullModalReferenceRejectsTextAndAudioOnly(t *testing.T) {
 	profile := DefaultModelCapabilityConfigForModel("volcengine-ark-video", "doubao-seedance-2-0-260128").Video
 	input := canvasGenerationInput{

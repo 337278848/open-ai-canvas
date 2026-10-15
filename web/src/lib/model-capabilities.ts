@@ -471,6 +471,16 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
         video.watermark = { supported: true, default: false };
         video.operations.push("reference_to_video");
     }
+    if (protocol === "lxmone-seedance-videos") {
+        video.references.maxImages = 12;
+        video.references.maxVideos = 12;
+        video.references.maxAudios = 12;
+        video.references.maxVideoBytes = 50 * 1024 * 1024;
+        video.references.maxVideoDurationSeconds = 15;
+        video.references.maxAudioBytes = 15 * 1024 * 1024;
+        video.references.maxAudioDurationSeconds = 15;
+        video.operations.push("reference_to_video", "audio_to_video");
+    }
     if (protocol === "agnes-video" && ["agnes-video-2.5", "agnes-video-2.5-flash"].includes(model.trim().toLowerCase())) {
         const flash = model.trim().toLowerCase() === "agnes-video-2.5-flash";
         video.references.maxImages = flash ? 5 : 9;
@@ -488,8 +498,17 @@ export function defaultModelCapabilityConfig(protocol?: ModelProtocol, model = "
 }
 
 function applyModelSpecificVideoCapability(profile: VideoCapabilityConfig, protocol?: ModelProtocol, model = "") {
-    if (protocol !== "lxmone-h3-workflow") return profile;
     const normalizedModel = model.trim().toLowerCase().replace(/^models\//, "");
+    if ((protocol === "lxmone-h3-workflow" || protocol === "lxmone-h3-max-videos") && normalizedModel === "minimax-h3-c") {
+        profile.references = { ...profile.references, maxImages: 2, maxVideos: 0, maxAudios: 0, maxVideoBytes: 0, maxVideoDurationSeconds: 0, maxAudioBytes: 0, maxAudioDurationSeconds: 0 };
+        const minimum = Math.max(profile.duration.min ?? 1, 1);
+        const maximum = Math.min(profile.duration.max ?? 15, 15);
+        profile.duration = { ...profile.duration, selection: "range", min: minimum, max: maximum, step: 1, default: Math.min(Math.max(profile.duration.default || 6, minimum), maximum) };
+        profile.resolutions = ["480p", "720p"];
+        profile.defaultResolution = "720p";
+        return profile;
+    }
+    if (protocol !== "lxmone-h3-workflow") return profile;
     if (normalizedModel === "minimax-h3-a") {
         if (profile.duration.selection === "range") {
             const max = Math.min(profile.duration.max ?? 15, 12);

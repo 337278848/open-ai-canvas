@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 57
+const CurrentSchemaVersion int64 = 58
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -212,6 +212,7 @@ var schemaMigrations = []migration{
 	{version: workbenchToolsMigrationVersion, name: workbenchToolsMigrationName, checksum: workbenchToolsMigrationChecksum, apply: func(tx *gorm.DB) error {
 		return tx.AutoMigrate(&model.WorkbenchTool{}, &model.WorkbenchPreset{}, &model.Task{})
 	}},
+	{version: 58, name: "lxmone_h3c_generations_protocol", checksum: lxmoneH3CProtocolChecksum, apply: migrateLXMoneH3CProtocol},
 }
 
 func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {
@@ -1477,4 +1478,65 @@ func RequireSchemaVersion(db *gorm.DB) error {
 		return fmt.Errorf("数据库结构版本 %d 高于程序支持的 %d，拒绝使用旧程序连接新数据库", status.Current, status.Expected)
 	}
 	return nil
+}
+
+const lxmoneH3CProtocolChecksum = "sha256:lxmone-h3c-protocol-v58-20261015"
+
+func migrateLXMoneH3CProtocol(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&model.ChannelModel{}) {
+		return nil
+	}
+	var items []model.ChannelModel
+	if err := tx.Where("capability = ? AND protocol = ?", "video", "lxmone-h3-max-videos").Find(&items).Error; err != nil {
+		return fmt.Errorf("read minimax-h3-c rows assigned to h3 max: %w", err)
+	}
+	for _, item := range items {
+		modelName := strings.ToLower(strings.TrimSpace(item.ProviderModelKey))
+		if modelName == "" {
+			modelName = strings.ToLower(strings.TrimSpace(item.ModelKey))
+		}
+		modelName = strings.TrimPrefix(modelName, "models/")
+		if modelName != "minimax-h3-c" {
+			continue
+		}
+		updated, ok := migrateLXMoneH3CCapabilityJSON(item.CapabilityConfigJSON)
+		if !ok {
+			continue
+		}
+		if err := tx.Model(&model.ChannelModel{}).Where("id = ?", item.ID).Updates(map[string]any{
+			"protocol":               "lxmone-h3-workflow",
+			"capability_config_json": updated,
+			"capability_version":     gorm.Expr("capability_version + ?", 1),
+		}).Error; err != nil {
+			return fmt.Errorf("migrate minimax-h3-c protocol %s: %w", item.ID, err)
+		}
+	}
+	return nil
+}
+
+func migrateLXMoneH3CCapabilityJSON(raw string) (string, bool) {
+	var root map[string]any
+	if err := json.Unmarshal([]byte(raw), &root); err != nil || root == nil {
+		return raw, false
+	}
+	video, ok := root["video"].(map[string]any)
+	if !ok {
+		video = map[string]any{}
+		root["video"] = video
+	}
+	video["resolutions"] = []string{"480p", "720p"}
+	video["defaultResolution"] = "720p"
+	references, _ := video["references"].(map[string]any)
+	if references == nil {
+		references = map[string]any{}
+	}
+	references["maxImages"] = 2
+	references["maxVideos"] = 0
+	references["maxAudios"] = 0
+	video["references"] = references
+	encoded, err := json.Marshal(root)
+	if err != nil {
+		return raw, false
+	}
+	return string(encoded), true
 }

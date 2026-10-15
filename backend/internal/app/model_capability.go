@@ -365,7 +365,7 @@ func applyModelSpecificVideoCapability(profile *VideoCapabilityConfig, protocol 
 		value.Operations = []string{"text_to_video", "image_to_video", "reference_to_video", "audio_to_video"}
 		value.DefaultOperation = "text_to_video"
 		return &value
-	case "lxmone-h3-workflow":
+	case "lxmone-h3-workflow", "lxmone-h3-max-videos":
 		return applyLXMoneH3WorkflowVideoCapability(profile, normalizedModel)
 	default:
 		return profile
@@ -377,6 +377,24 @@ func applyModelSpecificVideoCapability(profile *VideoCapabilityConfig, protocol 
 // the shared workflow defaults until their own upstream contract is verified.
 func applyLXMoneH3WorkflowVideoCapability(profile *VideoCapabilityConfig, modelName string) *VideoCapabilityConfig {
 	switch modelName {
+	case "minimax-h3-c":
+		value := *profile
+		value.References = profile.References
+		value.References.MaxImages = 2
+		value.References.MaxVideos = 0
+		value.References.MaxVideoBytes = 0
+		value.References.MaxVideoDuration = 0
+		value.References.MaxAudios = 0
+		value.References.MaxAudioBytes = 0
+		value.References.MaxAudioDuration = 0
+		value.Duration = capVideoDuration(value.Duration, 15)
+		if value.Duration.Selection == "range" && value.Duration.Min < 1 {
+			value.Duration.Min = 1
+		}
+		value.Resolutions = []string{"480p", "720p"}
+		value.DefaultResolution = "720p"
+		value.GenerateAudio = VideoBooleanConfig{Supported: false, Default: false}
+		return &value
 	case "minimax-h3-a":
 		value := *profile
 		value.Duration = capVideoDuration(value.Duration, 12)

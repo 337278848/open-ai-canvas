@@ -213,6 +213,27 @@ func DefaultModelCapabilityConfigForModel(protocol string, modelName string) *Mo
 		video.Resolutions = []string{"768P", "2K"}
 		video.DefaultResolution = "768P"
 		video.Watermark = VideoBooleanConfig{Supported: true, Default: false}
+	case model.ChannelInterfaceType("lxmone-seedance-videos"):
+		// Seedance 请求体接受图片、视频、音频参考，上游公开合同的上限是各 12 段。
+		// 时长和分辨率仍保留渠道已配置的范围。
+		video.Operations = append(video.Operations, "reference_to_video", "audio_to_video")
+		video.References.MaxImages = 12
+		video.References.MaxVideos = 12
+		video.References.MaxAudios = 12
+		video.References.MaxVideoBytes = 50 * 1024 * 1024
+		video.References.MaxVideoDuration = 15
+		video.References.MaxAudioBytes = 15 * 1024 * 1024
+		video.References.MaxAudioDuration = 15
+	case model.ChannelInterfaceType("lxmone-h3-max-videos"):
+		// H3 Max 使用 /v1/videos，支持图片、视频、音频参考，公开合同上限同样是各 12 段。
+		video.Operations = append(video.Operations, "reference_to_video", "audio_to_video")
+		video.References.MaxImages = 12
+		video.References.MaxVideos = 12
+		video.References.MaxAudios = 12
+		video.References.MaxVideoBytes = 50 * 1024 * 1024
+		video.References.MaxVideoDuration = 15
+		video.References.MaxAudioBytes = 15 * 1024 * 1024
+		video.References.MaxAudioDuration = 15
 	}
 	video = applyModelSpecificVideoCapability(video, protocol, modelName)
 	return &ModelCapabilityConfig{Version: 1, Text: text, Image: DefaultImageCapabilityConfig(protocol, modelName), Video: video}
