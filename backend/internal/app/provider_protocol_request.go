@@ -149,10 +149,9 @@ func protocolImageReferences(input canvasGenerationInput) []protocol.MediaRefere
 
 func protocolVideoImageReferences(input canvasGenerationInput) []protocol.MediaReference {
 	result := make([]protocol.MediaReference, 0, len(input.ReferenceImages))
-	fallbackRole := ""
-	if metadataString(input.Metadata, "videoStartFrameNodeId") != "" || metadataString(input.Metadata, "videoEndFrameNodeId") != "" {
-		fallbackRole = "reference_image"
-	}
+	// 画布里未指定首帧/尾帧的图片是普通参考图。角色留空会被声明式协议省略，
+	// 秘塔等上游会把无角色图片判为非法媒体输入。只有显式帧 ID 才使用帧角色。
+	fallbackRole := "reference_image"
 	for index, value := range input.ReferenceImages {
 		item := protocolMediaReference(value, "image", index)
 		item.Role = videoImageRoleOrDefault(input, value, fallbackRole)

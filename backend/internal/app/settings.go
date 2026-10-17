@@ -384,14 +384,18 @@ func (s *Service) encryptSettingSecret(value string) (string, error) {
 }
 
 func (s *Service) decryptSettingSecret(value string) (string, error) {
+	return decryptSettingSecretWithKey(value, s.settingsEncryptionKey)
+}
+
+func decryptSettingSecretWithKey(value string, keyFn func() ([]byte, error)) (string, error) {
 	if !strings.HasPrefix(value, encryptedSettingPrefix) {
 		return value, nil
 	}
-	payload, err := base64.RawStdEncoding.DecodeString(strings.TrimPrefix(value, encryptedSettingPrefix))
+	payload, err := decodeSettingCiphertext(strings.TrimPrefix(value, encryptedSettingPrefix))
 	if err != nil {
 		return "", errors.New("OSS 密钥密文格式无效")
 	}
-	key, err := s.settingsEncryptionKey()
+	key, err := keyFn()
 	if err != nil {
 		return "", err
 	}
@@ -411,6 +415,33 @@ func (s *Service) decryptSettingSecret(value string) (string, error) {
 		return "", errors.New("OSS 密钥解密失败，请检查存储加密密钥")
 	}
 	return string(plaintext), nil
+}
+
+// decodeSettingCiphertext 同时接受本系统写入的无填充编码，以及管理端或迁移
+// 可能写入的带填充标准 Base64。两种编码必须解出同一段字节；拒绝截断或混入
+// 非法字符后仍能“解出一部分”的密文。
+func decodeSettingCiphertext(encoded string) ([]byte, error) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, errors.New("empty setting ciphertext")
+	}
+	// 标准库对填充字符很宽松：带 + 或 / 的填充密文可能被 Raw 和 Std 同时解出
+	// 不同字节。显式填充必须只按标准编码处理，避免把可解密数据误判为歧义。
+	// 历史渠道密钥也可能使用 URL-safe 字母表（- 和 _）。它与标准字母表互斥，
+	// 不能先用标准解码器尝试，否则合法密钥会被报成密文格式无效。
+	if strings.Contains(encoded, "=") {
+		if len(encoded)%4 != 0 {
+			return nil, errors.New("invalid padded setting ciphertext")
+		}
+		if strings.ContainsAny(encoded, "-_") {
+			return base64.URLEncoding.Strict().DecodeString(encoded)
+		}
+		return base64.StdEncoding.Strict().DecodeString(encoded)
+	}
+	if strings.ContainsAny(encoded, "-_") {
+		return base64.RawURLEncoding.Strict().DecodeString(encoded)
+	}
+	return base64.RawStdEncoding.Strict().DecodeString(encoded)
 }
 
 func (s *Service) settingsEncryptionKey() ([]byte, error) {

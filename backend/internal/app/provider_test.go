@@ -132,6 +132,18 @@ func TestChannelAPIURLNormalizesConfiguredVersionPrefix(t *testing.T) {
 	}
 }
 
+func TestChannelAPIURLKeepsExplicitAPIPrefix(t *testing.T) {
+	if got := ChannelAPIURL("https://metaso.cn", "/api/minimax/v2/video_generation"); got != "https://metaso.cn/api/minimax/v2/video_generation" {
+		t.Fatalf("Metaso create URL = %q", got)
+	}
+	if got := ChannelAPIURL("https://metaso.cn/", "/api/minimax/v2/query/video_generation/task-1"); got != "https://metaso.cn/api/minimax/v2/query/video_generation/task-1" {
+		t.Fatalf("Metaso poll URL = %q", got)
+	}
+	if got := ChannelAPIURL("https://provider.test", "/videos"); got != "https://provider.test/v1/videos" {
+		t.Fatalf("OpenAI video URL = %q", got)
+	}
+}
+
 func TestChannelAPIURLForProtocolUsesGeminiDefault(t *testing.T) {
 	if got := ChannelAPIURLForProtocol("https://generativelanguage.googleapis.com", "/models/gemini:generateContent", model.ChannelInterfaceGeminiVeo); got != "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent" {
 		t.Fatalf("Gemini URL = %q", got)

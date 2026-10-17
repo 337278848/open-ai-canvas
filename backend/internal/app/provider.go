@@ -14,6 +14,8 @@ import (
 
 	"yingce/backend/internal/kernel"
 	"yingce/backend/internal/model"
+
+	"gorm.io/gorm"
 )
 
 var sseFrameBoundaryPattern = regexp.MustCompile(`\r?\n\r?\n`)
@@ -347,7 +349,10 @@ func (s *Service) resolveProviderConfig(config providerConfig) (providerConfig, 
 	}
 	channel, err := s.SystemChannel(channelID)
 	if err != nil {
-		return providerConfig{}, errors.New("系统渠道不存在或已停用")
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return providerConfig{}, errors.New("系统渠道不存在或已停用")
+		}
+		return providerConfig{}, fmt.Errorf("读取系统渠道失败: %w", err)
 	}
 	modelKey := strings.TrimPrefix(strings.TrimSpace(config.ChannelModelKey), "models/")
 	requestedModel := strings.TrimPrefix(strings.TrimSpace(config.Model), "models/")
