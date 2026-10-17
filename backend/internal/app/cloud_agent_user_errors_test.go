@@ -16,7 +16,9 @@ func TestUserFacingTaskErrorMatchesCanvasNodeClassification(t *testing.T) {
 	for _, tc := range []struct{ name, raw, want string }{
 		{"connection reset", `Post "https://ai.cangyuansuanli.cn/v1/images/generations": read tcp 192.168.1.7:61229->154.12.46.253:443: read: connection reset by peer`, "网络异常。"},
 		{"dial", `dial tcp 10.0.0.1:443: connect: connection refused`, "网络异常。"},
-		{"upstream 500 with reason", "模型服务暂时不可用（HTTP 500）；上游：Upstream gateway error", "网络异常。"},
+		// 兼容层只负责去掉上游诊断，HTTP 500 本身仍应保留服务不可用语义；
+		// 与前端 generationErrorMessage 对 5xx 的归类保持一致。
+		{"upstream 500 with reason", "模型服务暂时不可用（HTTP 500）；上游：Upstream gateway error", "模型服务暂时不可用（HTTP 500）"},
 		{"bare 502", "HTTP 502 Bad Gateway", "网络异常。"},
 		{"rate limit", "HTTP 429", "服务当前繁忙，请稍后重试。"},
 		{"auth", "status 401", "生成服务鉴权失败，请检查渠道配置。"},

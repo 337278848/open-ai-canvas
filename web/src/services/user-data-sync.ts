@@ -289,29 +289,63 @@ export async function loadCanvasProjectForEditing(id: string, options: { onLoad?
         if (epoch !== sessionEpoch || getActiveUserScope() !== scope) throw new Error("账号已切换，请重新打开画布");
         const local = useCanvasStore.getState().openProject(id);
         const cachedClean = local?.remoteContentHash && local.remoteContentHash === (await canvasContentHash(local));
-        const dirty = local && (!verifiedProjects.has(id) && incrementalSession ? !cachedClean : !sameCanvasContent(acknowledgedProjects.get(id), local));
-        let projected = remote;
-        if (local && pausedCanvasProjects.has(id)) {
-            await pauseCanvasProjectSync(local, undefined, scope);
+        // Resolve the verified ancestor first. A hash-less cache has no proven
+        // ancestor; it is handled explicitly below.
+        const baseline = acknowledgedProjects.get(id) ?? (local?.remoteContentHash && local.remoteContentHash === (await canvasContentHash(local)) ? local : undefined);
+        // A non-empty cache with no verified ancestor is an unproven local
+        // edit, not an authoritative view. Preserve it and pause cloud writes
+        // instead of replacing it with the remote document.
+        const unprovenLocal = Boolean(local && !baseline && !verifiedProjects.has(id) && !(local.nodes.length === 0 && !local.remoteContentHash));
+        if (unprovenLocal && local && !sameCanvasContent(local, remote)) {
+            await pauseCanvasProjectSync(local, "缺少已确认的画布祖先，已保留恢复副本并暂停云端写入", scope);
             options.onLoad?.(local);
             return local;
         }
-        if (dirty && !sameCanvasContent(local, remote)) {
+        // A cache that still matches the last cloud projection can carry a user
+        // edit made after hydration (same node identity, changed field), so it
+        // is kept as a provisional ancestor.
+        const provisional = local && verifiedProjects.has(id) ? local : undefined;
+        const cachedEmpty = Boolean(local && local.nodes.length === 0 && !local.remoteContentHash);
+        const dirty = Boolean(local && (baseline || provisional) && !sameCanvasContent(baseline ?? provisional, local));
+        let projected = remote;
+        if (local && pausedCanvasProjects.has(id)) {
+            // A pause with a verified ancestor keeps the provable local edit.
+            // A stale pause without one is cleared so the cloud copy can adopt.
+            if (baseline) {
+                await pauseCanvasProjectSync(local, undefined, scope);
+                options.onLoad?.(local);
+                return local;
+            }
+            pausedCanvasProjects.delete(id);
+        }
+        if (dirty && local && !sameCanvasContent(local, remote)) {
             // A journal may already have committed remotely. Resolve its receipt with
             // the original request before advancing either side of its ancestry.
             if (pendingCanvasMutations.has(id)) {
-                options.onLoad?.(local);
+                const pending = pendingCanvasMutations.get(id)!;
+                try {
+                    if (!pending.baseline) throw new Error("缺少已确认的画布祖先，已保留恢复副本并暂停云端写入");
+                    projected = rebaseLocalCanvasProject(pending.baseline, local, remote);
+                } catch (error) {
+                    await pauseCanvasProjectSync(local, error instanceof Error ? error.message : undefined, scope);
+                    options.onLoad?.(local);
+                    return local;
+                }
                 scheduleRemoteUserDataSync();
+                options.onLoad?.({ ...projected, viewport: local.viewport, remoteContentHash: hash });
+                return { ...projected, viewport: local.viewport, remoteContentHash: hash };
+            }
+            const knownBaseline = cachedEmpty ? undefined : baseline ?? provisional ?? await confirmedCanvasBaseline(local, scope);
+            try {
+                if (!knownBaseline) throw new Error("缺少已确认的画布祖先，已保留恢复副本并暂停云端写入");
+                projected = rebaseLocalCanvasProject(knownBaseline, local, remote);
+            } catch (error) {
+                options.onLoad?.(local);
+                await pauseCanvasProjectSync(local, error instanceof Error ? error.message : undefined, scope);
                 return local;
             }
-            const baseline = await confirmedCanvasBaseline(local, scope);
-            try {
-                if (!baseline) throw new Error("缺少已确认的画布祖先，已保留恢复副本并暂停云端写入");
-                projected = rebaseLocalCanvasProject(baseline, local, remote);
-            } catch (error) {
-                await pauseCanvasProjectSync(local, error instanceof Error ? error.message : undefined, scope);
-                options.onLoad?.(local);
-                return local;
+            if (pendingCanvasMutations.has(id)) {
+                return { ...projected, viewport: local.viewport ?? remote.viewport, remoteContentHash: hash };
             }
         }
         // Editing/generation may continue during the network request or draft write.
@@ -606,7 +640,21 @@ export async function syncRemoteUserData(userId?: string | null) {
                 if (!remote) continue;
                 const clean = local.remoteContentHash && local.remoteContentHash === (await canvasContentHash(local));
                 let projected: CanvasProject = remote;
-                if (!clean && !sameCanvasContent(local, remote)) {
+                // An empty hash-less cache is a view and may adopt the cloud
+                // document. A non-empty hash-less cache with no verified
+                // ancestor is an unproven local edit: preserve it and pause
+                // writes instead of silently discarding it.
+                if (local.remoteContentHash === undefined && !sameCanvasContent(local, remote)) {
+                    if (local.nodes.length === 0 && local.connections.length === 0) continue;
+                    await pauseCanvasProjectSync(local, undefined, scope);
+                    projectedProjects.set(local.id, local);
+                    continue;
+                }
+                // Only a verified baseline may authorize a rebase. Local edits
+                // are backed by that baseline or an explicit pending journal;
+                // unproven non-empty caches were preserved above.
+                const hasBaseline = Boolean(acknowledgedProjects.has(local.id) || await confirmedCanvasBaseline(local, scope));
+                if (hasBaseline && !clean && !sameCanvasContent(local, remote)) {
                     const baseline = await confirmedCanvasBaseline(local, scope);
                     try {
                         if (!baseline) throw new Error("缺少已确认的画布祖先，已保留恢复副本并暂停云端写入");
@@ -715,6 +763,7 @@ export function resetRemoteUserDataSync() {
     syncRetryAttempt = 0;
     syncQueued = false;
     autoSyncQueued = false;
+    syncPromise = null;
     useSyncProgressStore.getState().clearAll();
 }
 
@@ -1006,10 +1055,8 @@ export async function saveRemoteUserDataNow(input?: string | readonly string[]) 
         syncFailed = true;
         syncError = error;
     } finally {
-        if (syncPromise === operation) {
-            syncPromise = null;
-            if (epoch === sessionEpoch && (autoSyncQueued || syncQueued)) scheduleRemoteUserDataSync();
-        }
+        if (syncPromise === operation) syncPromise = null;
+        if (epoch === sessionEpoch && (autoSyncQueued || syncQueued)) scheduleRemoteUserDataSync();
     }
     if (syncFailed) {
         if (epoch === sessionEpoch) scheduleRemoteUserDataRetry(syncError);
@@ -1449,6 +1496,7 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
             errors.push(new Error("画布缺少可安全重放的祖先或存在冲突，已保留恢复副本并暂停云端写入"));
             continue;
         }
+        const sourceSnapshot = source;
         const keysToUpload = collectLocalMediaKeys(source);
         const total = keysToUpload.length;
         useSyncProgressStore.getState().setProjectProgress(source.id, {
@@ -1484,8 +1532,15 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
                         await flushCanvasStorePersistence();
                         await persistConfirmedCanvasBaseline(base, canvasSyncScope);
                         acknowledgedProjects.set(source.id, base);
-                        const latest = useCanvasStore.getState().openProject(source.id);
-                        const pending = Boolean(latest && !sameCanvasContent(base, latest));
+                        const local = useCanvasStore.getState().openProject(source.id);
+                        let pending = !sameCanvasContent(base, prepared);
+                        if (local && sameCanvasContent(local, sourceSnapshot)) {
+                            useCanvasStore.setState((state) => ({ projects: state.projects.map((project) => (project.id === source.id ? { ...prepared, viewport: local.viewport } : project)) }));
+                        } else if (local && !sameCanvasContent(local, sourceSnapshot)) {
+                            // A user edit arrived during persistence; it is newer
+                            // than this projection and must be committed next.
+                            pending = true;
+                        }
                         useSyncProgressStore.getState().setProjectProgress(source.id, {
                             phase: pending ? "pending" : "done",
                             cloudRevision: base.revision,
@@ -1494,7 +1549,9 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
                             message: pending ? "有新修改等待保存" : "已保存到云端",
                         });
                         if (pending) syncQueued = true;
+                        continue;
                     }
+                    useSyncProgressStore.getState().setProjectProgress(source.id, { phase: "done", pendingChanges: 0, completed: total, total, errorKind: undefined, message: "已保存到云端" });
                     continue;
                 }
                 const request: CanvasOperationsRequest = {

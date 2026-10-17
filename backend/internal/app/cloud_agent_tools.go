@@ -105,22 +105,22 @@ func compileCloudAgentTools(req CloudAgentRequest, includeProfileTool bool) []ma
 			"questionId": str("可选问题标识"),
 			"options": map[string]any{"type": "array", "minItems": 2, "maxItems": 6, "items": map[string]any{
 				"type":       "object",
-				"properties": map[string]any{"label": str("选项"), "detail": str("可选：一句补充说明")},
+				"properties": map[string]any{"label": str("选项"), "detail": str("补充说明")},
 				"required":   []string{"label"}, "additionalProperties": false,
 			}},
-			"fields": map[string]any{"type": "array", "minItems": 1, "maxItems": 6, "description": "相关参数表单；与 options 二选一", "items": map[string]any{
+			"fields": map[string]any{"type": "array", "minItems": 1, "maxItems": 6, "description": "参数表单；与 options 二选一", "items": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"id": str("字段 ID，如 aspectRatio"), "title": str("字段名称"),
+					"id": str("字段ID，如aspectRatio"), "title": str("字段名"),
 					"type":         map[string]any{"type": "string", "enum": []string{"single_select", "segmented", "text", "textarea", "model_picker"}},
-					"options":      map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "object", "properties": map[string]any{"id": str("ID"), "label": str("选项名称"), "detail": str("说明"), "recommended": map[string]any{"type": "boolean"}}, "required": []string{"label"}, "additionalProperties": false}},
+					"options":      map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "object", "properties": map[string]any{"id": str("ID"), "label": str("选项"), "detail": str("说明"), "recommended": map[string]any{"type": "boolean"}}, "required": []string{"label"}, "additionalProperties": false}},
 					"defaultValue": str("默认值"), "required": map[string]any{"type": "boolean"}, "allowCustom": map[string]any{"type": "boolean"}, "placeholder": str("提示"),
 				},
 				"required": []string{"id", "title", "type"}, "additionalProperties": false,
 			}},
-			"allowFreeform": map[string]any{"type": "boolean", "description": "是否允许补充说明"},
-			"round":         map[string]any{"type": "integer", "minimum": 1, "maximum": cloudAgentMaxConfirmationRounds, "description": "可选确认轮次"},
-			"maxRounds":     map[string]any{"type": "integer", "minimum": 1, "maximum": cloudAgentMaxConfirmationRounds, "description": "可选确认上限"},
+			"allowFreeform": map[string]any{"type": "boolean"},
+			"round":         map[string]any{"type": "integer", "minimum": 1, "maximum": cloudAgentMaxConfirmationRounds},
+			"maxRounds":     map[string]any{"type": "integer", "minimum": 1, "maximum": cloudAgentMaxConfirmationRounds},
 		},
 		"question")
 	if len(req.ContextScope) > 0 {

@@ -15,6 +15,7 @@ const paths: Record<string, string> = {
     zustand: import.meta.resolve("zustand"),
     "@/services/api/resources": join(dir, "resources.ts"),
     "@/lib/canvas/canvas-content": join(dir, "content.ts"),
+    "@/lib/secure-digest": fileURLToPath(new URL("../src/lib/secure-digest.ts", import.meta.url)),
     "@/stores/use-sync-progress-store": join(dir, "progress.ts"),
     "@/lib/canvas/canvas-task-mutation": fileURLToPath(new URL("../src/lib/canvas/canvas-task-mutation.ts", import.meta.url)),
     "@/lib/canvas/agent-canvas-patch": new URL("../src/lib/canvas/agent-canvas-patch.ts", import.meta.url).pathname,
@@ -257,13 +258,14 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         await sync.saveRemoteUserDataNow("canvas");
         expect(fixture.writes).toHaveLength(0);
         expect(fixture.remote.nodes).toHaveLength(1);
-        const recovery = JSON.parse(fixture.data.get("yingce:canvas-unverified-recovery:canvas"));
-        expect(recovery.at(-1).project.nodes).toEqual([]);
+        // A hash-less cache is a view, not an edit: adopting the cloud copy
+        // must not create a deletion mutation or overwrite the cloud.
+        expect(fixture.data.has("yingce:canvas-unverified-recovery:canvas")).toBe(false);
     });
 
     test("打开期间的标题修改与云端新增节点三方合并，只提交真实标题修改", async () => {
         fixture.manualTimers = true;
-        const cached = { ...base(), nodes: [], revision: 7 };
+        const cached = { ...base(), revision: 7 };
         useCanvasStore.setState({ projects: [cached] });
         await reloadSession();
         fixture.remote = { ...base(), revision: 8 };
@@ -276,6 +278,22 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         expect(fixture.writes).toHaveLength(1);
         expect(fixture.writes[0].operations).toEqual([{ type: "set_field", field: "title", beforeValue: "Canvas", value: "Local title" }]);
         expect(fixture.remote.nodes).toHaveLength(1);
+    });
+
+    test("非空但无已确认基线的旧缓存不会被云端旧版本覆盖", async () => {
+        fixture.manualTimers = true;
+        const localOnly = { ...base(), title: "Local only", nodes: [...base().nodes, { ...base().nodes[0], id: "local-new" }] };
+        useCanvasStore.setState({ projects: [localOnly] });
+        await reloadSession();
+        fixture.remote = { ...base(), revision: 8, nodes: [] };
+        const displayed = await sync.loadCanvasProjectForEditing("canvas");
+        expect(displayed?.nodes.map((node) => node.id)).toEqual(["image", "local-new"]);
+        expect(displayed?.title).toBe("Local only");
+        await expect(sync.saveRemoteUserDataNow("canvas")).rejects.toThrow("暂停");
+        expect(fixture.writes).toHaveLength(0);
+        expect(fixture.remote.nodes).toHaveLength(0);
+        const recovery = JSON.parse(fixture.data.get("yingce:canvas-sync-recovery:canvas"));
+        expect(recovery.original.title).toBe("Local only");
     });
 
     test("已落盘的明确删除意图仍保留，但不会删除其他设备新增的节点", async () => {
@@ -303,7 +321,6 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         delete fixture.remote.nodes[0].metadata.assetId;
         fixture.setError = new Error("recovery write failed");
         await expect(sync.loadCanvasProjectForEditing("canvas")).rejects.toThrow("recovery write failed");
-        expect(live().nodes).toEqual([]);
         expect(fixture.remote.nodes).toHaveLength(1);
         expect(fixture.writes).toHaveLength(0);
     });
@@ -313,9 +330,10 @@ describe("定向保存与旧 journal 的真实同步集成", () => {
         edit({ title: "Local title" });
         fixture.remote = { ...base(), revision: 8, title: "Remote title" };
         delete fixture.remote.nodes[0].metadata.assetId;
-        await expect(sync.loadCanvasProjectForEditing("canvas")).rejects.toThrow("冲突");
-        expect(live().title).toBe("Local title");
+        const displayed = await sync.loadCanvasProjectForEditing("canvas");
+        expect(displayed?.title).toBe("Local title");
         expect(fixture.remote.title).toBe("Remote title");
+        expect(live().title).toBe("Local title");
         expect(fixture.writes).toHaveLength(0);
     });
 

@@ -57,6 +57,7 @@ export const resourceIdFromStorageKey = () => null;
 export const resourceFileUrl = (id: string) => "resource:" + id;
 export const collectLocalMediaKeys = () => [];
 export const numberValue = (value: any, fallback = 0) => Number.isFinite(value) ? value : fallback;
+export const canvasEditLeases = { reset() {}, session: () => "test-session", versions: () => ({}), proofs: async () => [], acknowledged() {} };
 export async function ensureRemoteResourceReferences(value: any) { await state.mediaHook?.(); return copy(value); }
 export async function restoreRemoteTextNodeContents(value: any) { return value; }
 const missing = () => { throw new Error("Unexpected non-canvas API call"); };
@@ -130,6 +131,9 @@ const realImports = new Map([
     ["json-canonicalize", fileURLToPath(import.meta.resolve("json-canonicalize"))],
     ["@/lib/canvas/canvas-content", fileURLToPath(new URL("../src/lib/canvas/canvas-content.ts", import.meta.url))],
     ["@/lib/canvas/agent-canvas-patch", fileURLToPath(new URL("../src/lib/canvas/agent-canvas-patch.ts", import.meta.url))],
+    ["@/lib/canvas/canvas-task-mutation", fileURLToPath(new URL("../src/lib/canvas/canvas-task-mutation.ts", import.meta.url))],
+    ["@/lib/asset-storage-revision", fileURLToPath(new URL("../src/lib/asset-storage-revision.ts", import.meta.url))],
+    ["@/lib/secure-digest", fileURLToPath(new URL("../src/lib/secure-digest.ts", import.meta.url))],
 ]);
 writeFileSync(join(dir, "sync.ts"), source.replace(/(from\s+)(["'])([^"']+)\2/g, (_match, prefix, _quote, specifier) => prefix + JSON.stringify(realImports.get(specifier) || seamPath)));
 const sync: typeof import("../src/services/user-data-sync") = await import(join(dir, "sync.ts"));

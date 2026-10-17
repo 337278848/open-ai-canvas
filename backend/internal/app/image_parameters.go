@@ -197,6 +197,14 @@ func activeImageSizePresets(image *ImageCapabilityConfig) []ImageSizePreset {
 	if image.Parameters == nil || image.Resolution.Supported {
 		return image.Size.Presets
 	}
+	// A disabled imageResolution contract field means the dimension is not
+	// user-selectable. Keep every preset group active so a ratio can resolve
+	// exactly as it did before the plugin contract was imported; collapsing to
+	// one implicit tier would silently change the output size. Lines that do
+	// not declare imageResolution at all still fail closed below.
+	if imageResolutionDisabledWithoutDefault(image.Parameters) {
+		return image.Size.Presets
+	}
 	tier, ok := singleImageSizeTier(image)
 	if !ok {
 		return nil
@@ -208,6 +216,19 @@ func activeImageSizePresets(image *ImageCapabilityConfig) []ImageSizePreset {
 		}
 	}
 	return result
+}
+
+func imageResolutionDisabledWithoutDefault(parameters []protocol.ImageParameter) bool {
+	for _, p := range parameters {
+		if p.Name != "imageResolution" {
+			continue
+		}
+		if p.IsEnabled() {
+			return false
+		}
+		return p.Default == nil || fmt.Sprint(p.Default) == "auto"
+	}
+	return false
 }
 
 func imageParameterConstraints(parameters []protocol.ImageParameter) map[string]OptionConstraint {

@@ -132,9 +132,17 @@ func assertManifestContractMatchesPackage(t *testing.T, packageName string, mani
 	contractSection := interfaceDocs[start:end]
 	jsonStart := strings.Index(contractSection, "```json\n")
 	if jsonStart < 0 {
+		jsonStart = strings.Index(contractSection, "```json\r\n")
+	}
+	if jsonStart < 0 {
 		t.Fatalf("%s manifest contract has no JSON block", packageName)
 	}
-	jsonStart += len("```json\n")
+	jsonStart += len("```json")
+	if strings.HasPrefix(contractSection[jsonStart:], "\r\n") {
+		jsonStart += 2
+	} else if strings.HasPrefix(contractSection[jsonStart:], "\n") {
+		jsonStart += 1
+	}
 	jsonEnd := strings.Index(contractSection[jsonStart:], "\n```")
 	if jsonEnd < 0 {
 		t.Fatalf("%s manifest contract JSON block is not terminated", packageName)

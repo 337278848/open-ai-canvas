@@ -341,6 +341,23 @@ func TestImageParametersDisabledResolutionUsesDefaultAndPreservesGroups(t *testi
 	}
 }
 
+// Importing the plugin contract disables the visible imageResolution field for
+// OpenAI Images. The line still emits pixels, so the implicit default tier must
+// survive the import; otherwise every ratio fails to resolve to a pixel size.
+func TestImageParameterContractImportKeepsPixelDefaultTier(t *testing.T) {
+	adapter := imageParameterTestAdapter(t, "openai-images", "openai-image")
+	profile := DefaultModelCapabilityConfigForModel("openai-image", "gpt-image-1")
+	if err := resolveImageCapabilityParameters(profile.Image, adapter.Metadata().ImageParameters, "gpt-image-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(activeImageSizePresets(profile.Image)); got == 0 {
+		t.Fatal("contract import dropped every active pixel preset group")
+	}
+	if got := resolveImageTaskSize(profile.Image, "openai-image", "1:1", ""); got != "1024x1024" {
+		t.Fatalf("default ratio did not resolve to a pixel size: %q", got)
+	}
+}
+
 func TestImageParametersDisabledResolutionRejectsAmbiguousPixels(t *testing.T) {
 	profile := DefaultModelCapabilityConfigForModel("opaque-provider", "opaque-model")
 	profile.Image.Parameters = []protocol.ImageParameter{{Name: "size", Label: "Frame", Type: "string", Values: []any{"1:1"}, Default: "1:1", Binding: "aspectRatio", Encoding: "pixels"}}
