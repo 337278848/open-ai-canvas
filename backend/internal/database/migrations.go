@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-const CurrentSchemaVersion int64 = 58
+const CurrentSchemaVersion int64 = 61
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
@@ -213,6 +213,22 @@ var schemaMigrations = []migration{
 		return tx.AutoMigrate(&model.WorkbenchTool{}, &model.WorkbenchPreset{}, &model.Task{})
 	}},
 	{version: 58, name: "lxmone_h3c_generations_protocol", checksum: lxmoneH3CProtocolChecksum, apply: migrateLXMoneH3CProtocol},
+	// The local lineage already consumed 55–58. Upstream's catalog/index/collab
+	// work is installed idempotently at the first free versions so an existing
+	// local v58 database migrates without rewriting its ledger.
+	{version: 59, name: "provider_catalog_source_merge", checksum: "sha256:provider-catalog-source-v59-20261017", apply: func(tx *gorm.DB) error {
+		if !tx.Migrator().HasColumn(&model.ModelChannel{}, "CatalogProviderID") {
+			if err := tx.Migrator().AddColumn(&model.ModelChannel{}, "CatalogProviderID"); err != nil {
+				return err
+			}
+		}
+		if !tx.Migrator().HasColumn(&model.ChannelModel{}, "CatalogModelKey") {
+			return tx.Migrator().AddColumn(&model.ChannelModel{}, "CatalogModelKey")
+		}
+		return nil
+	}},
+	{version: 60, name: "sql_perf_indexes_merge", checksum: "sha256:sql-perf-indexes-v60-20261017", apply: migrateSchemaV56},
+	{version: 61, name: "canvas_multi_session_sync_merge", checksum: "sha256:canvas-multi-session-sync-v61-20261017", apply: migrateCanvasCollaboration},
 }
 
 func migrateOAuthStateAcceptedTerms(tx *gorm.DB) error {
@@ -1380,6 +1396,20 @@ func applyLegacyWorkbenchMigrationCompatibility(db *gorm.DB, plan []migration) (
 	return replaceMigration(plan, workbenchMigration), nil
 }
 
+func migrateSchemaV56(tx *gorm.DB) error {
+	if err := tx.AutoMigrate(&model.ApiCallLog{}, &model.Task{}, &model.CreditLedgerEntry{}); err != nil {
+		return fmt.Errorf("迁移 SQL 性能索引：%w", err)
+	}
+	if tx.Dialector.Name() == "sqlite" {
+		if err := tx.Exec("UPDATE api_call_logs SET created_at_epoch = unixepoch(created_at) WHERE created_at_epoch = 0 OR created_at_epoch IS NULL").Error; err != nil {
+			return fmt.Errorf("回填 api_call_logs 时间戳：%w", err)
+		}
+		if err := tx.Exec("UPDATE tasks SET created_at_epoch = unixepoch(created_at) WHERE created_at_epoch = 0 OR created_at_epoch IS NULL").Error; err != nil {
+			return fmt.Errorf("回填 tasks 时间戳：%w", err)
+		}
+	}
+	return nil
+}
 func MigrateSchema(db *gorm.DB) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		if tx.Dialector.Name() == "postgres" {

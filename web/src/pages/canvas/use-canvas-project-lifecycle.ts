@@ -1,5 +1,5 @@
 import { mergeAgentCanvasEditor } from "@/lib/canvas/agent-canvas-patch";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { App } from "antd";
 import { useNavigate } from "react-router";
 
@@ -7,15 +7,19 @@ import { canvasAppearanceBaseTheme, canvasAppearanceForTheme, DEFAULT_CANVAS_BAC
 import type { CanvasBackgroundMode } from "@/lib/canvas-theme";
 import { removeCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
 import { normalizeCanvasNodeTimestamps } from "@/lib/canvas/canvas-node-timestamps";
+import { canvasPersistentNodes } from "@/lib/canvas/canvas-persistent-nodes";
 import { hydrateAssistantImages, resetInterruptedGeneration } from "@/lib/canvas/canvas-project-generation";
 import { listAddedSkills, type Skill } from "@/services/api/skills";
-import { createCanvasProjectWithRemoteSync, deleteCanvasProjectsWithRemoteSync, loadCanvasProjectForEditing, saveRemoteUserDataNow, subscribeAgentCanvasRefresh, restoreRemoteCanvasProject, type RestoreRemoteCanvasProjectInput } from "@/services/user-data-sync";
+import { createCanvasProjectWithRemoteSync, deleteCanvasProjectsWithRemoteSync, loadCanvasProjectForEditing, saveRemoteUserDataNow, subscribeAgentCanvasRefresh, refreshCanvasAfterAgent, restoreRemoteCanvasProject, type RestoreRemoteCanvasProjectInput } from "@/services/user-data-sync";
+import { getCanvasSyncStatus } from "@/services/api/user-data";
+import { canvasEditLeases } from "@/services/canvas-edit-leases";
+import { startCanvasSyncPolling } from "@/services/canvas-sync-polling";
+import { getActiveUserScope } from "@/lib/user-scope";
 import { flushCanvasStorePersistence, useCanvasStore, type CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { useCanvasThemeStore } from "@/stores/canvas/use-canvas-theme-store";
 import { useSyncProgressStore } from "@/stores/use-sync-progress-store";
 import { useUserStore } from "@/stores/use-user-store";
 import type { CanvasAssistantSession, CanvasConnection, CanvasNodeData, ViewportTransform } from "@/types/canvas";
-import { getActiveUserScope } from "@/lib/user-scope";
 import { readCanvasSyncDraftInventory } from "@/services/canvas-sync-drafts";
 import type { CanvasHistorySnapshot } from "./use-canvas-history";
 
@@ -84,6 +88,7 @@ export function useCanvasProjectLifecycle({
     const navigate = useNavigate();
     const hydrated = useCanvasStore((state) => state.hydrated);
     const sessionHydrated = useUserStore((state) => state.hydrated);
+    const userId = useUserStore((state) => state.user?.id);
     const openProject = useCanvasStore((state) => state.openProject);
     const updateProject = useCanvasStore((state) => state.updateProject);
     const renameProject = useCanvasStore((state) => state.renameProject);
@@ -95,6 +100,11 @@ export function useCanvasProjectLifecycle({
     const viewportSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const observedContentRef = useRef<CanvasHistorySnapshot | null>(null);
+    const persistentNodesRef = useRef<CanvasNodeData[]>([]);
+    const persistentNodes = useMemo(() => {
+        persistentNodesRef.current = canvasPersistentNodes(nodes, persistentNodesRef.current);
+        return persistentNodesRef.current;
+    }, [nodes]);
     const editorReadyRef = useRef(false);
     const scope = getActiveUserScope();
     const contextRef = useRef({ projectId, scope });
@@ -233,8 +243,8 @@ export function useCanvasProjectLifecycle({
         };
     }, [projectLoaded]);
 
-    useEffect(() => subscribeAgentCanvasRefresh((project, previous) => {
-        if (!isCurrentContext() || manualRestoreRef.current || !projectLoaded || project.id !== projectId) return;
+    useEffect(() => subscribeAgentCanvasRefresh((project, previous, source) => {
+		if (!isCurrentContext() || manualRestoreRef.current || !projectLoaded || project.id !== projectId) return;
         // Merge only server-changed fields so dragging/editing other nodes can
         // continue while Agent media tasks complete. Same-field conflicts fail.
         const merged = previous ? mergeAgentCanvasEditor(previous, project, nodesRef.current, connectionsRef.current) : project;
@@ -251,20 +261,36 @@ export function useCanvasProjectLifecycle({
         setConnections(merged.connections);
         const previousIds = new Set(previous?.nodes.map((node) => node.id));
         const created = project.nodes.filter((node) => !previousIds.has(node.id));
-        if (created.length) setAgentCreatedNodes({ projectId: project.id, nodes: created });
-    }), [isCurrentContext, projectId, projectLoaded, nodesRef, connectionsRef, setNodes, setConnections]);
+        if (created.length && source !== "sync") setAgentCreatedNodes({ projectId: project.id, nodes: created });
+	}), [isCurrentContext, projectId, projectLoaded, nodesRef, connectionsRef, setNodes, setConnections]);
+
+    useEffect(() => {
+        if (!projectLoaded || !sessionHydrated) return;
+        const scope = getActiveUserScope();
+        return startCanvasSyncPolling(async (signal) => {
+            if (scope !== getActiveUserScope()) return;
+            await canvasEditLeases.tick(projectId);
+            if (signal.aborted || scope !== getActiveUserScope()) return;
+            const token = canvasEditLeases.statusToken(projectId);
+            const status = await getCanvasSyncStatus(projectId, signal);
+            if (signal.aborted || scope !== getActiveUserScope()) return;
+            canvasEditLeases.status(projectId, status, token);
+            const current = useCanvasStore.getState().openProject(projectId);
+            if (current && status.revision !== current.revision) await refreshCanvasAfterAgent(projectId, "sync");
+        });
+    }, [projectId, projectLoaded, sessionHydrated, userId]);
 
     useEffect(() => {
         if (!isCurrentContext() || !editorReadyRef.current || manualRestoreRef.current || !projectLoaded || historyPausedRef.current || nodes !== nodesRef.current || connections !== connectionsRef.current) return;
-        const snapshot = { nodes, connections, chatSessions, activeChatId, canvasAppearance, backgroundMode, showImageInfo };
+        const snapshot = { nodes: persistentNodes, connections, chatSessions, activeChatId, canvasAppearance, backgroundMode, showImageInfo };
         if (!observedContentRef.current || sameCanvasHistorySnapshot(observedContentRef.current, snapshot)) return;
         observedContentRef.current = snapshot;
-        const patch = { nodes, connections, chatSessions, activeChatId, appearance: canvasAppearance, backgroundMode, showImageInfo };
+        const patch = { nodes: persistentNodes, connections, chatSessions, activeChatId, appearance: canvasAppearance, backgroundMode, showImageInfo };
         const stored = useCanvasStore.getState().projects.find((project) => project.id === projectId);
         // 远端结果投影到编辑器不是一次本地编辑，避免改写时间戳并触发反向保存。
         if (stored && sameCanvasPatch(stored, patch)) return;
         updateProject(projectId, patch);
-    }, [isCurrentContext, activeChatId, backgroundMode, canvasAppearance, chatSessions, connections, historyPausedRef, nodes, projectId, projectLoaded, showImageInfo, updateProject]);
+    }, [isCurrentContext, activeChatId, backgroundMode, canvasAppearance, chatSessions, connections, historyPausedRef, persistentNodes, projectId, projectLoaded, showImageInfo, updateProject]);
 
     useEffect(() => {
         if (!isCurrentContext() || manualRestoreRef.current || !projectLoaded) return;
@@ -334,10 +360,11 @@ export function useCanvasProjectLifecycle({
 
     const persistLocalEdits = useCallback(async (options: { flush?: boolean } = {}) => {
         if (!isCurrentContext()) throw new Error("画布或账号已切换，已停止保存");
-        const snapshot = { nodes: nodesRef.current, connections: connectionsRef.current, chatSessions, activeChatId, canvasAppearance, backgroundMode, showImageInfo };
+        const durableNodes = canvasPersistentNodes(nodesRef.current, observedContentRef.current?.nodes);
+        const snapshot = { nodes: durableNodes, connections: connectionsRef.current, chatSessions, activeChatId, canvasAppearance, backgroundMode, showImageInfo };
         if (observedContentRef.current && !sameCanvasHistorySnapshot(observedContentRef.current, snapshot)) {
             updateProject(projectId, {
-                nodes: nodesRef.current,
+                nodes: durableNodes,
                 connections: connectionsRef.current,
                 chatSessions,
                 activeChatId,

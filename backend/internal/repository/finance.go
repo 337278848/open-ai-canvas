@@ -60,11 +60,16 @@ func (r *Repository) GrantCreditsOnce(userID string, entryType model.CreditLedge
 }
 
 func (r *Repository) CreditAccount(userID string) (*model.CreditAccount, error) {
-	account := model.CreditAccount{UserID: userID}
-	if err := r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&account).Error; err != nil {
+	var account model.CreditAccount
+	err := r.db.First(&account, "user_id = ?", userID).Error
+	if err == nil {
+		return &account, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	if err := r.db.First(&account, "user_id = ?", userID).Error; err != nil {
+	account = model.CreditAccount{UserID: userID}
+	if err := r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&account).Error; err != nil {
 		return nil, err
 	}
 	return &account, nil
@@ -112,6 +117,9 @@ func (r *Repository) CreditLedgerReferenceExists(referenceKey string) (bool, err
 
 func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *model.BillingOrder, activeTaskLimit int) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := New(tx).requireExclusiveCanvasAgent(task); err != nil {
+			return err
+		}
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
 			return err
 		}
@@ -127,6 +135,9 @@ func (r *Repository) CreateTaskWithCreditReservation(task *model.Task, order *mo
 
 func (r *Repository) CreateTaskWithActiveLimit(task *model.Task, activeTaskLimit int) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := New(tx).requireExclusiveCanvasAgent(task); err != nil {
+			return err
+		}
 		if err := r.requireActiveLogicalModelForTask(tx, task); err != nil {
 			return err
 		}

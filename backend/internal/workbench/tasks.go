@@ -134,6 +134,19 @@ func (s *Service) ResolveTask(userID string, req TaskInput) (*TaskResolution, er
 		}
 	}
 	metadata := map[string]any{"source": "workbench", "workbenchKind": req.Kind}
+	operation := "image"
+	if req.Kind == KindVideo {
+		operation = videoOperation(refs)
+		// Provider adapters read the same operation and frame identities as admission.
+		metadata["videoEditOperation"] = operation
+		for _, ref := range refs {
+			if ref.Role == "first_frame" {
+				metadata["videoStartFrameNodeId"] = ref.ResourceID
+			} else if ref.Role == "last_frame" {
+				metadata["videoEndFrameNodeId"] = ref.ResourceID
+			}
+		}
+	}
 	workbenchSnapshot := map[string]any{"kind": req.Kind, "parameters": parameters}
 	snapshotReferences := make([]map[string]any, 0, len(refs))
 	for _, ref := range refs {
@@ -156,7 +169,7 @@ func (s *Service) ResolveTask(userID string, req TaskInput) (*TaskResolution, er
 	if len(refs) > 0 {
 		imageRefs, videoRefs, audioRefs := []map[string]any{}, []map[string]any{}, []map[string]any{}
 		for _, ref := range refs {
-			value := map[string]any{"resourceId": ref.ResourceID, "storageKey": "resource:" + ref.ResourceID}
+			value := map[string]any{"id": ref.ResourceID, "resourceId": ref.ResourceID, "storageKey": "resource:" + ref.ResourceID}
 			if ref.Role != "" {
 				value["role"] = ref.Role
 			}
@@ -190,19 +203,31 @@ func (s *Service) ResolveTask(userID string, req TaskInput) (*TaskResolution, er
 		workbenchSnapshot["presetId"], workbenchSnapshot["presetName"], workbenchSnapshot["presetVersion"] = preset.ID, preset.Name, preset.Version
 		workbenchSnapshot["presetPrompt"] = preset.PromptTemplate
 	}
-	operation := map[string]string{KindImage: "image"}[req.Kind]
-	if req.Kind == KindVideo {
-		// 视频能力合同按实际生成方式声明 text_to_video / image_to_video，
-		// 裸 "video" 不是任何模型声明过的操作，会让准入阶段误报“不支持操作”。
-		operation = "text_to_video"
-		for _, ref := range refs {
-			if ref.Kind == "image" {
-				operation = "image_to_video"
-				break
+	return &TaskResolution{TaskType: map[string]string{KindImage: "canvas_image", KindVideo: "canvas_video"}[req.Kind], Operation: operation, Input: input, Parameters: parameters, Prompt: strings.TrimSpace(req.Prompt), PromptOptional: tool != nil && !toolRequiresPrompt(tool), Model: modelName, LogicalModelID: logicalModelID, ChannelID: channelID, Tool: tool, Preset: preset}, nil
+}
+
+func videoOperation(refs []TaskReference) string {
+	hasFrame, hasAudio := false, false
+	for _, ref := range refs {
+		switch ref.Kind {
+		case "video":
+			return "reference_to_video"
+		case "image":
+			if ref.Role != "first_frame" && ref.Role != "last_frame" {
+				return "reference_to_video"
 			}
+			hasFrame = true
+		case "audio":
+			hasAudio = true
 		}
 	}
-	return &TaskResolution{TaskType: map[string]string{KindImage: "canvas_image", KindVideo: "canvas_video"}[req.Kind], Operation: operation, Input: input, Parameters: parameters, Prompt: strings.TrimSpace(req.Prompt), PromptOptional: tool != nil && !toolRequiresPrompt(tool), Model: modelName, LogicalModelID: logicalModelID, ChannelID: channelID, Tool: tool, Preset: preset}, nil
+	if hasFrame {
+		return "image_to_video"
+	}
+	if hasAudio {
+		return "audio_to_video"
+	}
+	return "text_to_video"
 }
 
 func normalizeTaskParameters(kind string, params map[string]any) (map[string]any, error) {

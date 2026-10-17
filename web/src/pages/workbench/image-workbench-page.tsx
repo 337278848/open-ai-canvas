@@ -18,8 +18,8 @@ import { isGenerationTaskSubmissionUncertain } from "@/lib/generation-task-displ
 import { imageQualityLabel } from "@/lib/image-quality";
 import { modelQuoteRequest } from "@/lib/model-pricing";
 import { quoteModel } from "@/services/api/logical-models";
-import { submitBackendGenerationTask } from "@/services/api/generation-task";
-import { cancelGenerationTask, queryGenerationTask, retryGenerationTask, type GenerationTask } from "@/services/api/task-center";
+import { prepareBackendGenerationTask } from "@/services/api/generation-task";
+import { createGenerationTask, cancelGenerationTask, queryGenerationTask, retryGenerationTask, type GenerationTask } from "@/services/api/task-center";
 import { capabilitySupportedModes, createWorkbenchTask, listWorkbenchTasks, listWorkbenchTools, normalizeWorkbenchGuide, resolveWorkbenchResourceURL, type WorkbenchKind, type WorkbenchPromptPreset, type WorkbenchTool } from "@/services/api/workbench";
 import { resourceStorageKey, resolveResourceUrl, uploadResourceFile } from "@/services/api/resources";
 import { formatCredits, requestCreditCost } from "@/constant/credits";
@@ -28,7 +28,7 @@ import { logicalModelIDForConfig, modelDisplayName, modelOptionName, resolveMode
 import { useUserStore } from "@/stores/use-user-store";
 
 import { workbenchCategoryLabel, workbenchCategories } from "./workbench-catalog";
-import { missingWorkbenchInput, workbenchPromptRequired } from "./workbench-input";
+import { missingWorkbenchInput, workbenchPromptRequired, workbenchVideoOperation } from "./workbench-input";
 import { canRetryWorkbenchTask, createWorkbenchSubmissionController, mergeWorkbenchTaskList, restoreWorkbenchReferences, workbenchUploadReference, workbenchVideoRequest, type WorkbenchReference } from "./workbench-generation";
 import "./workbench.css";
 import "./workbench-count-picker.css";
@@ -324,6 +324,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
             input: {
                 textCount: submittedPrompt ? 1 : 0,
                 imageCount: references.filter((reference) => reference.kind === "image").length,
+                referenceImageCount: references.filter((reference) => reference.kind === "image" && reference.role !== "first_frame" && reference.role !== "last_frame").length,
                 videoCount: references.filter((reference) => reference.kind === "video").length,
                 audioCount: references.filter((reference) => reference.kind === "audio").length,
                 characterCount: 0,
@@ -617,6 +618,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                 ...(admittedVideo ? admittedVideo.config : {}),
             };
             const readyReferences = references.filter((reference) => reference.resourceId);
+            const videoOperation = kind === "video" ? workbenchVideoOperation(readyReferences) : undefined;
             const referenceSnapshot = readyReferences.map((reference) => ({ resourceId: reference.resourceId!, kind: reference.kind, role: reference.role, ...(reference.slotKey ? { slotKey: reference.slotKey } : {}) }));
             const create = async () => {
                 setBusy(true);
@@ -632,7 +634,7 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                           parameters,
                           references: readyReferences.map((reference) => ({ resourceId: reference.resourceId!, kind: reference.kind, role: reference.role, ...(reference.slotKey ? { slotKey: reference.slotKey } : {}) })),
                       })
-                    : await submitBackendGenerationTask({
+                    : await prepareBackendGenerationTask({
                           mode: kind,
                           prompt: submittedPrompt,
                           config: generationConfig,
@@ -673,11 +675,17 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                               source: "workbench",
                               ...(admittedVideo ? { videoEditOperation: admittedVideo.requirements.videoOperation } : {}),
                               workbenchKind: kind,
+                              ...(videoOperation ? { videoEditOperation: videoOperation } : {}),
+                              ...Object.fromEntries(
+                                  readyReferences
+                                      .filter((reference) => reference.role === "first_frame" || reference.role === "last_frame")
+                                      .map((reference) => [reference.role === "first_frame" ? "videoStartFrameNodeId" : "videoEndFrameNodeId", reference.id]),
+                              ),
                               ...(tool ? { workbenchToolId: tool.id, workbenchToolName: tool.name } : {}),
                               ...(tool && preset ? { workbenchPresetId: preset.id } : {}),
                               workbench: { kind, ...(tool ? { toolId: tool.id } : {}), ...(tool && preset ? { presetId: preset.id } : {}), parameters, references: referenceSnapshot },
                           },
-                      })
+                      }).then((taskInput) => createGenerationTask({ ...taskInput, ...(videoOperation ? { operation: videoOperation } : {}) }))
                 );
             };
             const result = await submission.submit(create, {
@@ -1222,8 +1230,18 @@ export function WorkbenchPage({ kind }: { kind: WorkbenchKind }) {
                                         config={config}
                                         value={selectedModel}
                                         capability={capability}
-                                        requirements={quoteRequirements}
-                                        selectionRequirements={videoRequest?.selectionRequirements}
+                                        requirements={{
+                                            capability,
+                                            input: {
+                                                textCount: prompt.trim() ? 1 : 0,
+                                                imageCount: references.filter((reference) => reference.kind === "image").length,
+                                                referenceImageCount: references.filter((reference) => reference.kind === "image" && reference.role !== "first_frame" && reference.role !== "last_frame").length,
+                                                videoCount: references.filter((reference) => reference.kind === "video").length,
+                                                audioCount: references.filter((reference) => reference.kind === "audio").length,
+                                                characterCount: 0,
+                                            },
+                                            ...(kind === "image" ? { imageSize: ratio, options: { size: ratio, quality, ...(imageProfile?.resolution.supported ? { imageResolution } : {}), count: selectedCount } } : { videoSeconds: seconds, options: { size: ratio, videoSeconds: Number(seconds), vquality: videoQuality } }),
+                                        }}
                                         variant="creation"
                                         fullWidth
                                         className="creation-model-picker workbench-model-picker"

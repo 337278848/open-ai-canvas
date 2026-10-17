@@ -18,12 +18,10 @@ func TestCurrentSchemaVersionMatchesMigrationPlan(t *testing.T) {
 	if len(schemaMigrations) == 0 {
 		t.Fatal("migration plan is empty")
 	}
-	var previous int64
-	for _, item := range schemaMigrations {
-		if item.version <= previous {
-			t.Fatalf("migration versions must be unique and ordered: %d follows %d", item.version, previous)
+	for index, item := range schemaMigrations {
+		if index > 0 && item.version <= schemaMigrations[index-1].version {
+			t.Fatalf("migration versions must be strictly increasing: %d after %d", item.version, schemaMigrations[index-1].version)
 		}
-		previous = item.version
 	}
 	latest := schemaMigrations[len(schemaMigrations)-1].version
 	if CurrentSchemaVersion != latest {
@@ -162,6 +160,183 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 
 func TestMigrateSchemaV39UpgradesExistingDatabase(t *testing.T) {
 	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-auth-notifications-v39?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, table := range []any{&model.AuthVerification{}, &model.NotificationQuota{}, &model.SMSChannel{}, &model.SMSRecord{}} {
+		if err := db.Migrator().DropTable(table); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, column := range []string{"phone", "email_verified_at", "phone_verified_at"} {
+		if err := db.Migrator().DropColumn(&model.User{}, column); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Migrator().DropColumn(&model.EmailVerificationCode{}, "attempts"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Where("version = ?", 39).Delete(&schemaMigration{}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("upgrade from v38: %v", err)
+	}
+	for _, table := range []any{&model.AuthVerification{}, &model.NotificationQuota{}, &model.SMSChannel{}, &model.SMSRecord{}} {
+		if !db.Migrator().HasTable(table) {
+			t.Fatalf("migration v39 did not restore table %T", table)
+		}
+	}
+	for _, column := range []string{"phone", "email_verified_at", "phone_verified_at"} {
+		if !db.Migrator().HasColumn(&model.User{}, column) {
+			t.Fatalf("migration v39 did not restore users.%s", column)
+		}
+	}
+	if !db.Migrator().HasColumn(&model.EmailVerificationCode{}, "attempts") {
+		t.Fatal("migration v39 did not restore email verification attempts")
+	}
+}
+
+func TestMigrateSchemaV61UpgradesLocalV58(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-sql-perf-v56?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	var legacy58 schemaMigration
+	if err := db.First(&legacy58, "version = ?", 58).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacy58.Name != "lxmone_h3c_generations_protocol" || legacy58.Checksum != lxmoneH3CProtocolChecksum {
+		t.Fatalf("local v58 migration identity changed: %#v", legacy58)
+	}
+	for _, item := range []struct {
+		entity any
+		index  string
+	}{
+		{&model.ApiCallLog{}, "idx_api_logs_created_epoch"},
+		{&model.ApiCallLog{}, "idx_api_logs_user_created"},
+		{&model.Task{}, "idx_tasks_created_epoch"},
+		{&model.Task{}, "idx_tasks_user_project_created"},
+		{&model.CreditLedgerEntry{}, "idx_credit_ledger_user_type"},
+	} {
+		if err := db.Migrator().DropIndex(item.entity, item.index); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, entity := range []any{&model.ApiCallLog{}, &model.Task{}} {
+		if err := db.Migrator().DropColumn(entity, "CreatedAtEpoch"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Where("version >= ?", 59).Delete(&schemaMigration{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, 10, 15, 12, 30, 0, 0, time.UTC)
+	for _, table := range []string{"api_call_logs", "tasks"} {
+		if err := db.Table(table).Create(map[string]any{"id": "legacy-" + table, "created_at": createdAt}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("upgrade from local v58: %v", err)
+	}
+	for _, table := range []string{"api_call_logs", "tasks"} {
+		var epoch int64
+		if err := db.Table(table).Select("created_at_epoch").Where("id = ?", "legacy-"+table).Scan(&epoch).Error; err != nil {
+			t.Fatal(err)
+		}
+		if epoch != createdAt.Unix() {
+			t.Fatalf("%s legacy timestamp = %d, want %d", table, epoch, createdAt.Unix())
+		}
+	}
+	for _, item := range []struct {
+		entity any
+		index  string
+	}{
+		{&model.ApiCallLog{}, "idx_api_logs_user_created"},
+		{&model.Task{}, "idx_tasks_user_project_created"},
+		{&model.CreditLedgerEntry{}, "idx_credit_ledger_user_type"},
+	} {
+	if !db.Migrator().HasIndex(item.entity, item.index) {
+			t.Fatalf("v61 did not restore %s", item.index)
+		}
+	}
+	var after schemaMigration
+	if err := db.First(&after, "version = ?", 58).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after != legacy58 {
+		t.Fatalf("v61 rewrote local v58 migration: before=%#v after=%#v", legacy58, after)
+	}
+	if !db.Migrator().HasColumn(&model.ModelChannel{}, "CatalogProviderID") || !db.Migrator().HasColumn(&model.ChannelModel{}, "CatalogModelKey") {
+		t.Fatal("provider catalog columns missing after v59 upgrade")
+	}
+	if !db.Migrator().HasTable(&model.CanvasEditLease{}) {
+		t.Fatal("canvas edit lease table missing after v61 upgrade")
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("v61 upgrade should be idempotent: %v", err)
+	}
+}
+
+func TestMigrateSchemaNormalizesLegacyWorkbenchMigrationV51(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-legacy-workbench-v51?mode=memory&cache=shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	// 旧账本只到工作台迁移（记为 51），不包含之后新增的迁移。
+	if err := db.Where("version >= ? AND version <> ?", 51, workbenchToolsMigrationVersion).Delete(&schemaMigration{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&schemaMigration{}).Where("version = ?", 54).Updates(map[string]any{
+		"version":  51,
+		"name":     workbenchToolsMigrationName,
+		"checksum": legacyWorkbenchToolsMigrationChecksum,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateSchema(db); err != nil {
+		t.Fatalf("legacy workbench migration should be normalized: %v", err)
+	}
+	status, err := ReadSchemaStatus(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.Ready || status.Current != CurrentSchemaVersion {
+		t.Fatalf("unexpected normalized schema status: %#v", status)
+	}
+	var normalized schemaMigration
+	if err := db.First(&normalized, "version = ?", workbenchToolsMigrationVersion).Error; err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Name != workbenchToolsMigrationName || normalized.Checksum != workbenchToolsMigrationChecksum {
+		t.Fatalf("normalized workbench migration = %#v", normalized)
+	}
+	for _, item := range schemaMigrations {
+		var count int64
+		if err := db.Model(&schemaMigration{}).Where("version = ? AND name = ? AND checksum = ?", item.version, item.name, item.checksum).Count(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if item.version != workbenchToolsMigrationVersion && count != 1 {
+			t.Fatalf("migration %d was not restored: %#v", item.version, item)
+		}
+	}
+}
+
+func TestMigrateSchemaV35UpgradesExistingDatabase(t *testing.T) {
+	db, err := Open(Config{Driver: "sqlite", DSN: "file:migration-auth-notifications-v35?mode=memory&cache=shared"})
 	if err != nil {
 		t.Fatal(err)
 	}
