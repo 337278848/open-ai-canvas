@@ -291,7 +291,10 @@ export async function loadCanvasProjectForEditing(id: string, options: { onLoad?
         const cachedClean = local?.remoteContentHash && local.remoteContentHash === (await canvasContentHash(local));
         // Resolve the verified ancestor first. A hash-less cache has no proven
         // ancestor; it is handled explicitly below.
-        const baseline = acknowledgedProjects.get(id) ?? (local?.remoteContentHash && local.remoteContentHash === (await canvasContentHash(local)) ? local : undefined);
+        // A pending journal already owns a durable ancestor even when this
+        // session has not hydrated the map yet; replay must not be mistaken
+        // for an unproven cache.
+        const baseline = acknowledgedProjects.get(id) ?? pendingCanvasMutations.get(id)?.baseline ?? (local?.remoteContentHash && local.remoteContentHash === (await canvasContentHash(local)) ? local : undefined);
         // A non-empty cache with no verified ancestor is an unproven local
         // edit, not an authoritative view. Preserve it and pause cloud writes
         // instead of replacing it with the remote document.
@@ -1529,9 +1532,6 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
                 const operations = buildCanvasOperations(base, prepared);
                 if (!operations.length) {
                     if (base) {
-                        await flushCanvasStorePersistence();
-                        await persistConfirmedCanvasBaseline(base, canvasSyncScope);
-                        acknowledgedProjects.set(source.id, base);
                         const local = useCanvasStore.getState().openProject(source.id);
                         let pending = !sameCanvasContent(base, prepared);
                         if (local && sameCanvasContent(local, sourceSnapshot)) {
@@ -1541,6 +1541,18 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
                             // than this projection and must be committed next.
                             pending = true;
                         }
+                        // Persist the normalized projection before recording its
+                        // cloud ancestor; otherwise a reload keeps CDN URLs and
+                        // re-runs the same no-op reconciliation.
+                        await flushCanvasStorePersistence();
+                        // A store edit can land while the flush is in progress.
+                        // Re-read after persistence: that edit is newer than the
+                        // prepared projection and must be queued, not reported
+                        // as already saved.
+                        const afterFlush = useCanvasStore.getState().openProject(source.id);
+                        if (afterFlush && !sameCanvasContent(afterFlush, prepared)) pending = true;
+                        await persistConfirmedCanvasBaseline(base, canvasSyncScope);
+                        acknowledgedProjects.set(source.id, base);
                         useSyncProgressStore.getState().setProjectProgress(source.id, {
                             phase: pending ? "pending" : "done",
                             cloudRevision: base.revision,
