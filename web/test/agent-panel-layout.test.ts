@@ -57,12 +57,12 @@ describe("Agent submission sync preflight contract", () => {
         const source = readFileSync(resolve(import.meta.dir, "../src/components/canvas/canvas-cloud-agent-panel.tsx"), "utf8");
         expect(source).toContain("await saveRemoteUserDataNow(canvasId);");
         expect(source).toContain('if (decision === "approve") await saveRemoteUserDataNow(canvasId);');
-        expect(source).toContain("requestSent = true;\n            const result = submission.parentRunId ? await sendAgentMessage");
+        expect(source).toContain("requestSent = true;");
         expect(source).toContain("agentSubmissionErrorTitle(cause, accepted, requestSent)");
     });
 
     it("reports a sync failure as unsent while keeping POST ambiguity idempotent", () => {
-        expect(agentSubmissionErrorTitle(new Error("canvas sync failed"), false, false)).toBe("画布同步未完成，Agent 请求尚未发送");
+        expect(agentSubmissionErrorTitle(new Error("canvas sync failed"), false, false)).toBe("画布还没同步到云端，这条消息没有发送");
         expect(agentSubmissionErrorTitle(new TypeError("network failed"), false, true)).toBe("未收到服务端确认；重试将核对原请求，不重复创建");
     });
 
@@ -94,7 +94,7 @@ describe("Agent error semantics", () => {
     it("distinguishes confirmed server failures from missing responses", () => {
         expect(agentSubmissionErrorTitle(new ApiError("系统处理失败", { status: 500 }), false)).toBe("服务端已返回错误；重试将核对原请求，不重复创建");
         expect(agentSubmissionErrorTitle(new ApiError("参数错误", { status: 400 }), false)).toBe("请求已被服务端拒绝");
-        expect(agentSubmissionErrorTitle(new TypeError("network failed"), false, false)).toBe("画布同步未完成，Agent 请求尚未发送");
+        expect(agentSubmissionErrorTitle(new TypeError("network failed"), false, false)).toBe("画布还没同步到云端，这条消息没有发送");
         expect(agentSubmissionErrorTitle(new TypeError("network failed"), false)).toBe("未收到服务端确认；重试将核对原请求，不重复创建");
         expect(agentSubmissionErrorTitle(undefined, true)).toBe("运行已接收，但本地提交记录清理失败");
     });

@@ -51,6 +51,7 @@ const pendingCanvasMutationKey = "yingce:canvas-mutation-journal";
 const confirmedCanvasBaselineKey = "yingce:canvas-confirmed-baseline:";
 const canvasSyncRecoveryKey = "yingce:canvas-sync-recovery:";
 const pausedCanvasProjects = new Set<string>();
+const pausedCanvasProjectReasons = new Map<string, string>();
 let syncFirstQueuedAt = 0;
 let pendingJournalScope = "";
 let pendingJournalLoaded = false;
@@ -130,9 +131,13 @@ function rebaseLocalCanvasProject(baseline: CanvasProject, local: CanvasProject,
 }
 
 async function pauseCanvasProjectSync(project: CanvasProject, message = "缺少已确认的画布祖先，已保留恢复副本并暂停云端写入", scope = getActiveUserScope()) {
-    pausedCanvasProjects.add(project.id);
-    useSyncProgressStore.getState().setProjectProgress(project.id, { phase: "error", errorKind: "conflict", pendingChanges: 1, message });
+    // 先写恢复副本再标记暂停；备份失败时不能宣称“已保留恢复副本”。
+    // 首次暂停原因保留下来，后续自动保存沿用同一原因，避免把 Agent 冲突覆盖成泛化文案。
     await preserveCanvasSyncRecovery(project, message, scope);
+    pausedCanvasProjects.add(project.id);
+    pausedCanvasProjectReasons.set(project.id, pausedCanvasProjectReasons.get(project.id) || message);
+    const reason = pausedCanvasProjectReasons.get(project.id)!;
+    useSyncProgressStore.getState().setProjectProgress(project.id, { phase: "error", errorKind: "conflict", pendingChanges: 1, message: reason });
 }
 
 async function preserveCanvasSyncRecovery(project: CanvasProject, message: string, scope: string, mutation?: PendingCanvasMutation) {
@@ -228,10 +233,13 @@ export async function initializeRemoteUserDataSession(userId: string) {
         activeRemoteUserId = userId;
         await loadPendingCanvasMutationJournal();
         incrementalSession = true;
+        // 登录初始化不预先暂停画布。本地缓存与云端是否一致，要等打开画布或快照
+        // 对账后才有结论；在这里暂停会把“还没核对”误报成“存在冲突”，并阻塞
+        // Agent 提交前的前置保存。真正无法证明祖先的分支仍由 load/save 路径
+        // 先写恢复副本再暂停。
         for (const project of useCanvasStore.getState().projects) {
             const baseline = await confirmedCanvasBaseline(project);
             if (baseline) acknowledgedProjects.set(project.id, baseline);
-            else if (project.revision !== 0 && !pendingCanvasMutations.has(project.id)) await pauseCanvasProjectSync(project);
         }
         for (const pending of pendingCanvasMutations.values()) {
             if (pending.baseline) acknowledgedProjects.set(pending.projectId, pending.baseline);
@@ -320,6 +328,7 @@ export async function loadCanvasProjectForEditing(id: string, options: { onLoad?
                 return local;
             }
             pausedCanvasProjects.delete(id);
+            pausedCanvasProjectReasons.delete(id);
         }
         if (dirty && local && !sameCanvasContent(local, remote)) {
             // A journal may already have committed remotely. Resolve its receipt with
@@ -749,6 +758,7 @@ export function resetRemoteUserDataSync() {
     verifiedProjects.clear();
     remoteDeletedProjects.clear();
     pausedCanvasProjects.clear();
+    pausedCanvasProjectReasons.clear();
     verifiedAssets.clear();
     remoteProjectLoadPromises.clear();
     activeRemoteUserId = "";
@@ -1303,6 +1313,7 @@ async function settleCanvasMutation(mutation: PendingCanvasMutation, scope: stri
     verifiedProjects.add(mutation.projectId);
     if (mutation.restore) {
         pausedCanvasProjects.delete(mutation.projectId);
+        pausedCanvasProjectReasons.delete(mutation.projectId);
         remoteDeletedProjects.delete(mutation.projectId);
     }
     const current = useCanvasStore.getState().openProject(mutation.projectId) || projected;
@@ -1495,8 +1506,8 @@ async function saveRemoteUserDataBatch(uploaded: Map<string, string>, options: {
     const errors: unknown[] = [];
     for (const source of dirtyProjects) {
         if (pausedCanvasProjects.has(source.id) && !pendingCanvasMutations.get(source.id)?.restore) {
-            await pauseCanvasProjectSync(source, undefined, canvasSyncScope);
-            errors.push(new Error("画布缺少可安全重放的祖先或存在冲突，已保留恢复副本并暂停云端写入"));
+            await pauseCanvasProjectSync(source, pausedCanvasProjectReasons.get(source.id) || "缺少已确认的画布祖先，已保留恢复副本并暂停云端写入", canvasSyncScope);
+            errors.push(new Error(pausedCanvasProjectReasons.get(source.id) || "缺少已确认的画布祖先，已保留恢复副本并暂停云端写入"));
             continue;
         }
         const sourceSnapshot = source;

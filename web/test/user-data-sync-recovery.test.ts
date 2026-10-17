@@ -269,6 +269,18 @@ describe("production canvas sync recovery", () => {
         expect(JSON.parse(state.data.get(state.scope + ":" + recoveryKey)).original).toEqual(original);
     });
 
+    it("login no longer pauses hash-less caches before cloud reconciliation and an unproven draft can still be recovered", async () => {
+        const original = canvas({ nodes: [node("A", "Unproven edit")] });
+        state.canvas.projects = [original];
+        state.cloud.set(state.scope, new Map([["canvas", canvas({ nodes: [node("A"), node("B")] })]]));
+        await sync.initializeRemoteUserDataSession(state.scope);
+        await sync.loadCanvasProjectForEditing("canvas");
+        await expect(sync.saveRemoteUserDataNow("canvas")).rejects.toThrow("暂停");
+        const recovery = JSON.parse(state.data.get(state.scope + ":" + recoveryKey));
+        expect(recovery.original).toEqual(original);
+        expect(recovery.message).toContain("缺少已确认的画布祖先");
+    });
+
     it.each(["{broken", "{}", '[{"projectId":"canvas"}]'])("corrupt journal %s is retained byte-for-byte and cannot trigger PATCH", async (raw) => {
         state.data.set(state.scope + ":" + journalKey, raw); state.canvas.projects = [canvas()];
         await expect(sync.initializeRemoteUserDataSession(state.scope)).rejects.toThrow();
