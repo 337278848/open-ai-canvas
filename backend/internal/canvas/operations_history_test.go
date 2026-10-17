@@ -191,7 +191,7 @@ func newCanvasOperationsHistoryTestService(t *testing.T) (*Service, *gorm.DB) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.CanvasProject{}, &model.CanvasSnapshot{}, &model.CanvasSnapshotResource{}, &model.CanvasMutationReceipt{}, &model.Resource{}, &model.Asset{}); err != nil {
+	if err := db.AutoMigrate(&model.CanvasEditLease{}, &model.CanvasProject{}, &model.CanvasSnapshot{}, &model.CanvasSnapshotResource{}, &model.CanvasMutationReceipt{}, &model.Resource{}, &model.Asset{}); err != nil {
 		t.Fatal(err)
 	}
 	sqlDB, err := db.DB()

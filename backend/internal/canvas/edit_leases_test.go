@@ -1,6 +1,7 @@
 package canvas
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -158,10 +159,18 @@ func TestCanvasEditLeaseGuardsTextButAllowsResultsAndReceiptReplay(t *testing.T)
 			t.Fatal(err)
 		}
 	}
+	leaseStatus, err := svc.UserCanvasSyncStatus("user", "canvas")
+	if err != nil || len(leaseStatus.Leases) != 1 {
+		t.Fatalf("lease disappeared after rejected writes: %+v, %v", leaseStatus, err)
+	}
+	leaseJSON, _ := json.Marshal(leaseStatus)
+	if bytes.Contains(leaseJSON, []byte(`"token"`)) {
+		t.Fatal("sync status leaked the lease token")
+	}
 	text.EditProofs = []model.CanvasEditProof{proof}
 	first, err := svc.ApplyUserCanvasOperations("user", "canvas", text)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("text write with matching live lease failed: %v", err)
 	}
 	lease := grant["lease"].(*model.CanvasEditLease)
 	lease.ExpiresAt = time.Now().Add(-time.Second)

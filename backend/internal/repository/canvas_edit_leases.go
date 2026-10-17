@@ -73,6 +73,15 @@ func (r *Repository) checkCanvasEditLeases(before *model.CanvasProject, after *m
 		byNode[lease.NodeID] = lease
 	}
 	for _, proof := range r.canvasEditProofs {
+		if oldNodes[proof.NodeID] == nil && newNodes[proof.NodeID] != nil {
+			// A node created locally is not in the parent snapshot yet. Its lease
+			// should not require a pre-existing authored field to prove ownership.
+			lease, exists := byNode[proof.NodeID]
+			if !exists || lease.Token != proof.Token || lease.SessionID != proof.SessionID {
+				return ErrCanvasEditLease
+			}
+			continue
+		}
 		if !canvasLeaseTextChanged(oldNodes[proof.NodeID], newNodes[proof.NodeID]) {
 			continue
 		}

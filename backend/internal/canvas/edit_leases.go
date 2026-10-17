@@ -49,6 +49,9 @@ func (s *Service) ChangeUserCanvasEditLease(userID, canvasID string, req CanvasE
 	}
 	var lease *model.CanvasEditLease
 	var now time.Time
+	// Lease state is presence, not document content. It must survive a rejected
+	// canvas write; otherwise a single 409 silently revokes the browser's edit
+	// grant and the next valid save is refused as "expired".
 	err := s.repo.Transaction(func(tx *repository.Repository) error {
 		if err := tx.LockCanvasMutation(userID, canvasID); err != nil {
 			return err
@@ -63,9 +66,17 @@ func (s *Service) ChangeUserCanvasEditLease(userID, canvasID string, req CanvasE
 		// A locally created node may not have been saved yet. The parent canvas
 		// establishes ownership; the lease also protects its first publication.
 		now = time.Now().UTC()
-		lease, err = tx.ChangeCanvasEditLease(userID, canvasID, req.CanvasEditProof, req.Action, kernel.NewID(), now)
-		return err
+		return nil
 	})
+	if err == nil {
+		// Re-check the parent canvas after releasing the transaction that owns
+		// the canvas row lock; delete may have raced with this call.
+		if _, checkErr := s.repo.CanvasProjectMetadata(userID, canvasID); checkErr != nil {
+			err = checkErr
+		} else {
+			lease, err = s.repo.ChangeCanvasEditLease(userID, canvasID, req.CanvasEditProof, req.Action, kernel.NewID(), now)
+		}
+	}
 	if errors.Is(err, repository.ErrCanvasEditLease) {
 		return nil, canvasMutationError("canvas_edit_lease_conflict", err.Error())
 	}

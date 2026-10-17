@@ -55,7 +55,7 @@ func (r *Repository) CanvasSnapshot(userID, canvasID, id string) (*model.CanvasS
 func (r *Repository) SaveCanvasWithSnapshot(project *model.CanvasProject, snapshot *model.CanvasSnapshot, resourceIDs, currentResourceIDs []string, cutoff time.Time, limit int, force bool) error {
 	next := *project
 	err := r.db.Transaction(func(tx *gorm.DB) error {
-		if err := New(tx).UpsertCanvasProject(&next); err != nil {
+		if err := (&Repository{db: tx, canvasEditProofs: r.canvasEditProofs}).UpsertCanvasProject(&next); err != nil {
 			return err
 		}
 		capture := false

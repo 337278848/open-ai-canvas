@@ -293,7 +293,7 @@ func TestMigrateSchemaMergePreservesPublishedHistory(t *testing.T) {
 			}
 			schemaBefore := mergeSchemaSnapshot(t, db)
 			status, err := ReadSchemaStatus(db)
-			if err != nil || !status.Ready || status.Current != 57 {
+			if err != nil || !status.Ready || status.Current != CurrentSchemaVersion {
 				t.Fatalf("merged schema status: %+v, %v", status, err)
 			}
 			if err := RequireSchemaVersion(db); err != nil {
@@ -371,8 +371,8 @@ func TestMigrateSchemaMergeRejectsInvalidLegacyWorkbenchAndRollsBack(t *testing.
 }
 
 func TestSchemaMigrationMergeSuffixAppendsUpstreamFeatures(t *testing.T) {
-	if len(schemaMigrations) != 57 || CurrentSchemaVersion != 57 {
-		t.Fatalf("merged plan must append to v57: count=%d current=%d", len(schemaMigrations), CurrentSchemaVersion)
+	if len(schemaMigrations) != 61 || CurrentSchemaVersion != 61 {
+		t.Fatalf("merged plan must append to v61: count=%d current=%d", len(schemaMigrations), CurrentSchemaVersion)
 	}
 	for _, expected := range []struct {
 		version        int64
@@ -383,6 +383,10 @@ func TestSchemaMigrationMergeSuffixAppendsUpstreamFeatures(t *testing.T) {
 		{55, "user_avatar_presets", "sha256:user-avatar-presets-v55-20261012-local-lineage"},
 		{56, "user_login_logs", "sha256:user-login-logs-v56-local-lineage"},
 		{57, "workbench_tools_and_presets", "sha256:workbench-tools-presets-v57-20261013-local-lineage"},
+		{58, "lxmone_h3c_generations_protocol", lxmoneH3CProtocolChecksum},
+		{59, "provider_catalog_source_merge", "sha256:provider-catalog-source-v59-20261017"},
+		{60, "sql_perf_indexes_merge", "sha256:sql-perf-indexes-v60-20261017"},
+		{61, "canvas_multi_session_sync_merge", "sha256:canvas-multi-session-sync-v61-20261017"},
 	} {
 		item, ok := migrationByVersion(schemaMigrations, expected.version)
 		if !ok || item.name != expected.name || item.checksum != expected.checksum || item.apply == nil {
